@@ -51,6 +51,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
+	// Auto-GC: silently delete expired memories on startup
+	s.GC(context.Background())
+
 	return s, nil
 }
 
@@ -93,7 +96,6 @@ func (s *SQLiteStore) migrate() error {
 		embedding   TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_chunks_memory ON chunks(memory_id);
-	CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
 
 	CREATE TABLE IF NOT EXISTS memory_links (
 		from_id    TEXT NOT NULL REFERENCES memories(id),
@@ -103,6 +105,15 @@ func (s *SQLiteStore) migrate() error {
 		PRIMARY KEY (from_id, to_id, rel)
 	);
 	CREATE INDEX IF NOT EXISTS idx_links_to ON memory_links(to_id);
+
+	CREATE TABLE IF NOT EXISTS memory_files (
+		memory_id  TEXT NOT NULL REFERENCES memories(id),
+		path       TEXT NOT NULL,
+		rel        TEXT NOT NULL DEFAULT 'modified',
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (memory_id, path)
+	);
+	CREATE INDEX IF NOT EXISTS idx_memory_files_path ON memory_files(path);
 
 	CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 		text,
@@ -118,6 +129,15 @@ func (s *SQLiteStore) migrate() error {
 	// Schema upgrades for older databases
 	s.db.Exec(`ALTER TABLE memories ADD COLUMN expires_at TEXT`)
 	s.db.Exec(`ALTER TABLE chunks ADD COLUMN embedding TEXT`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS memory_files (
+		memory_id TEXT NOT NULL REFERENCES memories(id),
+		path      TEXT NOT NULL,
+		rel       TEXT NOT NULL DEFAULT 'modified',
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (memory_id, path)
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_files_path ON memory_files(path)`)
 
 	// FTS5 triggers for automatic sync
 	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
@@ -164,7 +184,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 
 	var expiresAt *string
 	if p.TTL != "" {
-		d, err := parseTTL(p.TTL)
+		d, err := ParseTTL(p.TTL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ttl: %w", err)
 		}
@@ -228,6 +248,22 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		}
 	}
 
+	// Insert file references
+	var fileRefs []model.FileRef
+	for _, f := range p.Files {
+		rel := f.Rel
+		if rel == "" {
+			rel = "modified"
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO memory_files (memory_id, path, rel, created_at) VALUES (?, ?, ?, ?)`,
+			id, f.Path, rel, now.Format(time.RFC3339))
+		if err != nil {
+			return nil, fmt.Errorf("insert file ref: %w", err)
+		}
+		fileRefs = append(fileRefs, model.FileRef{Path: f.Path, Rel: rel})
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -244,6 +280,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		Priority:   priority,
 		Meta:       p.Meta,
 		ChunkCount: len(chunks),
+		Files:      fileRefs,
 	}
 	if expiresAt != nil {
 		t, _ := time.Parse(time.RFC3339, *expiresAt)
@@ -310,6 +347,11 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 		s.db.ExecContext(ctx,
 			`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`,
 			now, memories[0].ID)
+	}
+
+	// Load file references
+	if err := s.loadFilesForMemories(ctx, memories); err != nil {
+		return nil, err
 	}
 
 	return memories, nil
@@ -419,6 +461,159 @@ func (s *SQLiteStore) Rm(ctx context.Context, p RmParams) error {
 	return err
 }
 
+// GCResult holds the result of an expired-memory garbage collection.
+type GCResult struct {
+	MemoriesDeleted int64
+	ChunksFreed     int64
+}
+
+// GCStaleResult holds the result of a stale-memory garbage collection.
+type GCStaleResult struct {
+	MemoriesDeleted int64
+	ProtectedCount  int64
+}
+
+// GCStaleDryRun counts stale memories (not accessed within the given duration)
+// without deleting them. Memories with priority "high" or "critical" are skipped.
+func (s *SQLiteStore) GCStaleDryRun(ctx context.Context, staleThreshold time.Duration) (GCStaleResult, error) {
+	cutoff := time.Now().UTC().Add(-staleThreshold).Format(time.RFC3339)
+	var result GCStaleResult
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories
+		 WHERE deleted_at IS NULL
+		   AND priority NOT IN ('high', 'critical')
+		   AND COALESCE(last_accessed_at, created_at) < ?`, cutoff).Scan(&result.MemoriesDeleted)
+	if err != nil {
+		return result, err
+	}
+
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories
+		 WHERE deleted_at IS NULL
+		   AND priority IN ('high', 'critical')
+		   AND COALESCE(last_accessed_at, created_at) < ?`, cutoff).Scan(&result.ProtectedCount)
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// GCStale soft-deletes memories not accessed within the given duration.
+// Memories with priority "high" or "critical" are skipped.
+func (s *SQLiteStore) GCStale(ctx context.Context, staleThreshold time.Duration) (GCStaleResult, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-staleThreshold).Format(time.RFC3339)
+	nowStr := now.Format(time.RFC3339)
+	var result GCStaleResult
+
+	// Count protected memories (high/critical that are stale but skipped)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories
+		 WHERE deleted_at IS NULL
+		   AND priority IN ('high', 'critical')
+		   AND COALESCE(last_accessed_at, created_at) < ?`, cutoff).Scan(&result.ProtectedCount)
+	if err != nil {
+		return result, err
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET deleted_at = ?
+		 WHERE deleted_at IS NULL
+		   AND priority NOT IN ('high', 'critical')
+		   AND COALESCE(last_accessed_at, created_at) < ?`, nowStr, cutoff)
+	if err != nil {
+		return result, fmt.Errorf("soft-delete stale memories: %w", err)
+	}
+
+	result.MemoriesDeleted, err = res.RowsAffected()
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// GCDryRun counts expired memories and their chunks without deleting.
+func (s *SQLiteStore) GCDryRun(ctx context.Context) (GCResult, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var result GCResult
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?`, now).Scan(&result.MemoriesDeleted)
+	if err != nil {
+		return result, err
+	}
+
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM chunks WHERE memory_id IN (
+			SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+		)`, now).Scan(&result.ChunksFreed)
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// GC deletes expired memories (where expires_at < now) and their chunks.
+func (s *SQLiteStore) GC(ctx context.Context) (GCResult, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var result GCResult
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+
+	// Count chunks to be deleted
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM chunks WHERE memory_id IN (
+			SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+		)`, now).Scan(&result.ChunksFreed)
+	if err != nil {
+		return result, err
+	}
+
+	// Delete chunks belonging to expired memories
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM chunks WHERE memory_id IN (
+			SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+		)`, now)
+	if err != nil {
+		return result, fmt.Errorf("delete expired chunks: %w", err)
+	}
+
+	// Delete expired memories
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?`, now)
+	if err != nil {
+		return result, fmt.Errorf("delete expired memories: %w", err)
+	}
+
+	result.MemoriesDeleted, err = res.RowsAffected()
+	if err != nil {
+		return result, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+
+	return result, nil
+}
+
+// MemoryCount returns the number of active (non-deleted, non-expired) memories.
+func (s *SQLiteStore) MemoryCount(ctx context.Context) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var count int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`, now).Scan(&count)
+	return count, err
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
@@ -467,10 +662,10 @@ func scanMemory(row scanner) (model.Memory, error) {
 	return m, nil
 }
 
-// parseTTL parses a TTL string like "7d", "24h", "30m" into a time.Duration.
+// ParseTTL parses a TTL string like "7d", "24h", "30m" into a time.Duration.
 var ttlRegex = regexp.MustCompile(`^(\d+)([dhms])$`)
 
-func parseTTL(s string) (time.Duration, error) {
+func ParseTTL(s string) (time.Duration, error) {
 	m := ttlRegex.FindStringSubmatch(s)
 	if m == nil {
 		return 0, fmt.Errorf("invalid format %q (use e.g. 7d, 24h, 30m, 60s)", s)

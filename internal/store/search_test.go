@@ -184,12 +184,12 @@ func TestTTL_ParseTTL(t *testing.T) {
 		{"7x", false},
 	}
 	for _, tt := range tests {
-		_, err := parseTTL(tt.input)
+		_, err := ParseTTL(tt.input)
 		if tt.ok && err != nil {
-			t.Errorf("parseTTL(%q) unexpected error: %v", tt.input, err)
+			t.Errorf("ParseTTL(%q) unexpected error: %v", tt.input, err)
 		}
 		if !tt.ok && err == nil {
-			t.Errorf("parseTTL(%q) expected error", tt.input)
+			t.Errorf("ParseTTL(%q) expected error", tt.input)
 		}
 	}
 }

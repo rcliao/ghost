@@ -21,6 +21,13 @@ type Memory struct {
 	Meta           string     `json:"meta,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	ChunkCount     int        `json:"chunks,omitempty"`
+	Files          []FileRef  `json:"files,omitempty"`
+}
+
+// FileRef represents a link between a memory and a file on disk.
+type FileRef struct {
+	Path string `json:"path"`
+	Rel  string `json:"rel"`
 }
 
 // Chunk represents an internal text chunk of a memory.
@@ -46,4 +53,12 @@ var ValidPriorities = map[string]bool{
 	"normal":   true,
 	"high":     true,
 	"critical": true,
+}
+
+// ValidFileRels are the allowed file reference relationship types.
+var ValidFileRels = map[string]bool{
+	"modified": true,
+	"created":  true,
+	"deleted":  true,
+	"read":     true,
 }

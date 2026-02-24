@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +25,8 @@ func init() {
 	cmd.Flags().StringP("priority", "p", "normal", "Priority: low, normal, high, critical")
 	cmd.Flags().String("meta", "", "JSON metadata")
 	cmd.Flags().String("ttl", "", "Time-to-live (e.g. 7d, 24h, 30m)")
+	cmd.Flags().String("files", "", "Comma-separated file paths to link")
+	cmd.Flags().String("file-rel", "modified", "File relationship: modified, created, deleted, read")
 
 	cmd.MarkFlagRequired("ns")
 	cmd.MarkFlagRequired("key")
@@ -41,6 +42,8 @@ func runPut(cmd *cobra.Command, args []string) {
 	priority, _ := cmd.Flags().GetString("priority")
 	meta, _ := cmd.Flags().GetString("meta")
 	ttl, _ := cmd.Flags().GetString("ttl")
+	filesStr, _ := cmd.Flags().GetString("files")
+	fileRel, _ := cmd.Flags().GetString("file-rel")
 
 	// Get content: positional arg first, then check stdin
 	var content string
@@ -71,6 +74,16 @@ func runPut(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	var files []store.FileParam
+	if filesStr != "" {
+		for _, f := range strings.Split(filesStr, ",") {
+			f = strings.TrimSpace(f)
+			if f != "" {
+				files = append(files, store.FileParam{Path: f, Rel: fileRel})
+			}
+		}
+	}
+
 	s, err := openStore()
 	if err != nil {
 		exitErr("open store", err)
@@ -86,11 +99,11 @@ func runPut(cmd *cobra.Command, args []string) {
 		Priority: priority,
 		Meta:     meta,
 		TTL:      ttl,
+		Files:    files,
 	})
 	if err != nil {
 		exitErr("put", err)
 	}
 
-	b, _ := json.Marshal(mem)
-	fmt.Println(string(b))
+	outputJSONCompact(cmd, mem)
 }

@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/rcliao/agent-memory/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -45,6 +42,5 @@ func runExport(cmd *cobra.Command, args []string) {
 	}
 	_ = memories // ExportAll is more complete
 
-	b, _ := json.MarshalIndent(allMemories, "", "  ")
-	fmt.Println(string(b))
+	outputJSON(cmd, allMemories)
 }

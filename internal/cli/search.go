@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -47,11 +46,18 @@ func runSearch(cmd *cobra.Command, args []string) {
 		exitErr("search", err)
 	}
 
-	if len(results) == 0 {
-		fmt.Println("[]")
+	if formatFlag == "text" {
+		w := writer(cmd)
+		for _, r := range results {
+			fmt.Fprintln(w, r.Content)
+		}
 		return
 	}
 
-	b, _ := json.MarshalIndent(results, "", "  ")
-	fmt.Println(string(b))
+	if len(results) == 0 {
+		outputText(cmd, "[]")
+		return
+	}
+
+	outputJSON(cmd, results)
 }

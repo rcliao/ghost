@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 
@@ -43,5 +42,8 @@ func runImport(cmd *cobra.Command, args []string) {
 		exitErr("import", err)
 	}
 
-	fmt.Printf(`{"ok":true,"imported":%d}`+"\n", imported)
+	outputJSONCompact(cmd, struct {
+		OK       bool `json:"ok"`
+		Imported int  `json:"imported"`
+	}{OK: true, Imported: imported})
 }

@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +26,5 @@ func runStats(cmd *cobra.Command, args []string) {
 		exitErr("stats", err)
 	}
 
-	b, _ := json.MarshalIndent(stats, "", "  ")
-	fmt.Println(string(b))
+	outputJSON(cmd, stats)
 }

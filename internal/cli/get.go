@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/rcliao/agent-memory/internal/store"
@@ -48,11 +47,14 @@ func runGet(cmd *cobra.Command, args []string) {
 		exitErr("get", err)
 	}
 
-	if history || len(memories) > 1 {
-		b, _ := json.MarshalIndent(memories, "", "  ")
-		fmt.Println(string(b))
+	if formatFlag == "text" {
+		w := writer(cmd)
+		for _, m := range memories {
+			fmt.Fprintln(w, m.Content)
+		}
+	} else if history || len(memories) > 1 {
+		outputJSON(cmd, memories)
 	} else {
-		b, _ := json.MarshalIndent(memories[0], "", "  ")
-		fmt.Println(string(b))
+		outputJSON(cmd, memories[0])
 	}
 }

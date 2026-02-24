@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/rcliao/agent-memory/internal/store"
@@ -50,6 +48,5 @@ func runContext(cmd *cobra.Command, args []string) {
 		exitErr("context", err)
 	}
 
-	b, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(b))
+	outputJSON(cmd, result)
 }

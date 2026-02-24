@@ -17,6 +17,13 @@ type PutParams struct {
 	Priority string
 	Meta     string
 	TTL      string // e.g. "7d", "24h", "30m"
+	Files    []FileParam
+}
+
+// FileParam specifies a file to link to a memory.
+type FileParam struct {
+	Path string
+	Rel  string // modified, created, deleted, read (default: modified)
 }
 
 // GetParams holds parameters for retrieving a memory.

@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +32,5 @@ func runNSList(cmd *cobra.Command, args []string) {
 		exitErr("list namespaces", err)
 	}
 
-	b, _ := json.MarshalIndent(rows, "", "  ")
-	fmt.Println(string(b))
+	outputJSON(cmd, rows)
 }

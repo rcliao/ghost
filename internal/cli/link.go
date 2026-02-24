@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/rcliao/agent-memory/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -57,6 +54,5 @@ func runLink(cmd *cobra.Command, args []string) {
 		exitErr("link", err)
 	}
 
-	b, _ := json.MarshalIndent(link, "", "  ")
-	fmt.Println(string(b))
+	outputJSON(cmd, link)
 }

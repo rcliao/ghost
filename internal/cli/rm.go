@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/rcliao/agent-memory/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -47,5 +45,9 @@ func runRm(cmd *cobra.Command, args []string) {
 		exitErr("rm", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), `{"ok":true,"ns":%q,"key":%q}`+"\n", ns, key)
+	outputJSONCompact(cmd, struct {
+		OK  bool   `json:"ok"`
+		NS  string `json:"ns"`
+		Key string `json:"key"`
+	}{OK: true, NS: ns, Key: key})
 }
