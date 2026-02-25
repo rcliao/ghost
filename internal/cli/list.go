@@ -16,7 +16,7 @@ func init() {
 		Run:   runList,
 	}
 
-	cmd.Flags().StringP("ns", "n", "", "Filter by namespace")
+	cmd.Flags().StringP("ns", "n", "", "Filter by namespace (supports prefix: 'ns:*')")
 	cmd.Flags().String("kind", "", "Filter by kind")
 	cmd.Flags().StringP("tags", "t", "", "Filter by tags (comma-separated)")
 	cmd.Flags().IntP("limit", "l", 20, "Max results")
@@ -34,6 +34,13 @@ func runList(cmd *cobra.Command, args []string) {
 	keysOnly, _ := cmd.Flags().GetBool("keys-only")
 	compact, _ := cmd.Flags().GetBool("compact")
 
+	if err := validateKind(kind); err != nil {
+		exitErr("list", err)
+	}
+	if err := validateLimit(limit); err != nil {
+		exitErr("list", err)
+	}
+
 	var tags []string
 	if tagsStr != "" {
 		for _, t := range strings.Split(tagsStr, ",") {
@@ -44,13 +51,7 @@ func runList(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
-	}
-	defer s.Close()
-
-	memories, err := s.List(cmd.Context(), store.ListParams{
+	memories, err := st.List(cmd.Context(), store.ListParams{
 		NS:    ns,
 		Kind:  kind,
 		Tags:  tags,

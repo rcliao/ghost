@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 
@@ -23,23 +24,25 @@ func init() {
 func runImport(cmd *cobra.Command, args []string) {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		exitErr("read stdin", err)
+		exitErr("import", fmt.Errorf("failed to read stdin: %w", err))
+	}
+
+	if len(data) == 0 {
+		exitErr("import", fmt.Errorf("no input received — pipe JSON via stdin, e.g.: agent-memory export | agent-memory import"))
 	}
 
 	var memories []model.Memory
 	if err := json.Unmarshal(data, &memories); err != nil {
-		exitErr("parse json", err)
+		exitErr("import", fmt.Errorf("invalid JSON input: %w — expected an array of memory objects (use 'export' to produce the correct format)", err))
 	}
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if len(memories) == 0 {
+		exitErr("import", fmt.Errorf("input contains an empty array — nothing to import"))
 	}
-	defer s.Close()
 
-	imported, err := s.Import(cmd.Context(), memories)
+	imported, err := st.Import(cmd.Context(), memories)
 	if err != nil {
-		exitErr("import", err)
+		exitErr("import", fmt.Errorf("failed to import %d memories: %w", len(memories), err))
 	}
 
 	outputJSONCompact(cmd, struct {

@@ -27,13 +27,14 @@ func runFiles(cmd *cobra.Command, args []string) {
 	rel, _ := cmd.Flags().GetString("rel")
 	limit, _ := cmd.Flags().GetInt("limit")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if rel != "" && !validFileRels[rel] {
+		exitErr("files", fmt.Errorf("invalid --rel %q — must be one of: modified, created, deleted, read", rel))
 	}
-	defer s.Close()
+	if err := validateLimit(limit); err != nil {
+		exitErr("files", err)
+	}
 
-	memories, err := s.FindByFile(cmd.Context(), store.FindByFileParams{
+	memories, err := st.FindByFile(cmd.Context(), store.FindByFileParams{
 		Path:  path,
 		Rel:   rel,
 		Limit: limit,

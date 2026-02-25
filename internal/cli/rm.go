@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
 	"github.com/rcliao/agent-memory/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -29,20 +33,24 @@ func runRm(cmd *cobra.Command, args []string) {
 	allVersions, _ := cmd.Flags().GetBool("all-versions")
 	hard, _ := cmd.Flags().GetBool("hard")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if hard {
+		fmt.Fprintf(os.Stderr, "warning: --hard permanently deletes %s/%s (cannot be undone)\n", ns, key)
 	}
-	defer s.Close()
 
-	err = s.Rm(cmd.Context(), store.RmParams{
+	err := st.Rm(cmd.Context(), store.RmParams{
 		NS:          ns,
 		Key:         key,
 		AllVersions: allVersions,
 		Hard:        hard,
 	})
 	if err != nil {
-		exitErr("rm", err)
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "not found"):
+			exitErr("rm", fmt.Errorf("memory %s/%s not found — use 'list -n %s' to see existing keys", ns, key, ns))
+		default:
+			exitErr("rm", fmt.Errorf("failed to delete %s/%s: %w", ns, key, err))
+		}
 	}
 
 	outputJSONCompact(cmd, struct {

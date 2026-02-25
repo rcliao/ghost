@@ -41,8 +41,12 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	args := []interface{}{now}
 
 	if p.NS != "" {
-		where = append(where, "m.ns = ?")
-		args = append(args, p.NS)
+		nsf := ParseNSFilter(p.NS)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
 	}
 	if p.Kind != "" {
 		where = append(where, "m.kind = ?")
@@ -151,8 +155,12 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 	args := []interface{}{now}
 
 	if p.NS != "" {
-		where += " AND m.ns = ?"
-		args = append(args, p.NS)
+		nsf := ParseNSFilter(p.NS)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where += " AND " + clause
+			args = append(args, nsArgs...)
+		}
 	}
 	if p.Kind != "" {
 		where += " AND m.kind = ?"
@@ -281,8 +289,12 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 	args := []interface{}{now}
 
 	if p.NS != "" {
-		where = append(where, "m.ns = ?")
-		args = append(args, p.NS)
+		nsf := ParseNSFilter(p.NS)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
 	}
 	if p.Kind != "" {
 		where = append(where, "m.kind = ?")

@@ -13,8 +13,12 @@ func (s *SQLiteStore) ExportAll(ctx context.Context, ns string) ([]model.Memory,
 	args := []interface{}{}
 
 	if ns != "" {
-		where = append(where, "ns = ?")
-		args = append(args, ns)
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
 	}
 
 	query := `SELECT id, ns, key, content, kind, tags, version, supersedes,

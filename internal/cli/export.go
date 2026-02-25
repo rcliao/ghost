@@ -1,7 +1,9 @@
 package cli
 
 import (
-	"github.com/rcliao/agent-memory/internal/store"
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 )
 
@@ -13,7 +15,7 @@ func init() {
 		Run:   runExport,
 	}
 
-	cmd.Flags().StringP("ns", "n", "", "Filter by namespace")
+	cmd.Flags().StringP("ns", "n", "", "Filter by namespace (supports prefix: 'ns:*')")
 
 	RootCmd.AddCommand(cmd)
 }
@@ -21,26 +23,18 @@ func init() {
 func runExport(cmd *cobra.Command, args []string) {
 	ns, _ := cmd.Flags().GetString("ns")
 
-	s, err := openStore()
+	allMemories, err := st.ExportAll(cmd.Context(), ns)
 	if err != nil {
-		exitErr("open store", err)
-	}
-	defer s.Close()
-
-	memories, err := s.List(cmd.Context(), store.ListParams{
-		NS:    ns,
-		Limit: 100000, // effectively unlimited
-	})
-	if err != nil {
-		exitErr("export", err)
+		exitErr("export", fmt.Errorf("failed to export memories: %w", err))
 	}
 
-	// Also include historical versions via ExportAll
-	allMemories, err := s.ExportAll(cmd.Context(), ns)
-	if err != nil {
-		exitErr("export", err)
+	if len(allMemories) == 0 {
+		if ns != "" {
+			fmt.Fprintf(os.Stderr, "warning: no memories found in namespace %q\n", ns)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: no memories found — store is empty\n")
+		}
 	}
-	_ = memories // ExportAll is more complete
 
 	outputJSON(cmd, allMemories)
 }

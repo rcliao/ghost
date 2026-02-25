@@ -62,12 +62,6 @@ func init() {
 }
 
 func runGC(cmd *cobra.Command, args []string) {
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
-	}
-	defer s.Close()
-
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	stale, _ := cmd.Flags().GetString("stale")
 
@@ -76,12 +70,12 @@ func runGC(cmd *cobra.Command, args []string) {
 	if stale != "" {
 		d, err := store.ParseTTL(stale)
 		if err != nil {
-			exitErr("parse --stale", err)
+			exitErr("gc", fmt.Errorf("invalid --stale %q — use a duration like 30d, 24h, or 60m", stale))
 		}
 
 		if dryRun {
 			out.Mode = "stale_dry_run"
-			result, err := s.GCStaleDryRun(cmd.Context(), d)
+			result, err := st.GCStaleDryRun(cmd.Context(), d)
 			if err != nil {
 				exitErr("gc stale dry-run", err)
 			}
@@ -89,7 +83,7 @@ func runGC(cmd *cobra.Command, args []string) {
 			out.Protected = result.ProtectedCount
 		} else {
 			out.Mode = "stale"
-			result, err := s.GCStale(cmd.Context(), d)
+			result, err := st.GCStale(cmd.Context(), d)
 			if err != nil {
 				exitErr("gc stale", err)
 			}
@@ -98,7 +92,7 @@ func runGC(cmd *cobra.Command, args []string) {
 		}
 	} else if dryRun {
 		out.Mode = "expired_dry_run"
-		result, err := s.GCDryRun(cmd.Context())
+		result, err := st.GCDryRun(cmd.Context())
 		if err != nil {
 			exitErr("gc dry-run", err)
 		}
@@ -106,7 +100,7 @@ func runGC(cmd *cobra.Command, args []string) {
 		out.ChunksFreed = result.ChunksFreed
 	} else {
 		out.Mode = "expired"
-		result, err := s.GC(cmd.Context())
+		result, err := st.GC(cmd.Context())
 		if err != nil {
 			exitErr("gc", err)
 		}
@@ -114,7 +108,7 @@ func runGC(cmd *cobra.Command, args []string) {
 		out.ChunksFreed = result.ChunksFreed
 	}
 
-	out.Remaining, _ = s.MemoryCount(cmd.Context())
+	out.Remaining, _ = st.MemoryCount(cmd.Context())
 
 	if info, err := os.Stat(getDBPath()); err == nil {
 		out.DBSizeBytes = info.Size()

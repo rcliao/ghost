@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/rcliao/agent-memory/internal/store"
@@ -16,7 +17,7 @@ func init() {
 		Run:   runContext,
 	}
 
-	cmd.Flags().StringP("ns", "n", "", "Filter by namespace")
+	cmd.Flags().StringP("ns", "n", "", "Filter by namespace (supports prefix: 'ns:*')")
 	cmd.Flags().String("kind", "", "Filter by kind")
 	cmd.Flags().StringSliceP("tags", "t", nil, "Filter by tags")
 	cmd.Flags().IntP("budget", "b", 4000, "Max tokens in output")
@@ -31,13 +32,14 @@ func runContext(cmd *cobra.Command, args []string) {
 	budget, _ := cmd.Flags().GetInt("budget")
 	query := strings.Join(args, " ")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if err := validateKind(kind); err != nil {
+		exitErr("context", err)
 	}
-	defer s.Close()
+	if budget <= 0 {
+		exitErr("context", fmt.Errorf("--budget must be a positive number (got %d)", budget))
+	}
 
-	result, err := s.Context(cmd.Context(), store.ContextParams{
+	result, err := st.Context(cmd.Context(), store.ContextParams{
 		NS:     ns,
 		Query:  query,
 		Kind:   kind,

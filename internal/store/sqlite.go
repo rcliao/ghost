@@ -21,6 +21,9 @@ import (
 	"github.com/rcliao/agent-memory/internal/model"
 )
 
+// Compile-time check: SQLiteStore implements Store.
+var _ Store = (*SQLiteStore)(nil)
+
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
 	db       *sql.DB
@@ -158,6 +161,10 @@ func (s *SQLiteStore) migrate() error {
 }
 
 func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, error) {
+	if err := ValidateNS(p.NS); err != nil {
+		return nil, fmt.Errorf("invalid namespace: %w", err)
+	}
+
 	now := time.Now().UTC()
 	id := s.newID()
 
@@ -357,6 +364,39 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 	return memories, nil
 }
 
+func (s *SQLiteStore) History(ctx context.Context, p HistoryParams) ([]model.Memory, error) {
+	query := `SELECT id, ns, key, content, kind, tags, version, supersedes,
+			         created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+			  FROM memories WHERE ns = ? AND key = ?
+			  ORDER BY version ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, p.NS, p.Key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var memories []model.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+
+	if len(memories) == 0 {
+		return nil, fmt.Errorf("memory not found: %s/%s", p.NS, p.Key)
+	}
+
+	// Load file references
+	if err := s.loadFilesForMemories(ctx, memories); err != nil {
+		return nil, err
+	}
+
+	return memories, nil
+}
+
 func (s *SQLiteStore) List(ctx context.Context, p ListParams) ([]model.Memory, error) {
 	limit := p.Limit
 	if limit <= 0 {
@@ -369,8 +409,12 @@ func (s *SQLiteStore) List(ctx context.Context, p ListParams) ([]model.Memory, e
 	args := []interface{}{now}
 
 	if p.NS != "" {
-		where = append(where, "m.ns = ?")
-		args = append(args, p.NS)
+		nsf := ParseNSFilter(p.NS)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
 	}
 	if p.Kind != "" {
 		where = append(where, "m.kind = ?")
@@ -459,6 +503,55 @@ func (s *SQLiteStore) Rm(ctx context.Context, p RmParams) error {
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE memories SET deleted_at = ? WHERE id = ?`, now, id)
 	return err
+}
+
+// RmNamespace soft-deletes (or hard-deletes) all memories in the given namespace.
+// Supports prefix matching (e.g., "reflect:*" deletes all under "reflect:").
+func (s *SQLiteStore) RmNamespace(ctx context.Context, ns string, hard bool) (int64, error) {
+	nsf := ParseNSFilter(ns)
+	clause, args := nsf.SQL("ns")
+	if clause == "" {
+		return 0, fmt.Errorf("namespace filter cannot be empty")
+	}
+
+	if hard {
+		// Delete chunks first
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM chunks WHERE memory_id IN (SELECT id FROM memories WHERE `+clause+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("delete chunks: %w", err)
+		}
+		// Delete file refs
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM memory_files WHERE memory_id IN (SELECT id FROM memories WHERE `+clause+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("delete file refs: %w", err)
+		}
+		// Delete links
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM memory_links WHERE from_id IN (SELECT id FROM memories WHERE `+clause+`) OR to_id IN (SELECT id FROM memories WHERE `+clause+`)`,
+			append(args, args...)...)
+		if err != nil {
+			return 0, fmt.Errorf("delete links: %w", err)
+		}
+		// Delete memories
+		res, err := s.db.ExecContext(ctx,
+			`DELETE FROM memories WHERE `+clause, args...)
+		if err != nil {
+			return 0, fmt.Errorf("delete memories: %w", err)
+		}
+		return res.RowsAffected()
+	}
+
+	// Soft delete
+	now := time.Now().UTC().Format(time.RFC3339)
+	allArgs := append([]interface{}{now}, args...)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET deleted_at = ? WHERE deleted_at IS NULL AND `+clause, allArgs...)
+	if err != nil {
+		return 0, fmt.Errorf("soft-delete namespace: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // GCResult holds the result of an expired-memory garbage collection.
@@ -612,6 +705,227 @@ func (s *SQLiteStore) MemoryCount(ctx context.Context) (int64, error) {
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`, now).Scan(&count)
 	return count, err
+}
+
+// ListTags returns all distinct tags with counts from active memories,
+// optionally filtered by namespace.
+func (s *SQLiteStore) ListTags(ctx context.Context, ns string) ([]TagInfo, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	where := []string{
+		"m.deleted_at IS NULL",
+		"(m.expires_at IS NULL OR m.expires_at > ?)",
+		"m.tags IS NOT NULL",
+	}
+	args := []interface{}{now}
+
+	if ns != "" {
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
+	}
+
+	// Get latest version of each ns+key that has tags
+	query := fmt.Sprintf(`
+		SELECT m.tags FROM memories m
+		INNER JOIN (
+			SELECT ns, key, MAX(version) AS max_ver
+			FROM memories WHERE deleted_at IS NULL
+			GROUP BY ns, key
+		) latest ON m.ns = latest.ns AND m.key = latest.key AND m.version = latest.max_ver
+		WHERE %s`, strings.Join(where, " AND "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tags: %w", err)
+	}
+	defer rows.Close()
+
+	tagCounts := map[string]int{}
+	for rows.Next() {
+		var tagsJSON string
+		if err := rows.Scan(&tagsJSON); err != nil {
+			return nil, err
+		}
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue // skip malformed tags
+		}
+		for _, t := range tags {
+			tagCounts[t]++
+		}
+	}
+
+	var result []TagInfo
+	for tag, count := range tagCounts {
+		result = append(result, TagInfo{Tag: tag, Count: count})
+	}
+	return result, nil
+}
+
+// RenameTag renames a tag across all active memories, returning the count of affected memories.
+func (s *SQLiteStore) RenameTag(ctx context.Context, oldTag, newTag, ns string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	where := []string{
+		"deleted_at IS NULL",
+		"(expires_at IS NULL OR expires_at > ?)",
+		"tags LIKE ?",
+	}
+	args := []interface{}{now, `%"` + oldTag + `"%`}
+
+	if ns != "" {
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
+	}
+
+	query := fmt.Sprintf(`SELECT id, tags FROM memories WHERE %s`, strings.Join(where, " AND "))
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("rename tag query: %w", err)
+	}
+	defer rows.Close()
+
+	type update struct {
+		id      string
+		newTags string
+	}
+	var updates []update
+
+	for rows.Next() {
+		var id, tagsJSON string
+		if err := rows.Scan(&id, &tagsJSON); err != nil {
+			return 0, err
+		}
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue
+		}
+		changed := false
+		seen := map[string]bool{}
+		var newTags []string
+		for _, t := range tags {
+			if t == oldTag {
+				t = newTag
+				changed = true
+			}
+			if !seen[t] {
+				seen[t] = true
+				newTags = append(newTags, t)
+			}
+		}
+		if changed {
+			b, _ := json.Marshal(newTags)
+			updates = append(updates, update{id: id, newTags: string(b)})
+		}
+	}
+
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	for _, u := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE memories SET tags = ? WHERE id = ?`, u.newTags, u.id); err != nil {
+			return 0, fmt.Errorf("rename tag update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(updates), nil
+}
+
+// RemoveTag removes a tag from all active memories, returning the count of affected memories.
+func (s *SQLiteStore) RemoveTag(ctx context.Context, tag, ns string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	where := []string{
+		"deleted_at IS NULL",
+		"(expires_at IS NULL OR expires_at > ?)",
+		"tags LIKE ?",
+	}
+	args := []interface{}{now, `%"` + tag + `"%`}
+
+	if ns != "" {
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("ns")
+		if clause != "" {
+			where = append(where, clause)
+			args = append(args, nsArgs...)
+		}
+	}
+
+	query := fmt.Sprintf(`SELECT id, tags FROM memories WHERE %s`, strings.Join(where, " AND "))
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("remove tag query: %w", err)
+	}
+	defer rows.Close()
+
+	type update struct {
+		id      string
+		newTags *string // nil means set to NULL
+	}
+	var updates []update
+
+	for rows.Next() {
+		var id, tagsJSON string
+		if err := rows.Scan(&id, &tagsJSON); err != nil {
+			return 0, err
+		}
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue
+		}
+		var newTags []string
+		for _, t := range tags {
+			if t != tag {
+				newTags = append(newTags, t)
+			}
+		}
+		if len(newTags) == len(tags) {
+			continue // tag wasn't in this memory
+		}
+		if len(newTags) == 0 {
+			updates = append(updates, update{id: id, newTags: nil})
+		} else {
+			b, _ := json.Marshal(newTags)
+			s := string(b)
+			updates = append(updates, update{id: id, newTags: &s})
+		}
+	}
+
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	for _, u := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE memories SET tags = ? WHERE id = ?`, u.newTags, u.id); err != nil {
+			return 0, fmt.Errorf("remove tag update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(updates), nil
 }
 
 func (s *SQLiteStore) Close() error {

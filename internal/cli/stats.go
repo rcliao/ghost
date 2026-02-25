@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -15,15 +17,9 @@ func init() {
 }
 
 func runStats(cmd *cobra.Command, args []string) {
-	s, err := openStore()
+	stats, err := st.Stats(cmd.Context(), getDBPath())
 	if err != nil {
-		exitErr("open store", err)
-	}
-	defer s.Close()
-
-	stats, err := s.Stats(cmd.Context(), getDBPath())
-	if err != nil {
-		exitErr("stats", err)
+		exitErr("stats", fmt.Errorf("failed to read database stats: %w", err))
 	}
 
 	outputJSON(cmd, stats)

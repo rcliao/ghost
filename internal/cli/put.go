@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +46,32 @@ func runPut(cmd *cobra.Command, args []string) {
 	filesStr, _ := cmd.Flags().GetString("files")
 	fileRel, _ := cmd.Flags().GetString("file-rel")
 
+	// Validate namespace.
+	if err := store.ValidateNS(ns); err != nil {
+		exitErr("put", fmt.Errorf("invalid namespace %q — use letters, digits, hyphens, and colons (e.g. 'project:logs')", ns))
+	}
+
+	// Validate enum flags.
+	if err := validateKind(kind); err != nil {
+		exitErr("put", err)
+	}
+	if err := validatePriority(priority); err != nil {
+		exitErr("put", err)
+	}
+	if !validFileRels[fileRel] {
+		exitErr("put", fmt.Errorf("invalid --file-rel %q — must be one of: modified, created, deleted, read", fileRel))
+	}
+	if meta != "" {
+		if !json.Valid([]byte(meta)) {
+			exitErr("put", fmt.Errorf("invalid --meta: not valid JSON (got %q)", meta))
+		}
+	}
+	if ttl != "" {
+		if _, err := store.ParseTTL(ttl); err != nil {
+			exitErr("put", fmt.Errorf("invalid --ttl %q — use a duration like 7d, 24h, or 30m", ttl))
+		}
+	}
+
 	// Get content: positional arg first, then check stdin
 	var content string
 	if len(args) > 0 {
@@ -84,13 +111,7 @@ func runPut(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
-	}
-	defer s.Close()
-
-	mem, err := s.Put(cmd.Context(), store.PutParams{
+	mem, err := st.Put(cmd.Context(), store.PutParams{
 		NS:       ns,
 		Key:      key,
 		Content:  strings.TrimSpace(content),

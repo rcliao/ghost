@@ -31,20 +31,22 @@ func runGet(cmd *cobra.Command, args []string) {
 	history, _ := cmd.Flags().GetBool("history")
 	version, _ := cmd.Flags().GetInt("version")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if version < 0 {
+		exitErr("get", fmt.Errorf("--version must be non-negative (got %d)", version))
 	}
-	defer s.Close()
 
-	memories, err := s.Get(cmd.Context(), store.GetParams{
+	memories, err := st.Get(cmd.Context(), store.GetParams{
 		NS:      ns,
 		Key:     key,
 		History: history,
 		Version: version,
 	})
 	if err != nil {
-		exitErr("get", err)
+		exitErr("get", fmt.Errorf("failed to retrieve %s/%s: %w", ns, key, err))
+	}
+
+	if len(memories) == 0 {
+		exitErr("get", fmt.Errorf("memory %s/%s not found — use 'list' or 'search' to find existing keys", ns, key))
 	}
 
 	if formatFlag == "text" {

@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/rcliao/agent-memory/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -36,13 +39,11 @@ func runLink(cmd *cobra.Command, args []string) {
 	rel, _ := cmd.Flags().GetString("rel")
 	rm, _ := cmd.Flags().GetBool("rm")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if !validLinkRels[rel] {
+		exitErr("link", fmt.Errorf("invalid --rel %q — must be one of: relates_to, contradicts, depends_on, refines", rel))
 	}
-	defer s.Close()
 
-	link, err := s.Link(cmd.Context(), store.LinkParams{
+	link, err := st.Link(cmd.Context(), store.LinkParams{
 		FromNS:  fromNS,
 		FromKey: fromKey,
 		ToNS:    toNS,
@@ -51,7 +52,13 @@ func runLink(cmd *cobra.Command, args []string) {
 		Remove:  rm,
 	})
 	if err != nil {
-		exitErr("link", err)
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "not found"):
+			exitErr("link", fmt.Errorf("one or both memories not found: %s/%s or %s/%s — verify they exist with 'get'", fromNS, fromKey, toNS, toKey))
+		default:
+			exitErr("link", fmt.Errorf("failed to link %s/%s -> %s/%s: %w", fromNS, fromKey, toNS, toKey, err))
+		}
 	}
 
 	outputJSON(cmd, link)

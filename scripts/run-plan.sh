@@ -12,8 +12,15 @@ PROJECT="agent-memory"
 AM="$HOME/go/bin/agent-memory"
 WORKDIR="$HOME/src/pikamini/projects/agent-memory"
 PLAN_FILE="${1:-$WORKDIR/plan.md}"
+CONVENTIONS_FILE="$WORKDIR/CONVENTIONS.md"
 LOGFILE="/tmp/agent-$PROJECT-$(date +%Y%m%d).log"
 MAX_RETRIES=1
+
+# Load conventions if present
+CONVENTIONS=""
+if [ -f "$CONVENTIONS_FILE" ]; then
+  CONVENTIONS=$(cat "$CONVENTIONS_FILE")
+fi
 
 if [ ! -f "$PLAN_FILE" ]; then
   echo "Plan file not found: $PLAN_FILE"
@@ -89,11 +96,15 @@ Persistent memory store available at '$AM':
 ## When done, save a reflection:
 $AM put -n \"reflect:$PROJECT\" -k \"task-\$(date +%s)\" \"BRIEF SUMMARY OF WHAT YOU DID\"
 
+## Project Conventions
+$CONVENTIONS
+
 ## Rules
 - Complete the ENTIRE task in this session
 - Run 'go test ./...' before finishing to make sure nothing is broken
-- Do NOT modify plan.md, run-plan.sh, or test-claude-memory.sh
-- Keep changes minimal and focused on the task"
+- Do NOT modify plan.md, run-plan.sh, test-claude-memory.sh, or CONVENTIONS.md
+- Keep changes minimal and focused on the task
+- If the task is ambiguous or would require violating a convention, STOP and explain what you need clarified in your reflection instead of guessing"
 
   cd "$WORKDIR"
   unset CLAUDECODE
@@ -109,10 +120,14 @@ review_task() {
   local diff_output="$2"
   local test_output="$3"
 
-  REVIEW_PROMPT="You are a code reviewer evaluating whether an automated agent completed a task correctly.
+  REVIEW_PROMPT="You are a strict code reviewer evaluating whether an automated agent completed a task correctly.
+You are the last line of defense before code is accepted. Be critical.
 
 ## Task That Was Assigned
 $task_text
+
+## Project Conventions
+$CONVENTIONS
 
 ## Git Diff (what the agent changed)
 \`\`\`
@@ -123,20 +138,34 @@ $diff_output
 $test_output
 
 ## Your Job
-Evaluate whether the changes correctly and completely implement the task.
+Evaluate the changes against BOTH the task description AND the project conventions.
 
-Check for:
+## Check for correctness:
 - Does the diff actually implement what the task asked for?
 - Is the implementation correct and idiomatic?
-- Are there any bugs, edge cases, or issues?
-- Is the scope appropriate (no unrelated changes, no missing pieces)?
+- Are there bugs, edge cases, or missing error handling?
+
+## Check for convention violations (MUST flag as needs_human):
+- Does it change the database schema without the task explicitly calling for it?
+- Does it add new CLI subcommands, data models, or Store interface methods that aren't specified in the task?
+- Does it break backwards compatibility with existing data or CLI output?
+- Does it touch more than 8 non-test files?
+- Does it add new dependencies?
+
+## Check for scope creep (flag as needs_revision or needs_human):
+- Did the agent make design decisions that the task didn't specify?
+- Did the agent add features, flags, or behaviors beyond what was asked?
+- Is the agent guessing at requirements instead of keeping to what's specified?
 
 ## You MUST respond with EXACTLY one of these three verdicts on the FIRST line:
 VERDICT: done
 VERDICT: needs_revision
 VERDICT: needs_human
 
-Followed by a brief explanation. Use needs_revision if the agent can fix it. Use needs_human if it requires a design decision or clarification that the agent can't resolve alone."
+Rules for choosing:
+- done: Implementation matches the task, follows conventions, no scope creep
+- needs_revision: Has bugs or incomplete work that the agent can fix (give specific feedback)
+- needs_human: Agent made design decisions not in the task spec, violated conventions, or the task is too ambiguous to implement without human guidance. PREFER this over done when the agent had to guess."
 
   cd "$WORKDIR"
   unset CLAUDECODE

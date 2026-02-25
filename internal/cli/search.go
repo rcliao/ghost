@@ -17,7 +17,7 @@ func init() {
 		Run:   runSearch,
 	}
 
-	cmd.Flags().StringP("ns", "n", "", "Filter by namespace")
+	cmd.Flags().StringP("ns", "n", "", "Filter by namespace (supports prefix: 'ns:*')")
 	cmd.Flags().String("kind", "", "Filter by kind")
 	cmd.Flags().IntP("limit", "l", 20, "Max results")
 
@@ -30,13 +30,14 @@ func runSearch(cmd *cobra.Command, args []string) {
 	limit, _ := cmd.Flags().GetInt("limit")
 	query := strings.Join(args, " ")
 
-	s, err := openStore()
-	if err != nil {
-		exitErr("open store", err)
+	if err := validateKind(kind); err != nil {
+		exitErr("search", err)
 	}
-	defer s.Close()
+	if err := validateLimit(limit); err != nil {
+		exitErr("search", err)
+	}
 
-	results, err := s.Search(cmd.Context(), store.SearchParams{
+	results, err := st.Search(cmd.Context(), store.SearchParams{
 		NS:    ns,
 		Query: query,
 		Kind:  kind,

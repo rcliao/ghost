@@ -7,20 +7,29 @@ import (
 	"testing"
 
 	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
+
+// resetFlags recursively resets all flags on a command and its subcommands.
+func resetFlags(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	for _, sub := range cmd.Commands() {
+		resetFlags(sub)
+	}
+}
 
 // executeCmd resets Cobra flag state, runs RootCmd with the given args,
 // and returns captured stdout plus any execution error.
 func executeCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
-	// Reset flags on all subcommands to avoid state leaking between tests.
+	// Reset flags on all subcommands (recursively) to avoid state leaking between tests.
 	for _, c := range RootCmd.Commands() {
-		c.Flags().VisitAll(func(f *pflag.Flag) {
-			f.Value.Set(f.DefValue)
-			f.Changed = false
-		})
+		resetFlags(c)
 	}
 
 	buf := new(bytes.Buffer)
