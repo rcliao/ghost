@@ -194,5 +194,64 @@ func TestTTL_ParseTTL(t *testing.T) {
 	}
 }
 
+func TestBuildFTSQuery(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"language", "language"},
+		{"Go language", "go OR language"},
+		{"do you know who EV is", "know OR ev"},
+		{"the a is", ""}, // all stop words
+		{"", ""},
+		{"What is Rust", "rust"},
+	}
+	for _, tt := range tests {
+		got := buildFTSQuery(tt.input)
+		if got != tt.want {
+			t.Errorf("buildFTSQuery(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSearch_StopWordQuery(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSQLiteStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Store memories that should match on non-stop-word terms
+	s.Put(ctx, PutParams{NS: "test", Key: "ev-info", Content: "EV is our beloved entity and creator"})
+	s.Put(ctx, PutParams{NS: "test", Key: "other", Content: "Rust has a borrow checker"})
+
+	// Natural language query with many stop words — should still find "EV"
+	results, err := s.Search(ctx, SearchParams{Query: "do you know who EV is"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for stop-word-heavy query, got 0")
+	}
+	found := false
+	for _, r := range results {
+		if r.Key == "ev-info" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected ev-info in results, got %v", results)
+	}
+
+	// Pure stop word query should still work (falls back to full-phrase LIKE)
+	results, err = s.Search(ctx, SearchParams{Query: "is"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should not crash — results may or may not exist depending on LIKE
+}
+
 // Ensure unused import doesn't break
 var _ = os.TempDir

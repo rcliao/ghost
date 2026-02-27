@@ -29,6 +29,40 @@ type SearchResult struct {
 	Similarity float64      `json:"similarity,omitempty"`
 }
 
+// englishStopWords contains common English stop words that FTS5 treats as noise.
+// Queries consisting entirely of stop words would match nothing with AND-join,
+// so we strip them and use OR-join for the remaining terms.
+var englishStopWords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
+	"be": true, "but": true, "by": true, "do": true, "for": true, "from": true,
+	"had": true, "has": true, "have": true, "he": true, "her": true, "his": true,
+	"how": true, "i": true, "if": true, "in": true, "into": true, "is": true,
+	"it": true, "its": true, "me": true, "my": true, "no": true, "not": true,
+	"of": true, "on": true, "or": true, "our": true, "she": true, "so": true,
+	"that": true, "the": true, "their": true, "them": true, "then": true,
+	"there": true, "these": true, "they": true, "this": true, "to": true,
+	"us": true, "was": true, "we": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "who": true, "will": true, "with": true,
+	"would": true, "you": true, "your": true,
+}
+
+// buildFTSQuery strips stop words from the query and joins remaining terms
+// with OR. Returns empty string if no meaningful terms remain.
+func buildFTSQuery(query string) string {
+	words := strings.Fields(query)
+	var terms []string
+	for _, w := range words {
+		lower := strings.ToLower(w)
+		if !englishStopWords[lower] {
+			terms = append(terms, lower)
+		}
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, " OR ")
+}
+
 // Search finds memories whose content or chunks match the query substring.
 func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResult, error) {
 	limit := p.Limit
@@ -53,9 +87,14 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		args = append(args, p.Kind)
 	}
 
-	// Try FTS5 first for ranked results, fall back to LIKE for simple substrings
-	// FTS5 query: split terms and join with AND for better matching
-	ftsQuery := strings.Join(strings.Fields(p.Query), " AND ")
+	// Try FTS5 first for ranked results, fall back to LIKE for simple substrings.
+	// Strip stop words and use OR-join so natural language queries still match.
+	ftsQuery := buildFTSQuery(p.Query)
+
+	// If all terms were stop words, skip FTS entirely and go to LIKE
+	if ftsQuery == "" {
+		return s.searchLike(ctx, p, where, limit)
+	}
 
 	sql := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
@@ -282,8 +321,9 @@ func scanMemoryWithExtra(row scanner, extras ...interface{}) (model.Memory, erro
 }
 
 // searchLike is the fallback when FTS5 fails.
+// It matches individual non-stop-word terms with OR for better recall on
+// natural language queries (e.g. "do you know who EV is" → LIKE '%EV%').
 func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere []string, limit int) ([]SearchResult, error) {
-	likeQuery := "%" + p.Query + "%"
 	now := time.Now().UTC().Format(time.RFC3339)
 	where := []string{"m.deleted_at IS NULL", "(m.expires_at IS NULL OR m.expires_at > ?)"}
 	args := []interface{}{now}
@@ -302,6 +342,26 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 	}
 	_ = baseWhere // we rebuild where clauses here
 
+	// Build per-term LIKE clauses joined with OR for better recall.
+	var likeClauses []string
+	words := strings.Fields(p.Query)
+	for _, w := range words {
+		if englishStopWords[strings.ToLower(w)] {
+			continue
+		}
+		pattern := "%" + w + "%"
+		likeClauses = append(likeClauses, "(m.content LIKE ? OR m.key LIKE ? OR c.text LIKE ?)")
+		args = append(args, pattern, pattern, pattern)
+	}
+	// If all words were stop words, fall back to full-phrase LIKE
+	if len(likeClauses) == 0 {
+		pattern := "%" + p.Query + "%"
+		likeClauses = append(likeClauses, "(m.content LIKE ? OR m.key LIKE ? OR c.text LIKE ?)")
+		args = append(args, pattern, pattern, pattern)
+	}
+
+	likeExpr := "(" + strings.Join(likeClauses, " OR ") + ")"
+
 	sql := fmt.Sprintf(`
 		SELECT DISTINCT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at
@@ -312,11 +372,11 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 			GROUP BY ns, key
 		) latest ON m.ns = latest.ns AND m.key = latest.key AND m.version = latest.max_ver
 		LEFT JOIN chunks c ON c.memory_id = m.id
-		WHERE %s AND (m.content LIKE ? OR m.key LIKE ? OR c.text LIKE ?)
+		WHERE %s AND %s
 		ORDER BY m.created_at DESC
-		LIMIT ?`, strings.Join(where, " AND "))
+		LIMIT ?`, strings.Join(where, " AND "), likeExpr)
 
-	args = append(args, likeQuery, likeQuery, likeQuery, limit)
+	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, sql, args...)
 	if err != nil {
