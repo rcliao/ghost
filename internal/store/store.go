@@ -10,15 +10,17 @@ import (
 
 // PutParams holds parameters for storing a memory.
 type PutParams struct {
-	NS       string
-	Key      string
-	Content  string
-	Kind     string
-	Tags     []string
-	Priority string
-	Meta     string
-	TTL      string // e.g. "7d", "24h", "30m"
-	Files    []FileParam
+	NS         string
+	Key        string
+	Content    string
+	Kind       string
+	Tags       []string
+	Priority   string
+	Importance float64 // 0.0-1.0; 0 means use default (0.5)
+	Tier       string  // "stm", "ltm", "identity"; empty defaults to "stm"
+	Meta       string
+	TTL        string // e.g. "7d", "24h", "30m"
+	Files      []FileParam
 }
 
 // FileParam specifies a file to link to a memory.
@@ -62,6 +64,27 @@ type HistoryParams struct {
 type TagInfo struct {
 	Tag   string `json:"tag"`
 	Count int    `json:"count"` // number of active memories with this tag
+}
+
+// PeekResult is a lightweight memory index for lazy discovery.
+type PeekResult struct {
+	NS              string         `json:"ns"`
+	IdentitySummary string         `json:"identity_summary,omitempty"`
+	RecentTopics    []string       `json:"recent_topics"`
+	MemoryCounts    map[string]int `json:"memory_counts"`
+	HighImportance  []MemoryStub   `json:"high_importance"`
+	TotalEstTokens  map[string]int `json:"total_est_tokens"`
+}
+
+// MemoryStub is a lightweight reference to a memory for peek results.
+type MemoryStub struct {
+	ID         string  `json:"id"`
+	Key        string  `json:"key"`
+	Kind       string  `json:"kind"`
+	Tier       string  `json:"tier"`
+	Importance float64 `json:"importance"`
+	EstTokens  int     `json:"est_tokens"`
+	Summary    string  `json:"summary"`
 }
 
 // Store defines the memory storage interface.
@@ -138,6 +161,28 @@ type Store interface {
 
 	// RemoveTag removes a tag from all matching memories, returning the count of affected memories.
 	RemoveTag(ctx context.Context, tag, ns string) (int, error)
+
+	// UtilityInc increments the utility_count for a memory, signaling that
+	// a retrieval of this memory actually contributed to task success.
+	UtilityInc(ctx context.Context, id string) error
+
+	// Peek returns a lightweight index of memory state for lazy discovery.
+	Peek(ctx context.Context, ns string) (*PeekResult, error)
+
+	// Reflect evaluates rules against memories and applies tier/importance changes.
+	Reflect(ctx context.Context, p ReflectParams) (*ReflectResult, error)
+
+	// RuleSet creates or updates a reflect rule.
+	RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRule, error)
+
+	// RuleGet retrieves a rule by ID.
+	RuleGet(ctx context.Context, id string) (*ReflectRule, error)
+
+	// RuleList returns all rules matching the given namespace.
+	RuleList(ctx context.Context, ns string) ([]ReflectRule, error)
+
+	// RuleDelete removes a rule by ID.
+	RuleDelete(ctx context.Context, id string) error
 
 	// Close closes the store.
 	Close() error

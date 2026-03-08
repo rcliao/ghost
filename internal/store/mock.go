@@ -23,6 +23,7 @@ type MockStore struct {
 	memories map[string]model.Memory // id -> memory
 	links    []Link
 	files    map[string][]model.FileRef // memory_id -> file refs
+	rules    map[string]ReflectRule     // id -> rule
 	entropy  *rand.Rand
 }
 
@@ -31,6 +32,7 @@ func NewMockStore() *MockStore {
 	return &MockStore{
 		memories: make(map[string]model.Memory),
 		files:    make(map[string][]model.FileRef),
+		rules:    make(map[string]ReflectRule),
 		entropy:  rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
@@ -87,6 +89,11 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 		copy(tags, p.Tags)
 	}
 
+	importance := p.Importance
+	if importance <= 0 {
+		importance = 0.5
+	}
+
 	mem := model.Memory{
 		ID:         id,
 		NS:         p.NS,
@@ -98,6 +105,9 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 		Supersedes: supersedes,
 		CreatedAt:  now,
 		Priority:   priority,
+		Importance: importance,
+		Tier:       "stm",
+		EstTokens:  (len(p.Content) / 4) + 20,
 		Meta:       p.Meta,
 		ExpiresAt:  expiresAt,
 		ChunkCount: 1, // simplified: one chunk per memory
@@ -925,6 +935,203 @@ func (m *MockStore) RemoveTag(_ context.Context, tag, ns string) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+func (m *MockStore) Peek(_ context.Context, ns string) (*PeekResult, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	now := time.Now().UTC()
+	nsf := ParseNSFilter(ns)
+	result := &PeekResult{
+		NS:             ns,
+		MemoryCounts:   map[string]int{},
+		TotalEstTokens: map[string]int{},
+		RecentTopics:   []string{},
+		HighImportance: []MemoryStub{},
+	}
+
+	// Collect active memories
+	var active []model.Memory
+	for _, mem := range m.memories {
+		if mem.DeletedAt != nil {
+			continue
+		}
+		if mem.ExpiresAt != nil && mem.ExpiresAt.Before(now) {
+			continue
+		}
+		if !nsf.MatchNS(mem.NS) {
+			continue
+		}
+		active = append(active, mem)
+	}
+
+	// Tier counts and token totals
+	for _, mem := range active {
+		tier := mem.Tier
+		if tier == "" {
+			tier = "stm"
+		}
+		result.MemoryCounts[tier]++
+		result.TotalEstTokens[tier] += mem.EstTokens
+	}
+
+	// Identity summary
+	for _, mem := range active {
+		if mem.Tier == "identity" {
+			summary := mem.Content
+			if len(summary) > 200 {
+				summary = summary[:200] + "..."
+			}
+			result.IdentitySummary = summary
+			break
+		}
+	}
+
+	// Recent topics (top-5 tags by recency)
+	sort.Slice(active, func(i, j int) bool {
+		return active[i].CreatedAt.After(active[j].CreatedAt)
+	})
+	tagSeen := map[string]bool{}
+	for _, mem := range active {
+		for _, t := range mem.Tags {
+			if !tagSeen[t] && len(result.RecentTopics) < 5 {
+				tagSeen[t] = true
+				result.RecentTopics = append(result.RecentTopics, t)
+			}
+		}
+		if len(result.RecentTopics) >= 5 {
+			break
+		}
+	}
+
+	// Top-5 by importance
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].Importance != active[j].Importance {
+			return active[i].Importance > active[j].Importance
+		}
+		return active[i].CreatedAt.After(active[j].CreatedAt)
+	})
+	for i, mem := range active {
+		if i >= 5 {
+			break
+		}
+		summary := mem.Content
+		if len(summary) > 80 {
+			summary = summary[:80] + "..."
+		}
+		result.HighImportance = append(result.HighImportance, MemoryStub{
+			ID:         mem.ID,
+			Key:        mem.Key,
+			Kind:       mem.Kind,
+			Tier:       mem.Tier,
+			Importance: mem.Importance,
+			EstTokens:  mem.EstTokens,
+			Summary:    summary,
+		})
+	}
+
+	return result, nil
+}
+
+func (m *MockStore) Reflect(_ context.Context, p ReflectParams) (*ReflectResult, error) {
+	// Simplified mock: just count memories that would be evaluated
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := &ReflectResult{}
+	for _, mem := range m.memories {
+		if mem.DeletedAt != nil {
+			continue
+		}
+		if p.NS != "" {
+			nsf := ParseNSFilter(p.NS)
+			if !nsf.MatchNS(mem.NS) {
+				continue
+			}
+		}
+		result.MemoriesEvaluated++
+	}
+	return result, nil
+}
+
+func (m *MockStore) RuleSet(_ context.Context, rule ReflectRule) (*ReflectRule, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if rule.ID == "" {
+		rule.ID = m.newID()
+	}
+	if rule.Name == "" {
+		return nil, fmt.Errorf("rule name is required")
+	}
+	if !validActionOps[rule.Action.Op] {
+		return nil, fmt.Errorf("invalid action op %q", rule.Action.Op)
+	}
+	if rule.Priority == 0 {
+		rule.Priority = 50
+	}
+	if rule.Scope == "" {
+		rule.Scope = "reflect"
+	}
+	if rule.CreatedBy == "" {
+		rule.CreatedBy = "user"
+	}
+	rule.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	m.rules[rule.ID] = rule
+	return &rule, nil
+}
+
+func (m *MockStore) RuleGet(_ context.Context, id string) (*ReflectRule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	r, ok := m.rules[id]
+	if !ok {
+		return nil, fmt.Errorf("rule not found: %s", id)
+	}
+	return &r, nil
+}
+
+func (m *MockStore) RuleList(_ context.Context, ns string) ([]ReflectRule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var rules []ReflectRule
+	for _, r := range m.rules {
+		if ns != "" && r.NS != "" && r.NS != ns {
+			continue
+		}
+		rules = append(rules, r)
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		return rules[i].Priority > rules[j].Priority
+	})
+	return rules, nil
+}
+
+func (m *MockStore) RuleDelete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.rules[id]; !ok {
+		return fmt.Errorf("rule not found: %s", id)
+	}
+	delete(m.rules, id)
+	return nil
+}
+
+func (m *MockStore) UtilityInc(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	mem, ok := m.memories[id]
+	if !ok || mem.DeletedAt != nil {
+		return fmt.Errorf("memory not found: %s", id)
+	}
+	mem.UtilityCount++
+	m.memories[id] = mem
+	return nil
 }
 
 func (m *MockStore) Close() error {

@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rcliao/agent-memory/internal/model"
@@ -11,11 +13,14 @@ import (
 
 // ContextParams holds parameters for context assembly.
 type ContextParams struct {
-	NS     string
-	Query  string
-	Kind   string
-	Tags   []string
-	Budget int // max chars in output (rough token proxy: 1 token ≈ 4 chars)
+	NS           string
+	Query        string
+	Kind         string
+	Tags         []string
+	Budget       int      // max tokens in output
+	PinTiers     []string // tiers always injected first (e.g. ["identity", "ltm"])
+	PinBudget    int      // token budget reserved for pinned tiers (default: Budget/3)
+	SearchBudget int      // remaining budget for query-relevant search (default: Budget - PinBudget)
 }
 
 // ContextMemory is a scored memory for context output.
@@ -41,8 +46,53 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	if budget <= 0 {
 		budget = 4000
 	}
-	// Convert token budget to char budget (rough: 4 chars/token)
-	charBudget := budget * 4
+
+	result := &ContextResult{Budget: budget, Memories: []ContextMemory{}}
+	usedTokens := 0
+	seen := map[string]bool{} // track memory IDs to deduplicate
+
+	// Phase 1: Load pinned tier memories first
+	if len(p.PinTiers) > 0 {
+		pinBudget := p.PinBudget
+		if pinBudget <= 0 {
+			pinBudget = budget / 3
+		}
+
+		pinned, err := s.loadPinnedTierMemories(ctx, p.NS, p.PinTiers)
+		if err != nil {
+			return nil, fmt.Errorf("load pinned tiers: %w", err)
+		}
+
+		for _, m := range pinned {
+			if usedTokens >= pinBudget {
+				break
+			}
+			memTokens := m.EstTokens
+			if memTokens <= 0 {
+				memTokens = (len(m.Content) / 4) + 20
+			}
+			if usedTokens+memTokens <= pinBudget {
+				result.Memories = append(result.Memories, ContextMemory{
+					NS:      m.NS,
+					Key:     m.Key,
+					Kind:    m.Kind,
+					Content: m.Content,
+					Score:   m.Importance, // pinned memories use importance as score
+				})
+				usedTokens += memTokens
+				seen[m.ID] = true
+			}
+		}
+	}
+
+	// Phase 2: Search-based candidates fill remaining budget
+	searchBudget := p.SearchBudget
+	if searchBudget <= 0 {
+		searchBudget = budget - usedTokens
+	}
+	if searchBudget < 0 {
+		searchBudget = 0
+	}
 
 	// Search for candidates (get more than we need for scoring)
 	results, err := s.Search(ctx, SearchParams{
@@ -55,7 +105,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		return nil, err
 	}
 
-	if len(results) == 0 {
+	if len(results) == 0 && len(result.Memories) == 0 {
 		return &ContextResult{Budget: budget, Used: 0, Memories: []ContextMemory{}}, nil
 	}
 
@@ -68,17 +118,25 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	var candidates []scored
 
 	for _, r := range results {
+		if seen[r.ID] {
+			continue // already included from pinned tiers
+		}
 		m := r.Memory
-		// Relevance: position-based (earlier = more relevant from search)
-		// Since search already orders by relevance, use inverse position
-		relevance := 1.0 // base relevance from search match
+		// Relevance: use vector similarity when available, otherwise base from search rank
+		relevance := 0.5 // base relevance for FTS/LIKE matches
+		if r.Similarity > 0 {
+			relevance = r.Similarity // use actual cosine similarity
+		}
 
 		// Recency: exponential decay, half-life of 7 days
 		age := now.Sub(m.CreatedAt).Hours() / 24.0 // days
 		recency := math.Exp(-0.1 * age)
 
-		// Importance: priority-based
-		importance := priorityScore(m.Priority)
+		// Importance: use continuous importance field, fall back to priority-based
+		importance := m.Importance
+		if importance <= 0 {
+			importance = priorityScore(m.Priority)
+		}
 
 		// Access frequency: log scale
 		accessFreq := 0.0
@@ -100,14 +158,13 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		return candidates[i].score > candidates[j].score
 	})
 
-	// Greedy packing into budget
-	result := &ContextResult{Budget: budget, Memories: []ContextMemory{}}
-	used := 0
-
+	// Greedy packing into remaining budget
 	for _, c := range candidates {
-		contentLen := len(c.memory.Content)
-		if used+contentLen <= charBudget {
-			// Fits entirely
+		memTokens := c.memory.EstTokens
+		if memTokens <= 0 {
+			memTokens = (len(c.memory.Content) / 4) + 20
+		}
+		if usedTokens+memTokens <= budget {
 			result.Memories = append(result.Memories, ContextMemory{
 				NS:      c.memory.NS,
 				Key:     c.memory.Key,
@@ -115,13 +172,15 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				Content: c.memory.Content,
 				Score:   math.Round(c.score*100) / 100,
 			})
-			used += contentLen
-		} else if remaining := charBudget - used; remaining >= 100 {
+			usedTokens += memTokens
+		} else if remainingTokens := budget - usedTokens; remainingTokens >= 25 {
 			// Partial fit — excerpt
+			remainingChars := remainingTokens * 4
 			excerpt := c.memory.Content
-			if len(excerpt) > remaining {
-				excerpt = excerpt[:remaining] + "..."
+			if len(excerpt) > remainingChars {
+				excerpt = excerpt[:remainingChars] + "..."
 			}
+			excerptTokens := (len(excerpt) / 4) + 20
 			result.Memories = append(result.Memories, ContextMemory{
 				NS:      c.memory.NS,
 				Key:     c.memory.Key,
@@ -130,17 +189,79 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				Score:   math.Round(c.score*100) / 100,
 				Excerpt: true,
 			})
-			used += len(excerpt)
-			break // budget full
+			usedTokens += excerptTokens
+			break
 		} else {
 			break
 		}
 	}
 
-	// Convert used chars back to approximate tokens
-	result.Used = used / 4
+	result.Used = usedTokens
+
+	// Touch access metadata for all returned memories
+	var ids []string
+	for _, r := range results {
+		ids = append(ids, r.ID)
+	}
+	if err := s.touchMemories(ctx, ids); err != nil {
+		_ = err
+	}
 
 	return result, nil
+}
+
+// loadPinnedTierMemories loads memories from the specified tiers, ordered by importance.
+func (s *SQLiteStore) loadPinnedTierMemories(ctx context.Context, ns string, tiers []string) ([]model.Memory, error) {
+	if len(tiers) == 0 {
+		return nil, nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	placeholders := strings.Repeat("?,", len(tiers))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	where := fmt.Sprintf("m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.tier IN (%s)", placeholders)
+	args := []interface{}{now}
+	for _, t := range tiers {
+		args = append(args, t)
+	}
+
+	if ns != "" {
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("m.ns")
+		if clause != "" {
+			where += " AND " + clause
+			args = append(args, nsArgs...)
+		}
+	}
+
+	query := fmt.Sprintf(`SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
+		m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
+		m.importance, m.utility_count, m.tier, m.est_tokens
+		FROM memories m
+		INNER JOIN (
+			SELECT ns, key, MAX(version) AS max_ver
+			FROM memories WHERE deleted_at IS NULL
+			GROUP BY ns, key
+		) latest ON m.ns = latest.ns AND m.key = latest.key AND m.version = latest.max_ver
+		WHERE %s
+		ORDER BY m.importance DESC, m.created_at DESC`, where)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var memories []model.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+	return memories, nil
 }
 
 func priorityScore(p string) float64 {

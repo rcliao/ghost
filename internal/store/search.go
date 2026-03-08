@@ -63,11 +63,111 @@ func buildFTSQuery(query string) string {
 	return strings.Join(terms, " OR ")
 }
 
-// Search finds memories whose content or chunks match the query substring.
+// rrfScore computes the Reciprocal Rank Fusion score for a result appearing
+// at the given ranks across multiple retrieval methods. k=60 per the original
+// RRF paper (Cormack et al., 2009).
+func rrfScore(ranks []int, k int) float64 {
+	if k <= 0 {
+		k = 60
+	}
+	var score float64
+	for _, r := range ranks {
+		score += 1.0 / float64(k+r)
+	}
+	return score
+}
+
+// Search finds memories whose content or chunks match the query.
+// Uses RRF (Reciprocal Rank Fusion) to merge results from FTS5, LIKE, and
+// vector search into a single ranked list.
 func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResult, error) {
 	limit := p.Limit
 	if limit <= 0 {
 		limit = 20
+	}
+
+	// Collect ranked result lists from each retrieval method
+	type rankedResult struct {
+		result SearchResult
+		rank   int // 1-based position in this method's output
+	}
+
+	// Map: memory ID → ranks from each method
+	methodRanks := map[string][]int{}
+	memoryByID := map[string]SearchResult{}
+
+	// 1. FTS5 search
+	ftsResults := s.searchFTS(ctx, p, limit)
+	for i, r := range ftsResults {
+		id := r.ID
+		methodRanks[id] = append(methodRanks[id], i+1)
+		if _, ok := memoryByID[id]; !ok {
+			memoryByID[id] = r
+		}
+	}
+
+	// 2. LIKE search
+	likeResults, _ := s.searchLike(ctx, p, nil, limit)
+	for i, r := range likeResults {
+		id := r.ID
+		methodRanks[id] = append(methodRanks[id], i+1)
+		if _, ok := memoryByID[id]; !ok {
+			memoryByID[id] = r
+		}
+	}
+
+	// 3. Vector search (if embedder available)
+	if s.embedder != nil {
+		vecResults, err := s.searchVector(ctx, p, nil, limit)
+		if err == nil {
+			for i, r := range vecResults {
+				id := r.ID
+				methodRanks[id] = append(methodRanks[id], i+1)
+				// Prefer the vector result version (has Similarity set)
+				if existing, ok := memoryByID[id]; !ok || existing.Similarity == 0 {
+					memoryByID[id] = r
+				}
+			}
+		}
+	}
+
+	// Merge via RRF
+	type fusedResult struct {
+		result   SearchResult
+		rrfScore float64
+	}
+	var fused []fusedResult
+	for id, ranks := range methodRanks {
+		score := rrfScore(ranks, 60)
+		r := memoryByID[id]
+		r.Similarity = math.Round(score*10000) / 10000 // expose RRF score as similarity
+		fused = append(fused, fusedResult{result: r, rrfScore: score})
+	}
+
+	// Sort by RRF score descending
+	sort.Slice(fused, func(i, j int) bool {
+		if fused[i].rrfScore != fused[j].rrfScore {
+			return fused[i].rrfScore > fused[j].rrfScore
+		}
+		return fused[i].result.CreatedAt.After(fused[j].result.CreatedAt)
+	})
+
+	if len(fused) > limit {
+		fused = fused[:limit]
+	}
+
+	results := make([]SearchResult, len(fused))
+	for i, f := range fused {
+		results[i] = f.result
+	}
+	return results, nil
+}
+
+// searchFTS runs the FTS5 full-text search and returns ranked results.
+func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) []SearchResult {
+	ftsQuery := buildFTSQuery(p.Query)
+	if ftsQuery == "" {
+		return nil
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -87,18 +187,10 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		args = append(args, p.Kind)
 	}
 
-	// Try FTS5 first for ranked results, fall back to LIKE for simple substrings.
-	// Strip stop words and use OR-join so natural language queries still match.
-	ftsQuery := buildFTSQuery(p.Query)
-
-	// If all terms were stop words, skip FTS entirely and go to LIKE
-	if ftsQuery == "" {
-		return s.searchLike(ctx, p, where, limit)
-	}
-
-	sql := fmt.Sprintf(`
+	q := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
-		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at
+		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
+		       m.importance, m.utility_count, m.tier, m.est_tokens
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -111,17 +203,16 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		GROUP BY m.id
 		ORDER BY
 			(CASE m.priority WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END) * 0.2
-			+ (julianday(m.created_at) / julianday('now')) * 0.3
+			+ (1.0 / (1.0 + (julianday('now') - julianday(m.created_at)) / 7.0)) * 0.3
 			+ (MIN(fts.rank) * -0.5)
 			DESC
 		LIMIT ?`, strings.Join(where, " AND "))
 
 	args = append(args, ftsQuery, limit)
 
-	// Try FTS5 first; on error fall back to LIKE entirely
-	rows, err := s.db.QueryContext(ctx, sql, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return s.searchLike(ctx, p, where, limit)
+		return nil
 	}
 	defer rows.Close()
 
@@ -130,7 +221,7 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	for rows.Next() {
 		m, err := scanMemory(rows)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		if seen[m.ID] {
 			continue
@@ -138,46 +229,7 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		seen[m.ID] = true
 		results = append(results, SearchResult{Memory: m})
 	}
-
-	// Supplement with LIKE matches (catches key matches and content that FTS5 tokenizer misses)
-	if len(results) < limit {
-		likeResults, err := s.searchLike(ctx, p, where, limit-len(results))
-		if err == nil {
-			for _, r := range likeResults {
-				if !seen[r.ID] {
-					seen[r.ID] = true
-					results = append(results, r)
-				}
-			}
-		}
-	}
-
-	// If embedder is available, do vector search and merge/re-rank
-	if s.embedder != nil {
-		vecResults, err := s.searchVector(ctx, p, seen, limit)
-		if err == nil && len(vecResults) > 0 {
-			for _, r := range vecResults {
-				if !seen[r.ID] {
-					seen[r.ID] = true
-					results = append(results, r)
-				}
-			}
-			// Re-rank by similarity when we have vector scores
-			sort.Slice(results, func(i, j int) bool {
-				// Prefer higher similarity; fall back to recency
-				si, sj := results[i].Similarity, results[j].Similarity
-				if si != sj {
-					return si > sj
-				}
-				return results[i].CreatedAt.After(results[j].CreatedAt)
-			})
-			if len(results) > limit {
-				results = results[:limit]
-			}
-		}
-	}
-
-	return results, nil
+	return results
 }
 
 // searchVector performs semantic search using embeddings.
@@ -209,6 +261,7 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
+		       m.importance, m.utility_count, m.tier, m.est_tokens,
 		       c.embedding
 		FROM memories m
 		INNER JOIN (
@@ -217,7 +270,9 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 			GROUP BY ns, key
 		) latest ON m.ns = latest.ns AND m.key = latest.key AND m.version = latest.max_ver
 		INNER JOIN chunks c ON c.memory_id = m.id
-		WHERE %s`, where)
+		WHERE %s
+		ORDER BY m.created_at DESC
+		LIMIT 500`, where)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -279,13 +334,16 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 // scanMemoryWithExtra scans a memory row plus additional columns.
 func scanMemoryWithExtra(row scanner, extras ...interface{}) (model.Memory, error) {
 	var m model.Memory
-	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt sql.NullString
+	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier sql.NullString
 	var createdAt string
+	var importance sql.NullFloat64
+	var utilityCount, estTokens sql.NullInt64
 
 	dest := []interface{}{
 		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
 		&m.Version, &supersedes, &createdAt, &deletedAt,
 		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
+		&importance, &utilityCount, &tier, &estTokens,
 	}
 	dest = append(dest, extras...)
 
@@ -315,6 +373,22 @@ func scanMemoryWithExtra(row scanner, extras ...interface{}) (model.Memory, erro
 	if expiresAt.Valid {
 		t, _ := time.Parse(time.RFC3339, expiresAt.String)
 		m.ExpiresAt = &t
+	}
+	if importance.Valid {
+		m.Importance = importance.Float64
+	} else {
+		m.Importance = 0.5
+	}
+	if utilityCount.Valid {
+		m.UtilityCount = int(utilityCount.Int64)
+	}
+	if tier.Valid {
+		m.Tier = tier.String
+	} else {
+		m.Tier = "stm"
+	}
+	if estTokens.Valid {
+		m.EstTokens = int(estTokens.Int64)
 	}
 
 	return m, nil
@@ -364,7 +438,8 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 
 	sql := fmt.Sprintf(`
 		SELECT DISTINCT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
-		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at
+		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
+		       m.importance, m.utility_count, m.tier, m.est_tokens
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver

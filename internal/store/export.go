@@ -22,7 +22,8 @@ func (s *SQLiteStore) ExportAll(ctx context.Context, ns string) ([]model.Memory,
 	}
 
 	query := `SELECT id, ns, key, content, kind, tags, version, supersedes,
-	                 created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+	                 created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+	                 importance, utility_count, tier, est_tokens
 	          FROM memories WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ns, key, version`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

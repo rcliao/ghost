@@ -133,6 +133,38 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE memories ADD COLUMN expires_at TEXT`)
 	s.db.Exec(`ALTER TABLE chunks ADD COLUMN embedding TEXT`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)`)
+
+	// Phase 2 columns
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`)
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN utility_count INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN tier TEXT NOT NULL DEFAULT 'stm'`)
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN est_tokens INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)`)
+
+	// Phase 3: reflect_rules table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS reflect_rules (
+		id              TEXT PRIMARY KEY,
+		ns              TEXT NOT NULL DEFAULT '',
+		name            TEXT NOT NULL,
+		priority        INTEGER NOT NULL DEFAULT 50,
+		scope           TEXT NOT NULL DEFAULT 'reflect',
+		created_by      TEXT NOT NULL DEFAULT 'system',
+		cond_tier       TEXT,
+		cond_age_gt_hours REAL,
+		cond_importance_lt REAL,
+		cond_access_lt  INTEGER,
+		cond_access_gt  INTEGER,
+		cond_utility_lt REAL,
+		cond_kind       TEXT,
+		cond_tag_includes TEXT,
+		action_op       TEXT NOT NULL,
+		action_params   TEXT,
+		rule_expires_at TEXT,
+		created_at      TEXT NOT NULL
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rules_ns ON reflect_rules(ns, scope)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rules_priority ON reflect_rules(priority DESC)`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS memory_files (
 		memory_id TEXT NOT NULL REFERENCES memories(id),
 		path      TEXT NOT NULL,
@@ -157,7 +189,19 @@ func (s *SQLiteStore) migrate() error {
 	// Backfill FTS for any existing chunks not yet indexed
 	s.db.Exec(`INSERT OR IGNORE INTO chunks_fts(rowid, text) SELECT rowid, text FROM chunks`)
 
+	// Seed built-in reflect rules
+	s.seedBuiltinRules()
+
 	return nil
+}
+
+func tierOrDefault(tier string) string {
+	switch tier {
+	case "stm", "ltm", "identity", "dormant":
+		return tier
+	default:
+		return "stm"
+	}
 }
 
 func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, error) {
@@ -220,11 +264,17 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		supersedes = &prevID
 	}
 
+	importance := p.Importance
+	if importance <= 0 {
+		importance = 0.5
+	}
+	estTokens := estimateTokens(p.Content)
+
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at, importance, est_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
 		id, p.NS, p.Key, p.Content, kind, tagsJSON, version, supersedes,
-		now.Format(time.RFC3339), priority, metaPtr, expiresAt)
+		now.Format(time.RFC3339), priority, metaPtr, expiresAt, importance, estTokens)
 	if err != nil {
 		return nil, fmt.Errorf("insert memory: %w", err)
 	}
@@ -285,6 +335,9 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		Version:    version,
 		CreatedAt:  now,
 		Priority:   priority,
+		Importance: importance,
+		Tier:       tierOrDefault(p.Tier),
+		EstTokens:  estTokens,
 		Meta:       p.Meta,
 		ChunkCount: len(chunks),
 		Files:      fileRefs,
@@ -309,20 +362,23 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 	if p.History {
 		// History shows all versions including expired (for audit)
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
-				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+				        importance, utility_count, tier, est_tokens
 				 FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
 				 ORDER BY version DESC`
 		args = []interface{}{p.NS, p.Key}
 	} else if p.Version > 0 {
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
-				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+				        importance, utility_count, tier, est_tokens
 				 FROM memories WHERE ns = ? AND key = ? AND version = ? AND deleted_at IS NULL
 				   AND (expires_at IS NULL OR expires_at > ?)
 				 LIMIT 1`
 		args = []interface{}{p.NS, p.Key, p.Version, now}
 	} else {
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
-				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+				        importance, utility_count, tier, est_tokens
 				 FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
 				   AND (expires_at IS NULL OR expires_at > ?)
 				 ORDER BY version DESC LIMIT 1`
@@ -366,7 +422,8 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 
 func (s *SQLiteStore) History(ctx context.Context, p HistoryParams) ([]model.Memory, error) {
 	query := `SELECT id, ns, key, content, kind, tags, version, supersedes,
-			         created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at
+			         created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+				        importance, utility_count, tier, est_tokens
 			  FROM memories WHERE ns = ? AND key = ?
 			  ORDER BY version ASC`
 
@@ -429,7 +486,8 @@ func (s *SQLiteStore) List(ctx context.Context, p ListParams) ([]model.Memory, e
 
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
-		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at
+		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
+		       m.importance, m.utility_count, m.tier, m.est_tokens
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -623,6 +681,18 @@ func (s *SQLiteStore) GCStale(ctx context.Context, staleThreshold time.Duration)
 	result.MemoriesDeleted, err = res.RowsAffected()
 	if err != nil {
 		return result, err
+	}
+
+	// Also prune low-utility memories: accessed 5+ times but useful <20%
+	utilRes, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET deleted_at = ?
+		 WHERE deleted_at IS NULL
+		   AND access_count >= 5
+		   AND utility_count > 0
+		   AND CAST(utility_count AS REAL) / CAST(access_count AS REAL) < 0.2`, nowStr)
+	if err == nil {
+		n, _ := utilRes.RowsAffected()
+		result.MemoriesDeleted += n
 	}
 
 	return result, nil
@@ -928,6 +998,154 @@ func (s *SQLiteStore) RemoveTag(ctx context.Context, tag, ns string) (int, error
 	return len(updates), nil
 }
 
+// estimateTokens returns a rough token count for content.
+func estimateTokens(content string) int {
+	return (len(content) / 4) + 20
+}
+
+// UtilityInc increments the utility_count for a memory.
+func (s *SQLiteStore) UtilityInc(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET utility_count = utility_count + 1 WHERE id = ? AND deleted_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("memory not found: %s", id)
+	}
+	return nil
+}
+
+// touchMemories batch-updates access_count and last_accessed_at for the given memory IDs.
+func (s *SQLiteStore) touchMemories(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	now := time.Now().UTC().Format(time.RFC3339)
+	args := []interface{}{now}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN (%s) AND deleted_at IS NULL`, placeholders),
+		args...,
+	)
+	return err
+}
+
+// Peek returns a lightweight index of memory state for lazy discovery.
+func (s *SQLiteStore) Peek(ctx context.Context, ns string) (*PeekResult, error) {
+	result := &PeekResult{
+		NS:             ns,
+		MemoryCounts:   map[string]int{},
+		TotalEstTokens: map[string]int{},
+	}
+
+	// Build WHERE clause for namespace filter
+	where := "deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)"
+	args := []interface{}{time.Now().UTC().Format(time.RFC3339)}
+	if ns != "" {
+		nsf := ParseNSFilter(ns)
+		clause, nsArgs := nsf.SQL("ns")
+		if clause != "" {
+			where += " AND " + clause
+			args = append(args, nsArgs...)
+		}
+	}
+
+	// 1. Memory counts and token totals by tier
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT tier, COUNT(*), COALESCE(SUM(est_tokens), 0)
+			FROM memories WHERE %s GROUP BY tier`, where), args...)
+	if err != nil {
+		return nil, fmt.Errorf("peek tier counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tier string
+		var count, tokens int
+		if err := rows.Scan(&tier, &count, &tokens); err != nil {
+			return nil, err
+		}
+		result.MemoryCounts[tier] = count
+		result.TotalEstTokens[tier] = tokens
+	}
+
+	// 2. Identity summary (first identity-tier memory)
+	var identContent sql.NullString
+	s.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT content FROM memories WHERE %s AND tier = 'identity'
+			ORDER BY importance DESC, created_at DESC LIMIT 1`, where), args...).Scan(&identContent)
+	if identContent.Valid {
+		result.IdentitySummary = truncate(identContent.String, 200)
+	}
+
+	// 3. Recent topics: top-5 tags by recency
+	tagRows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT tags FROM memories WHERE %s AND tags IS NOT NULL
+			ORDER BY created_at DESC LIMIT 20`, where), args...)
+	if err == nil {
+		defer tagRows.Close()
+		tagSeen := map[string]bool{}
+		var topics []string
+		for tagRows.Next() && len(topics) < 5 {
+			var tagsJSON string
+			if tagRows.Scan(&tagsJSON) != nil {
+				continue
+			}
+			var tags []string
+			if json.Unmarshal([]byte(tagsJSON), &tags) != nil {
+				continue
+			}
+			for _, t := range tags {
+				if !tagSeen[t] && len(topics) < 5 {
+					tagSeen[t] = true
+					topics = append(topics, t)
+				}
+			}
+		}
+		result.RecentTopics = topics
+	}
+	if result.RecentTopics == nil {
+		result.RecentTopics = []string{}
+	}
+
+	// 4. Top-5 by importance
+	stubRows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT id, key, kind, tier, importance, est_tokens, content
+			FROM memories WHERE %s
+			ORDER BY importance DESC, created_at DESC LIMIT 5`, where), args...)
+	if err != nil {
+		return nil, fmt.Errorf("peek high importance: %w", err)
+	}
+	defer stubRows.Close()
+	for stubRows.Next() {
+		var stub MemoryStub
+		var content string
+		if err := stubRows.Scan(&stub.ID, &stub.Key, &stub.Kind, &stub.Tier,
+			&stub.Importance, &stub.EstTokens, &content); err != nil {
+			return nil, err
+		}
+		stub.Summary = truncate(content, 80)
+		result.HighImportance = append(result.HighImportance, stub)
+	}
+	if result.HighImportance == nil {
+		result.HighImportance = []MemoryStub{}
+	}
+
+	return result, nil
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
@@ -938,13 +1156,16 @@ type scanner interface {
 
 func scanMemory(row scanner) (model.Memory, error) {
 	var m model.Memory
-	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt sql.NullString
+	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier sql.NullString
 	var createdAt string
+	var importance sql.NullFloat64
+	var utilityCount, estTokens sql.NullInt64
 
 	err := row.Scan(
 		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
 		&m.Version, &supersedes, &createdAt, &deletedAt,
 		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
+		&importance, &utilityCount, &tier, &estTokens,
 	)
 	if err != nil {
 		return m, err
@@ -971,6 +1192,22 @@ func scanMemory(row scanner) (model.Memory, error) {
 	if expiresAt.Valid {
 		t, _ := time.Parse(time.RFC3339, expiresAt.String)
 		m.ExpiresAt = &t
+	}
+	if importance.Valid {
+		m.Importance = importance.Float64
+	} else {
+		m.Importance = 0.5
+	}
+	if utilityCount.Valid {
+		m.UtilityCount = int(utilityCount.Int64)
+	}
+	if tier.Valid {
+		m.Tier = tier.String
+	} else {
+		m.Tier = "stm"
+	}
+	if estTokens.Valid {
+		m.EstTokens = int(estTokens.Int64)
 	}
 
 	return m, nil

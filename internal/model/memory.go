@@ -20,6 +20,10 @@ type Memory struct {
 	LastAccessedAt *time.Time `json:"last_accessed_at,omitempty"`
 	Meta           string     `json:"meta,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Importance     float64    `json:"importance"`
+	UtilityCount   int        `json:"utility_count"`
+	Tier           string     `json:"tier"`
+	EstTokens      int        `json:"est_tokens"`
 	ChunkCount     int        `json:"chunks,omitempty"`
 	Files          []FileRef  `json:"files,omitempty"`
 }
