@@ -169,9 +169,35 @@ Three methods, fused via Reciprocal Rank Fusion (RRF):
 
 1. **FTS5** — Full-text search with stop-word filtering. Primary method.
 2. **LIKE fallback** — Substring matching when FTS5 yields no results.
-3. **Vector embeddings** — Cosine similarity (optional, requires embedder config).
+3. **Vector embeddings** — Cosine similarity using all-MiniLM-L6-v2 (enabled by default).
 
 RRF combines ranks: `score = Σ 1/(60 + rank_i)` across methods.
+
+### Vector Embeddings
+
+Ghost generates 384-dimensional vector embeddings for each memory chunk using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), a sentence transformer optimized for semantic similarity. This enables semantic search — finding memories by meaning, not just keyword overlap.
+
+**How it works:**
+- On `ghost put`, each chunk gets an embedding vector stored alongside its text
+- On `ghost search`, the query is also embedded and compared via cosine similarity
+- Vector results are fused with FTS5 and LIKE results via RRF
+
+**Providers** (configured via `GHOST_EMBED_PROVIDER`):
+
+| Provider | Value | Notes |
+|----------|-------|-------|
+| Local (default) | `local` or unset | all-MiniLM-L6-v2 via hugot/GoMLX. Pure Go, no external service. Model (~86MB) auto-downloaded on first use to `~/.ghost/models/`. |
+| Ollama | `ollama` | Uses a local Ollama instance. Set `GHOST_EMBED_MODEL` for model selection. |
+| OpenAI | `openai` | OpenAI-compatible API. Requires `OPENAI_API_KEY`. |
+| Disabled | `none` | No vector embeddings. Search uses FTS5 + LIKE only. |
+
+**Backfilling existing data:**
+
+Memories stored before embeddings were enabled have `NULL` embeddings. Run once to backfill:
+
+```bash
+ghost embed backfill
+```
 
 ### Context Assembly
 

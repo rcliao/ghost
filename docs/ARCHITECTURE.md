@@ -40,7 +40,7 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 | `internal/store` | `Store` interface + `SQLiteStore` implementation | ~4400 src / ~3700 test |
 | `internal/model` | Core data types: `Memory`, `Chunk`, `FileRef` | 68 LOC |
 | `internal/chunker` | Markdown-aware text splitting (~400 char targets) | 193 LOC |
-| `internal/embedding` | Pluggable vector embeddings (Ollama, OpenAI) | 218 LOC |
+| `internal/embedding` | Pluggable vector embeddings (local/Ollama/OpenAI) | ~320 LOC |
 | `internal/ingest` | Markdown file parser (H2 → sections → memories) | 154 LOC |
 | `internal/mcpserver` | MCP server over stdio (3 tools: put, search, context) | 210 LOC |
 | `memory.go` | Public library API — re-exports from internal packages | 102 LOC |
@@ -114,7 +114,7 @@ Three methods fused via **Reciprocal Rank Fusion** (RRF, k=60):
 
 1. **FTS5** — Full-text search with stop-word filtering and priority/recency scoring
 2. **LIKE fallback** — Per-term substring matching across content, keys, and chunks
-3. **Vector embeddings** — Cosine similarity (optional, requires `GHOST_EMBED_PROVIDER`)
+3. **Vector embeddings** — Cosine similarity via all-MiniLM-L6-v2 (enabled by default, pure Go)
 
 RRF merges ranked results: `score = Σ 1/(60 + rank_i)` across methods.
 
@@ -204,6 +204,7 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | `github.com/spf13/cobra` | CLI framework |
 | `github.com/oklog/ulid/v2` | Time-sortable unique IDs |
 | `github.com/modelcontextprotocol/go-sdk` | MCP server protocol |
+| `github.com/knights-analytics/hugot` | Local sentence embeddings (all-MiniLM-L6-v2 via GoMLX, pure Go) |
 
 ## Key Design Decisions
 
@@ -216,6 +217,17 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 4. **Budget-aware retrieval.** Context assembly respects token budgets with greedy packing and excerpting.
 
 5. **Backwards compatible storage.** Schema changes use `ALTER TABLE ADD COLUMN` with safe defaults. Existing data always remains readable.
+
+## Embedding Providers
+
+Ghost supports pluggable embedding providers via `GHOST_EMBED_PROVIDER`:
+
+| Provider | Value | Description |
+|----------|-------|-------------|
+| **Local** (default) | `local` or unset | all-MiniLM-L6-v2 via hugot/GoMLX. Pure Go, no CGo. Model (~86MB) downloaded on first use to `~/.ghost/models/`. ~80ms per embedding. |
+| Ollama | `ollama` | Local Ollama instance. Configurable model via `GHOST_EMBED_MODEL`. |
+| OpenAI | `openai` | OpenAI-compatible API. Requires `OPENAI_API_KEY`. |
+| Disabled | `none` | No vector embeddings. Search uses FTS5 + LIKE only. |
 
 ## DB Path Resolution
 

@@ -9,7 +9,7 @@ Persistent memory system for AI agents. Single binary, SQLite-backed, zero serve
 - `internal/store/` — `Store` interface + `SQLiteStore` implementation (SQLite with FTS5)
 - `internal/model/` — Data types: `Memory`, `Chunk`, `FileRef`
 - `internal/chunker/` — Text chunking for search indexing (400 char target)
-- `internal/embedding/` — Pluggable vector embeddings (Ollama, OpenAI)
+- `internal/embedding/` — Pluggable vector embeddings (local all-MiniLM-L6-v2 default, Ollama, OpenAI)
 - `internal/ingest/` — Markdown file parsing into memories
 - `memory.go` — Public API re-exports for library use
 
@@ -20,13 +20,12 @@ make build     # Build ./ghost binary
 make test      # Run all Go tests
 make vet       # Run go vet
 make install   # Install to $GOPATH/bin
-bash test/acceptance.sh  # End-to-end CLI tests
 ```
 
 ## Key Patterns
 
 - Memories indexed by (namespace, key) with automatic versioning
-- Search: FTS5 ranked → LIKE fallback → vector embeddings (if configured)
+- Search: FTS5 ranked → LIKE fallback → vector embeddings (enabled by default via local all-MiniLM-L6-v2)
 - Context assembly fills a token budget scored by relevance, recency, and priority
 - Soft-delete (recoverable) vs hard-delete (permanent)
 - TTL/expiration support with auto-GC on startup

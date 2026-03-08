@@ -31,10 +31,21 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
-func TestNewFromEnv_Disabled(t *testing.T) {
-	// With no env vars set, should return nil
+func TestNewFromEnv_DefaultLocal(t *testing.T) {
+	// With no env vars set, should return a LocalEmbedder (default)
+	e := NewFromEnv()
+	if e == nil {
+		t.Fatal("expected non-nil embedder when no provider configured")
+	}
+	if _, ok := e.(*LocalEmbedder); !ok {
+		t.Errorf("expected *LocalEmbedder, got %T", e)
+	}
+}
+
+func TestNewFromEnv_None(t *testing.T) {
+	t.Setenv("GHOST_EMBED_PROVIDER", "none")
 	e := NewFromEnv()
 	if e != nil {
-		t.Error("expected nil embedder when no provider configured")
+		t.Error("expected nil embedder when provider is 'none'")
 	}
 }

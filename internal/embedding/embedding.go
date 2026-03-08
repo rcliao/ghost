@@ -184,11 +184,15 @@ func (e *OpenAIEmbedder) Dims() int { return e.dims }
 // --- Factory ---
 
 // NewFromEnv creates an embedder from environment variables.
-// GHOST_EMBED_PROVIDER: "ollama" | "openai" | "" (disabled)
-// GHOST_EMBED_MODEL: model name
-// GHOST_EMBED_URL: base URL override
+// GHOST_EMBED_PROVIDER: "local" (default) | "ollama" | "openai" | "none"
+// GHOST_EMBED_MODEL: model name (for ollama/openai)
+// GHOST_EMBED_URL: base URL override (for ollama/openai)
 // OPENAI_API_KEY: for openai provider
 // Legacy AGENT_MEMORY_EMBED_* vars are checked as fallbacks.
+//
+// When no provider is set, defaults to "local" which runs all-MiniLM-L6-v2
+// in pure Go. The model is downloaded on first use (~86MB) to ~/.ghost/models/.
+// Set GHOST_EMBED_PROVIDER=none to disable embeddings entirely.
 func NewFromEnv() Embedder {
 	provider := envWithFallback("GHOST_EMBED_PROVIDER", "AGENT_MEMORY_EMBED_PROVIDER")
 	model := envWithFallback("GHOST_EMBED_MODEL", "AGENT_MEMORY_EMBED_MODEL")
@@ -203,8 +207,11 @@ func NewFromEnv() Embedder {
 		url := envWithFallback("GHOST_EMBED_URL", "AGENT_MEMORY_EMBED_URL")
 		key := os.Getenv("OPENAI_API_KEY")
 		return NewOpenAIEmbedder(url, key, model, 0)
+	case "none":
+		return nil // embeddings explicitly disabled
 	default:
-		return nil // embeddings disabled
+		// Default to local embeddings (all-MiniLM-L6-v2, pure Go)
+		return NewLocalEmbedder()
 	}
 }
 

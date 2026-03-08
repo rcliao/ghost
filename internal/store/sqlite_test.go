@@ -11,6 +11,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestMain(m *testing.M) {
+	// Disable local embeddings in tests to avoid model download and
+	// keep search result counts deterministic.
+	os.Setenv("GHOST_EMBED_PROVIDER", "none")
+	os.Exit(m.Run())
+}
+
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	dir := t.TempDir()
