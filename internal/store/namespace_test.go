@@ -27,7 +27,8 @@ func TestValidateNS(t *testing.T) {
 		{":leading", true},                                                      // leading colon
 		{"trailing:", true},                                                     // trailing colon
 		{"double::colon", true},                                                 // consecutive colons
-		{"-starts-with-dash", true},                                             // segment starts with dash
+		{"-1009999999999", false},                                               // negative chat ID (valid)
+		{"relay:chat:-1009999999999", false},                                    // negative chat ID in namespace (valid)
 		{"_starts-with-underscore", true},                                       // segment starts with underscore
 		{"has space", true},                                                     // space
 		{"has/slash", true},                                                     // slash

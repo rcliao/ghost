@@ -9,9 +9,10 @@ import (
 // nsMaxLen is the maximum length of a namespace.
 const nsMaxLen = 128
 
-// nsSegmentRegex matches valid namespace segments: starts with a letter or digit,
-// followed by letters, digits, hyphens, or underscores.
-var nsSegmentRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+// nsSegmentRegex matches valid namespace segments: starts with a letter, digit,
+// or hyphen (for negative IDs like Telegram group chats), followed by letters,
+// digits, hyphens, or underscores.
+var nsSegmentRegex = regexp.MustCompile(`^[a-zA-Z0-9-][a-zA-Z0-9_-]*$`)
 
 // ValidateNS validates a namespace string. A valid namespace:
 //   - Is non-empty and <= 128 chars
