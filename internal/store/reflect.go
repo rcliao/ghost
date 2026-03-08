@@ -70,6 +70,15 @@ var validActionOps = map[string]bool{
 // builtinRules are seeded on startup with ON CONFLICT IGNORE semantics.
 var builtinRules = []ReflectRule{
 	{
+		ID:        "sys-pin-identity",
+		Name:      "Protect identity-tier memories from decay/demotion",
+		Scope:     "reflect",
+		Priority:  1,
+		CreatedBy: "system",
+		Cond:      RuleCond{Tier: "identity"},
+		Action:    RuleAction{Op: "PIN"},
+	},
+	{
 		ID:        "sys-decay-unaccessed",
 		Name:      "Decay importance for unaccessed STM memories",
 		Scope:     "reflect",

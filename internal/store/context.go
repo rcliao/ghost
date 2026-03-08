@@ -51,14 +51,20 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	usedTokens := 0
 	seen := map[string]bool{} // track memory IDs to deduplicate
 
+	// Default PinTiers to identity + ltm when not explicitly set.
+	pinTiers := p.PinTiers
+	if len(pinTiers) == 0 {
+		pinTiers = []string{"identity", "ltm"}
+	}
+
 	// Phase 1: Load pinned tier memories first
-	if len(p.PinTiers) > 0 {
+	if len(pinTiers) > 0 {
 		pinBudget := p.PinBudget
 		if pinBudget <= 0 {
 			pinBudget = budget / 3
 		}
 
-		pinned, err := s.loadPinnedTierMemories(ctx, p.NS, p.PinTiers)
+		pinned, err := s.loadPinnedTierMemories(ctx, p.NS, pinTiers)
 		if err != nil {
 			return nil, fmt.Errorf("load pinned tiers: %w", err)
 		}
@@ -147,8 +153,11 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 			}
 		}
 
-		// Composite score (matching design doc weights)
-		score := relevance*0.4 + recency*0.2 + importance*0.2 + accessFreq*0.2
+		// Tier boost: identity/ltm memories score higher than stm/dormant
+		tierBoost := tierScore(m.Tier)
+
+		// Composite score: relevance + recency + importance + access + tier
+		score := relevance*0.35 + recency*0.15 + importance*0.2 + accessFreq*0.15 + tierBoost*0.15
 
 		candidates = append(candidates, scored{memory: m, score: score})
 	}
@@ -262,6 +271,21 @@ func (s *SQLiteStore) loadPinnedTierMemories(ctx context.Context, ns string, tie
 		memories = append(memories, m)
 	}
 	return memories, nil
+}
+
+func tierScore(tier string) float64 {
+	switch tier {
+	case "identity":
+		return 1.0
+	case "ltm":
+		return 0.75
+	case "stm":
+		return 0.25
+	case "dormant":
+		return 0.1
+	default:
+		return 0.25
+	}
 }
 
 func priorityScore(p string) float64 {
