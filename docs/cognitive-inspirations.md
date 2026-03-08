@@ -1,0 +1,164 @@
+# Cognitive Science Inspirations
+
+The science behind ghost's memory design — what we borrowed, what we adapted, and where we intentionally diverge.
+
+---
+
+## Tulving's Memory Taxonomy → Memory Kinds
+
+Endel Tulving (1972) distinguished three types of long-term memory:
+
+- **Semantic** — general world knowledge, facts, concepts ("I know that Paris is a capital")
+- **Episodic** — autobiographical events with temporal context ("I remember visiting Paris last summer")
+- **Procedural** — skills, routines, how-to knowledge ("I know how to ride a bike")
+
+Ghost adopts these directly as `kind`: `semantic`, `episodic`, `procedural`.
+
+We keep kinds as a pure classification — they describe _what type_ of knowledge a memory holds. We intentionally do not vary retrieval behavior by kind (e.g., weighting recency higher for episodic). This is a simplification: Tulving argued these are fundamentally different memory systems with different retrieval mechanisms. We chose a single retrieval pipeline for simplicity, and use **namespaces** for organizational structure instead.
+
+**What we left out:** Tulving later expanded to five systems (adding priming and perceptual memory). These don't map well to text-based agent memory, so we stopped at three.
+
+---
+
+## Atkinson-Shiffrin Model → Memory Tiers
+
+The multi-store model (Atkinson & Shiffrin, 1968) proposes three sequential stores:
+
+```
+Sensory → Short-Term Memory → Long-Term Memory
+              (limited,            (unlimited,
+               decays fast)         durable)
+```
+
+Information flows from sensory to STM via _attention_, and from STM to LTM via _rehearsal_. Without rehearsal, STM contents decay.
+
+Ghost's tier system is a direct adaptation:
+
+| Cognitive model | Ghost tier | Behavior |
+|----------------|-----------|----------|
+| (Context window) | — | The LLM's context window acts as sensory/working memory — outside ghost's scope |
+| Short-term memory | `stm` | Default tier. Subject to importance decay |
+| Long-term memory | `ltm` | Promoted from STM after repeated access (the "rehearsal" analog) |
+| — | `identity` | No direct analog. Functions like _self-schema_ — permanently accessible core knowledge |
+| — | `dormant` | Closest to "forgotten but recoverable" — Ebbinghaus showed even forgotten material has "savings" on relearning |
+
+**What we adapted:** The original model has no "identity" tier. We added it because agents need permanently pinned knowledge (role, core instructions) that should never decay. Cognitively, this resembles _autobiographical self-knowledge_ — the facts about yourself you never forget.
+
+**What we left out:** Sensory memory (millisecond-scale raw perception buffer). For an agent, the LLM's context window fills this role. Ghost starts at STM because there's no meaningful pre-attentive stage for a CLI memory tool.
+
+---
+
+## Ebbinghaus Forgetting Curve → Importance Decay
+
+Hermann Ebbinghaus (1885) discovered that memory retention decays exponentially:
+
+```
+R = e^(-t/S)
+```
+
+Where R is retention, t is time, S is memory strength. Key findings:
+- ~50% lost within 1 hour, ~70% within 24 hours
+- Each rehearsal strengthens the memory and slows future decay
+- Meaningful material decays slower than meaningless material
+
+Ghost uses this in two places:
+
+1. **Context scoring** applies recency decay: `recency = e^(-0.1 × age_days)` — a 7-day half-life. Recent memories score higher.
+
+2. **Reflect rules** decay importance for unaccessed STM memories: `importance *= 0.95` per cycle. The minimum floor of 0.1 prevents complete forgetting — inspired by Ebbinghaus's "savings" effect (even forgotten material is faster to relearn).
+
+**Where we diverge:** Ebbinghaus showed that _each repetition lengthens the decay interval_. Ghost's decay rate is fixed — a memory accessed 10 times decays at the same rate as one accessed 4 times. We use access count for _promotion_ decisions instead (>3 accesses → promote to LTM), which is a coarser but simpler approximation.
+
+---
+
+## Spaced Repetition → Access-Based Promotion
+
+The spaced repetition effect (Ebbinghaus, 1885; Leitner, 1972) shows that reviewing material at expanding intervals produces dramatically better retention. The testing effect (Roediger & Karpicke, 2006) adds that _active retrieval_ strengthens memory more than passive re-exposure.
+
+Ghost's promotion rule (`sys-promote-to-ltm`) is inspired by this: if a memory has been accessed 3+ times over 24+ hours, it has proven its value through repeated retrieval and earns promotion to LTM.
+
+The `utility_count` field goes further than classical spaced repetition — it tracks not just _whether_ a memory was retrieved, but whether it was _useful_. This maps to the testing effect's insight that successful, purposeful recall strengthens memory more than rote retrieval. The utility ratio (`utility_count / access_count`) lets the reflect system prune memories that are frequently surfaced but rarely helpful.
+
+**Where we simplify:** True SRS (like Anki) schedules proactive reviews at expanding intervals. Ghost is purely reactive — memories are only accessed when a search or context query surfaces them. We don't schedule reviews because ghost is a tool, not a tutor.
+
+---
+
+## Memory Consolidation → The Reflect System
+
+In neuroscience, consolidation is how fragile short-term memories become stable long-term ones. Two stages:
+
+1. **Synaptic consolidation** (hours) — strengthens neural connections
+2. **Systems consolidation** (weeks–years) — transfers memories from hippocampus to neocortex
+
+Sleep plays a critical role: slow oscillations coordinate the transfer. The brain consolidates _during quiet periods_, not during active processing.
+
+Ghost's `reflect` command is the consolidation analog. It evaluates rule-based conditions and applies tier transitions:
+
+```
+STM (unaccessed, decaying) → dormant     [synaptic trace weakening]
+STM (repeatedly accessed)  → LTM         [hippocampal-to-cortical transfer]
+LTM (stale, unused)        → dormant     [cortical trace weakening]
+Low utility                 → deleted     [synaptic pruning]
+```
+
+**Where we diverge significantly:** Brain consolidation _transforms_ memories — abstracting, generalizing, and integrating them with existing knowledge. Ghost's reflect only changes metadata (tier, importance). It never synthesizes new content from existing memories. This is the largest gap between ghost and the cognitive science. Park et al.'s Generative Agents (2023) implement this missing piece with a "reflection" mechanism that generates higher-level insights from raw memories — something ghost could adopt in the future.
+
+**Another divergence:** Consolidation happens during sleep — a quiet period. Ghost's reflect runs on-demand, regardless of agent activity. There's no concept of "idle-time processing."
+
+---
+
+## Levels of Processing → Importance at Write Time
+
+Craik & Lockhart (1972) proposed that memory durability depends on _how deeply_ information is processed during encoding:
+
+- **Shallow** — surface features (what does it look like?)
+- **Deep** — meaning, associations, implications (what does it mean?)
+
+Deeper processing → more durable memory traces.
+
+Ghost approximates this with the `importance` field (0.0–1.0), set at write time. The agent decides how important a memory is when storing it — a rough proxy for encoding depth. High-importance memories resist decay and rank higher in context assembly.
+
+**Where we simplify:** Ghost relies on the _caller_ to judge importance. The original theory is about the encoding _process_ itself, not a label. We chose explicit over implicit — the agent declares importance rather than ghost trying to infer it.
+
+---
+
+## Influences from Recent Agent Memory Research
+
+### Park et al. — Generative Agents (2023)
+
+Their retrieval scoring formula influenced ghost's context assembly:
+
+| Park et al. | Ghost |
+|------------|-------|
+| Recency (1/3) | Recency (0.2) |
+| Importance (1/3) | Importance (0.2) |
+| Relevance (1/3) | Relevance (0.4) |
+| — | Access frequency (0.2) |
+
+We weight relevance higher (0.4 vs 1/3) because ghost serves task-oriented agents, not social simulation. We added access frequency as a fourth signal — absent in Park et al. — because repeated retrieval is a strong signal for agent memory.
+
+### MemGPT / Letta (2023)
+
+MemGPT's insight: treat the LLM context window as constrained RAM, with tiered overflow to external storage. Ghost's two-phase context assembly (pinned tiers first, then search) mirrors this: `identity` and `ltm` are "core memory" (always loaded), while `stm` and search results are "archival memory" (loaded on demand within budget).
+
+### ReMe (2024)
+
+ReMe's utility-based evaluation inspired ghost's `utility_count` / `access_count` ratio. The idea: track not just _how often_ a memory is retrieved, but _whether it actually helped_. This enables principled pruning of high-access, low-value memories.
+
+---
+
+## Summary: What We Borrowed vs. Where We Diverge
+
+| Inspiration | What ghost does | Where ghost diverges |
+|------------|----------------|---------------------|
+| Tulving's taxonomy | 3 kinds: semantic, episodic, procedural | Kinds are labels only — no different retrieval strategies per kind |
+| Atkinson-Shiffrin | 4 tiers: stm → ltm → identity → dormant | Added identity tier (no cognitive analog); skipped sensory tier |
+| Ebbinghaus decay | Exponential recency scoring, importance decay with minimum floor | Fixed decay rate — doesn't lengthen intervals after rehearsal |
+| Spaced repetition | Access-count-based promotion to LTM | Reactive only — no proactive review scheduling |
+| Consolidation | Reflect system with rule-based tier transitions | No content transformation — only metadata changes |
+| Levels of processing | Explicit importance at write time | Caller-declared, not encoding-depth-inferred |
+| Park et al. | 4-factor retrieval scoring | Higher relevance weight, added access frequency |
+| MemGPT | Pinned tiers + search-based overflow | No self-editing — agent must explicitly store/update |
+| ReMe | Utility ratio for pruning | Explicit utility-inc, not automatically inferred |
+
+The unifying design choice: **ghost stays mechanical**. No LLM calls inside the library. Decay, promotion, and pruning follow deterministic rules. The intelligence lives in the calling agent — ghost is the storage and retrieval layer that makes that intelligence persistent.
