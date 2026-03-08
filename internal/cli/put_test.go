@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 func TestPutWithFilesFlag(t *testing.T) {

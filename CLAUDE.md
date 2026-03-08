@@ -1,10 +1,10 @@
-# agent-memory
+# ghost
 
 Persistent memory system for AI agents. Single binary, SQLite-backed, zero server dependencies.
 
 ## Architecture
 
-- `cmd/agent-memory/main.go` — Entrypoint, delegates to `cli.RootCmd`
+- `cmd/ghost/main.go` — Entrypoint, delegates to `cli.RootCmd`
 - `internal/cli/` — Cobra commands (put, get, list, search, context, rm, gc, export/import, etc.)
 - `internal/store/` — `Store` interface + `SQLiteStore` implementation (SQLite with FTS5)
 - `internal/model/` — Data types: `Memory`, `Chunk`, `FileRef`
@@ -16,7 +16,7 @@ Persistent memory system for AI agents. Single binary, SQLite-backed, zero serve
 ## Build & Test
 
 ```bash
-make build     # Build ./agent-memory binary
+make build     # Build ./ghost binary
 make test      # Run all Go tests
 make vet       # Run go vet
 make install   # Install to $GOPATH/bin
@@ -31,7 +31,7 @@ bash test/acceptance.sh  # End-to-end CLI tests
 - Soft-delete (recoverable) vs hard-delete (permanent)
 - TTL/expiration support with auto-GC on startup
 - Memory links (relates_to, contradicts, depends_on, refines) and file references
-- DB path: `--db` flag → `$AGENT_MEMORY_DB` env → `~/.agent-memory/memory.db`
+- DB path: `--db` flag → `$GHOST_DB` env → `~/.ghost/memory.db`
 - Pure Go SQLite (modernc.org/sqlite), WAL mode, no CGo
 
 ## Conventions

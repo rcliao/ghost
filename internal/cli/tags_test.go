@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/store"
 )
 
 func seedTagsMock(t *testing.T) *store.MockStore {

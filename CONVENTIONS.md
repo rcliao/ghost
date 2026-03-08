@@ -20,7 +20,7 @@ A reviewer MUST flag violations as `needs_human`.
 - Changes to the Store interface (adding/removing/changing method signatures)
 - New CLI subcommands (adding a top-level command to root)
 - Changes to the on-disk format or database schema
-- Anything that affects how other tools consume agent-memory output (JSON structure changes)
+- Anything that affects how other tools consume ghost output (JSON structure changes)
 
 ## Code Quality
 - All new code must have tests

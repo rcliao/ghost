@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // PutParams holds parameters for storing a memory.

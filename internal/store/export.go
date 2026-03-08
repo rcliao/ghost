@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // ExportAll returns all non-deleted memories, optionally filtered by namespace.

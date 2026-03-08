@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/embedding"
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/embedding"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // SearchParams holds parameters for searching memories.

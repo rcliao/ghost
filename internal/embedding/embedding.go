@@ -184,13 +184,14 @@ func (e *OpenAIEmbedder) Dims() int { return e.dims }
 // --- Factory ---
 
 // NewFromEnv creates an embedder from environment variables.
-// AGENT_MEMORY_EMBED_PROVIDER: "ollama" | "openai" | "" (disabled)
-// AGENT_MEMORY_EMBED_MODEL: model name
-// AGENT_MEMORY_EMBED_URL: base URL override
+// GHOST_EMBED_PROVIDER: "ollama" | "openai" | "" (disabled)
+// GHOST_EMBED_MODEL: model name
+// GHOST_EMBED_URL: base URL override
 // OPENAI_API_KEY: for openai provider
+// Legacy AGENT_MEMORY_EMBED_* vars are checked as fallbacks.
 func NewFromEnv() Embedder {
-	provider := os.Getenv("AGENT_MEMORY_EMBED_PROVIDER")
-	model := os.Getenv("AGENT_MEMORY_EMBED_MODEL")
+	provider := envWithFallback("GHOST_EMBED_PROVIDER", "AGENT_MEMORY_EMBED_PROVIDER")
+	model := envWithFallback("GHOST_EMBED_MODEL", "AGENT_MEMORY_EMBED_MODEL")
 
 	switch provider {
 	case "ollama":
@@ -199,10 +200,19 @@ func NewFromEnv() Embedder {
 		}
 		return NewOllamaEmbedder(model)
 	case "openai":
-		url := os.Getenv("AGENT_MEMORY_EMBED_URL")
+		url := envWithFallback("GHOST_EMBED_URL", "AGENT_MEMORY_EMBED_URL")
 		key := os.Getenv("OPENAI_API_KEY")
 		return NewOpenAIEmbedder(url, key, model, 0)
 	default:
 		return nil // embeddings disabled
 	}
+}
+
+// envWithFallback returns the value of the primary env var, falling back to
+// the legacy env var for backward compatibility during the rename transition.
+func envWithFallback(primary, legacy string) string {
+	if v := os.Getenv(primary); v != "" {
+		return v
+	}
+	return os.Getenv(legacy)
 }

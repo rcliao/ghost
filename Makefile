@@ -1,6 +1,6 @@
-BINARY := agent-memory
-PKG := github.com/rcliao/agent-memory
-MAIN := ./cmd/agent-memory
+BINARY := ghost
+PKG := github.com/rcliao/ghost
+MAIN := ./cmd/ghost
 
 .PHONY: build test vet clean install
 

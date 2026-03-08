@@ -1,4 +1,4 @@
-module github.com/rcliao/agent-memory
+module github.com/rcliao/ghost
 
 go 1.25.0
 

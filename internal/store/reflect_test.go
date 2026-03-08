@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 func TestReflectDryRun(t *testing.T) {

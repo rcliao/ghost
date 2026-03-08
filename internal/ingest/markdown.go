@@ -1,4 +1,4 @@
-// Package ingest provides parsers for importing external markdown files into agent-memory.
+// Package ingest provides parsers for importing external markdown files into ghost.
 package ingest
 
 import (

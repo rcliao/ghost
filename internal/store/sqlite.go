@@ -16,9 +16,9 @@ import (
 	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 
-	"github.com/rcliao/agent-memory/internal/chunker"
-	"github.com/rcliao/agent-memory/internal/embedding"
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/chunker"
+	"github.com/rcliao/ghost/internal/embedding"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // Compile-time check: SQLiteStore implements Store.

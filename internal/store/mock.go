@@ -11,7 +11,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // Compile-time check: MockStore implements Store.

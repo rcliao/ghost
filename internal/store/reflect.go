@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // ReflectRule defines a condition→action pair for the reflect engine.

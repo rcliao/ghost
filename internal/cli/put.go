@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/store"
 	"github.com/spf13/cobra"
 )
 

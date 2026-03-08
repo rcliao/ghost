@@ -1,15 +1,15 @@
-// Package memory provides a public API for the agent-memory store.
+// Package memory provides a public API for the ghost memory store.
 //
 // This package re-exports the core types and constructor from internal packages
-// so that external Go modules can use agent-memory as a library.
+// so that external Go modules can use ghost as a library.
 package memory
 
 import (
 	"context"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/model"
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/model"
+	"github.com/rcliao/ghost/internal/store"
 )
 
 // Memory represents a stored memory entry.

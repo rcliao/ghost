@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // FindByFileParams holds parameters for finding memories linked to a file.

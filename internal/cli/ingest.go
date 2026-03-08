@@ -7,16 +7,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rcliao/agent-memory/internal/ingest"
-	"github.com/rcliao/agent-memory/internal/model"
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/ingest"
+	"github.com/rcliao/ghost/internal/model"
+	"github.com/rcliao/ghost/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	cmd := &cobra.Command{
 		Use:   "ingest [path]",
-		Short: "Import markdown files into agent-memory",
+		Short: "Import markdown files into ghost",
 		Long:  "Parse markdown files by ## headings and store each section as a memory. Accepts a file or directory.",
 		Args:  cobra.ExactArgs(1),
 		Run:   runIngest,

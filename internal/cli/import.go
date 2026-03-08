@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/rcliao/agent-memory/internal/model"
+	"github.com/rcliao/ghost/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ func runImport(cmd *cobra.Command, args []string) {
 	}
 
 	if len(data) == 0 {
-		exitErr("import", fmt.Errorf("no input received — pipe JSON via stdin, e.g.: agent-memory export | agent-memory import"))
+		exitErr("import", fmt.Errorf("no input received — pipe JSON via stdin, e.g.: ghost export | ghost import"))
 	}
 
 	var memories []model.Memory

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcliao/agent-memory/internal/model"
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/model"
+	"github.com/rcliao/ghost/internal/store"
 )
 
 // seedMock creates a MockStore, injects it via OpenStoreFunc, and seeds it with test data.

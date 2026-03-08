@@ -1,4 +1,4 @@
-// Package cli implements the agent-memory CLI commands.
+// Package cli implements the ghost CLI commands.
 package cli
 
 import (
@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rcliao/agent-memory/internal/store"
+	"github.com/rcliao/ghost/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +26,7 @@ var OpenStoreFunc = func() (store.Store, error) {
 
 // RootCmd is the top-level command.
 var RootCmd = &cobra.Command{
-	Use:   "agent-memory",
+	Use:   "ghost",
 	Short: "Persistent memory for AI agents",
 	Long:  "A tiny CLI for persistent agent memory. Text in, text out. SQLite-backed, single binary.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -62,7 +62,7 @@ var RootCmd = &cobra.Command{
 }
 
 func init() {
-	RootCmd.PersistentFlags().StringVarP(&dbPath, "db", "d", "", "Database path (default: $AGENT_MEMORY_DB or ~/.agent-memory/memory.db)")
+	RootCmd.PersistentFlags().StringVarP(&dbPath, "db", "d", "", "Database path (default: $GHOST_DB or ~/.ghost/memory.db)")
 	RootCmd.PersistentFlags().StringVarP(&formatFlag, "format", "f", "json", "Output format: json or text")
 }
 
@@ -70,11 +70,15 @@ func getDBPath() string {
 	if dbPath != "" {
 		return dbPath
 	}
+	if env := os.Getenv("GHOST_DB"); env != "" {
+		return env
+	}
+	// Fallback to legacy env var for backward compatibility.
 	if env := os.Getenv("AGENT_MEMORY_DB"); env != "" {
 		return env
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agent-memory", "memory.db")
+	return filepath.Join(home, ".ghost", "memory.db")
 }
 
 func exitErr(msg string, err error) {
