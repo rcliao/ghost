@@ -1,66 +1,66 @@
-# agent-memory
+# ghost
 
 Persistent memory for AI agents. Text in, text out. SQLite-backed, single binary, no server.
 
-Part of the [teeny-claw](https://github.com/rcliao/teeny-claw) constellation.
+Part of the [Ghost in the Shell](https://github.com/rcliao?tab=repositories&q=shell-) ecosystem.
 
 ## Install
 
 ```bash
-go install github.com/rcliao/agent-memory/cmd/agent-memory@latest
+go install github.com/rcliao/ghost/cmd/ghost@latest
 ```
 
 ## Quick Start
 
 ```bash
 # Store a memory
-agent-memory put -n "user:prefs" -k "editor" "Prefers Neovim with Lazy plugin manager"
+ghost put -n "user:prefs" -k "editor" "Prefers Neovim with Lazy plugin manager"
 
 # Store with priority
-agent-memory put -n "user:prefs" -k "allergies" -p critical "Allergic to peanuts"
+ghost put -n "user:prefs" -k "allergies" -p critical "Allergic to peanuts"
 
 # Store with TTL (auto-expires)
-agent-memory put -n "session" -k "token" --ttl 24h "abc123"
+ghost put -n "session" -k "token" --ttl 24h "abc123"
 
 # Pipe content from stdin
-cat session-notes.md | agent-memory put -n "project:myapp" -k "session-2026-02-16" --kind episodic
+cat session-notes.md | ghost put -n "project:myapp" -k "session-2026-02-16" --kind episodic
 
 # Retrieve latest version
-agent-memory get -n "user:prefs" -k "editor"
+ghost get -n "user:prefs" -k "editor"
 
 # Get all versions
-agent-memory get -n "user:prefs" -k "editor" --history
+ghost get -n "user:prefs" -k "editor" --history
 
 # Get specific version
-agent-memory get -n "user:prefs" -k "editor" -v 1
+ghost get -n "user:prefs" -k "editor" -v 1
 
 # List all memories in a namespace
-agent-memory list -n "user:prefs"
+ghost list -n "user:prefs"
 
 # List with filters
-agent-memory list -n "project:myapp" --kind episodic --tags "deploy,infra"
+ghost list -n "project:myapp" --kind episodic --tags "deploy,infra"
 
 # List keys only
-agent-memory list -n "project:myapp" --keys-only
+ghost list -n "project:myapp" --keys-only
 
 # Search memories
-agent-memory search -n "user:prefs" "neovim"
-agent-memory search "deploy"
+ghost search -n "user:prefs" "neovim"
+ghost search "deploy"
 
 # Database stats
-agent-memory stats
+ghost stats
 
 # Export memories
-agent-memory export -n "user:prefs" > backup.json
+ghost export -n "user:prefs" > backup.json
 
 # Import memories
-agent-memory import < backup.json
+ghost import < backup.json
 
 # Soft-delete (recoverable)
-agent-memory rm -n "user:prefs" -k "old-thing"
+ghost rm -n "user:prefs" -k "old-thing"
 
 # Hard-delete all versions (permanent)
-agent-memory rm -n "user:prefs" -k "old-thing" --all-versions --hard
+ghost rm -n "user:prefs" -k "old-thing" --all-versions --hard
 ```
 
 ## Commands
@@ -80,15 +80,15 @@ agent-memory rm -n "user:prefs" -k "old-thing" --all-versions --hard
 
 Database location (in order of precedence):
 1. `--db` flag
-2. `$AGENT_MEMORY_DB` environment variable
-3. `~/.agent-memory/memory.db`
+2. `$GHOST_DB` environment variable (also supports legacy `$AGENT_MEMORY_DB`)
+3. `~/.ghost/memory.db`
 
 ## Output
 
 All output is JSON by default. Pipe to `jq` for pretty-printing:
 
 ```bash
-agent-memory list -n "project:myapp" | jq .
+ghost list -n "project:myapp" | jq .
 ```
 
 ## Versioning
@@ -96,10 +96,10 @@ agent-memory list -n "project:myapp" | jq .
 Storing to an existing key creates a new version. Old versions are preserved:
 
 ```bash
-agent-memory put -n "ns" -k "config" "version 1"
-agent-memory put -n "ns" -k "config" "version 2"
-agent-memory get -n "ns" -k "config"           # returns v2
-agent-memory get -n "ns" -k "config" --history  # returns [v2, v1]
+ghost put -n "ns" -k "config" "version 1"
+ghost put -n "ns" -k "config" "version 2"
+ghost get -n "ns" -k "config"           # returns v2
+ghost get -n "ns" -k "config" --history  # returns [v2, v1]
 ```
 
 ## TTL / Expiry
@@ -107,8 +107,8 @@ agent-memory get -n "ns" -k "config" --history  # returns [v2, v1]
 Memories can have a time-to-live. Expired memories are automatically filtered from `list`, `get`, and `search` results:
 
 ```bash
-agent-memory put -n "session" -k "cache" --ttl 7d "temporary data"
-agent-memory put -n "session" -k "token" --ttl 24h "short-lived"
+ghost put -n "session" -k "cache" --ttl 7d "temporary data"
+ghost put -n "session" -k "token" --ttl 24h "short-lived"
 ```
 
 Supported formats: `7d` (days), `24h` (hours), `30m` (minutes), `60s` (seconds).
