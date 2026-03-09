@@ -4,6 +4,96 @@ How ghost organizes, stores, retrieves, and manages agent memory.
 
 ---
 
+## Core Data Model
+
+A memory is the fundamental unit. Each has these attributes:
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| **ns** | string | Hierarchical namespace (`:` separated) | `identity`, `lore`, `user:ev`, `shell:chat:832881763` |
+| **key** | string | Unique identifier within namespace | `name`, `timezone`, `deploy-2026-03-01` |
+| **content** | string | The actual memory text | `"Pikamini is a girl pikachu plush"` |
+| **kind** | string | Knowledge type: `semantic`, `episodic`, `procedural` | `semantic` (default) |
+| **tier** | string | Persistence level: `stm`, `ltm`, `identity`, `dormant` | `stm` (default) |
+| **priority** | string | Retrieval urgency: `low`, `normal`, `high`, `critical` | `normal` (default) |
+| **importance** | float64 | Continuous 0.0–1.0 score for ranking | `0.5` (default) |
+| **tags** | []string | Freeform labels for filtering | `["deploy", "infra"]` |
+| **version** | int | Auto-incremented on update to same (ns, key) | `1` |
+| **est_tokens** | int | Rough token estimate (`len/4 + 20`) | `45` |
+| **meta** | string | Freeform JSON metadata | `{"source": "heartbeat"}` |
+
+### Lifecycle fields (managed automatically)
+
+| Field | Description |
+|-------|-------------|
+| **access_count** | Incremented on every retrieval |
+| **utility_count** | Incremented when memory was actually useful |
+| **last_accessed_at** | Timestamp of last retrieval |
+| **expires_at** | Optional TTL-based expiration |
+| **supersedes** | ID of previous version |
+| **deleted_at** | Soft-delete timestamp (null = active) |
+
+### Example: A complete memory
+
+```bash
+ghost put -n "identity" -k "name" \
+  --tier identity -p high --importance 0.9 \
+  --tags "core,personality" \
+  "Pikamini is a girl pikachu plush — EV's daughter, not son"
+```
+
+This creates:
+```json
+{
+  "ns": "identity",
+  "key": "name",
+  "content": "Pikamini is a girl pikachu plush — EV's daughter, not son",
+  "kind": "semantic",
+  "tier": "identity",
+  "priority": "high",
+  "importance": 0.9,
+  "tags": ["core", "personality"],
+  "version": 1,
+  "est_tokens": 35
+}
+```
+
+---
+
+## Namespaces
+
+Namespaces organize _who_ or _what_ a memory belongs to. They use `:` as a separator and support wildcard queries (`shell:chat:*`).
+
+### Well-Known Namespaces (Agent Profile)
+
+These top-level namespaces define the agent's core identity. They are **app-agnostic** — any app sharing the same ghost DB inherits them.
+
+| Namespace | Purpose | Example content |
+|-----------|---------|-----------------|
+| `identity` | Who the agent is — name, personality, appearance | `"Pikamini is a girl pikachu plush"` |
+| `lore` | Background knowledge, relationships, trivia | `"EV and Jennifer love Project Sekai"` |
+| `user:<name>` | Per-user preferences and context | `"Timezone: America/Los_Angeles"` |
+
+### App-Scoped Namespaces
+
+Apps prefix with their name to avoid collisions. Owned and managed by the app.
+
+| Pattern | Purpose | Example |
+|---------|---------|---------|
+| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:832881763` |
+| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:832881763` |
+| `<app>:capabilities` | What the agent can do in this app | `shell:capabilities` |
+| `<app>:conventions` | Coding/writing conventions | `coder:conventions` |
+| `<app>:learnings` | Accumulated insights | `coder:learnings` |
+
+### Design Rationale
+
+- **Well-known namespaces are shared.** A Telegram bridge, Discord bot, or CLI tool all read the same `identity` and `lore`. The agent is one entity across surfaces.
+- **App namespaces are isolated.** `shell:chat:*` belongs to shell; other apps won't collide.
+- **No enforced schema.** These are conventions, not constraints. Apps can define any namespace.
+
+---
+
 ## Core Concepts
 
 Ghost models memory after cognitive science with three orthogonal dimensions:
@@ -26,15 +116,15 @@ Kinds classify _what_ a memory represents. Borrowed from cognitive science:
 Fact-based, context-independent knowledge. The "what" of memory.
 
 ```bash
-ghost put -n user:prefs -k editor "Prefers Neovim with Lazy plugin manager"
-ghost put -n project:api -k auth-strategy "JWT with refresh tokens, 15min access / 7d refresh"
+ghost put -n "identity" -k "role" "Helpful AI assistant for EV"
+ghost put -n "coder:conventions" -k "auth" "JWT with refresh tokens, 15min access / 7d refresh"
 ```
 
 ### `episodic`
 Event or experience-based memories with temporal context. The "when and what happened."
 
 ```bash
-ghost put -n project:api -k deploy-2026-03-01 --kind episodic \
+ghost put -n "shell:chat:832881763" -k "deploy-2026-03-01" --kind episodic \
   "Deployed v2.3. Migration took 4min. Redis cache needed manual flush."
 ```
 
@@ -42,7 +132,7 @@ ghost put -n project:api -k deploy-2026-03-01 --kind episodic \
 How-to, process, or instruction-based knowledge. The "how."
 
 ```bash
-ghost put -n project:api -k deploy-steps --kind procedural \
+ghost put -n "coder:learnings" -k "deploy-steps" --kind procedural \
   "1. Run migrations: make db-migrate
    2. Build: make build
    3. Deploy: make deploy-prod
@@ -51,14 +141,14 @@ ghost put -n project:api -k deploy-steps --kind procedural \
 
 ### Organizing by namespace, not kind
 
-Personal preferences, project facts, and session context are all `semantic` by default. Use **namespaces** to organize them:
+Facts, events, and procedures can live in any namespace. Use **namespaces** for organizational structure and **kind** for the cognitive type:
 
 ```
-user:prefs          → personal preferences (editor, timezone, allergies)
-user:persona        → personality traits, communication style
-project:<name>      → project-specific knowledge
-session:<id>        → ephemeral session context (use TTL)
-agent:<name>        → agent-specific configuration
+identity            → core agent identity (always semantic)
+lore                → background knowledge (mostly semantic)
+user:<name>         → per-user context (semantic + episodic)
+<app>:chat:<id>     → conversation memories (episodic)
+<app>:learnings     → accumulated insights (semantic + procedural)
 ```
 
 This keeps the kind taxonomy clean (3 values from cognitive science) while allowing flexible organization through the namespace hierarchy.
@@ -97,7 +187,7 @@ Memories that have proven their value through repeated access. Protected from ro
 Core system/agent memories. Exempt from all decay. Always included in context assembly (budget permitting). Use for foundational knowledge that should never be forgotten.
 
 ```bash
-ghost put -n agent:core -k role --tier identity \
+ghost put -n "identity" -k "role" --tier identity \
   "You are Pikamini, a helpful AI assistant for EV."
 ```
 
@@ -118,7 +208,7 @@ Priority provides an urgency signal for retrieval ranking. Orthogonal to tier.
 | `critical` | 1.00 | Must-have, safety-relevant |
 
 ```bash
-ghost put -n user:prefs -k allergies -p critical "Allergic to peanuts"
+ghost put -n "user:ev" -k "allergies" -p critical "Allergic to peanuts"
 ```
 
 ---
@@ -231,8 +321,8 @@ Connect two memories with a semantic relationship:
 | `refines` | Improvement of prior memory |
 
 ```bash
-ghost link --from-ns project:api --from-key auth-v2 \
-           --to-ns project:api --to-key auth-v1 \
+ghost link --from-ns "coder:conventions" --from-key "auth-v2" \
+           --to-ns "coder:conventions" --to-key "auth-v1" \
            --rel refines
 ```
 
@@ -247,7 +337,7 @@ Link memories to file paths with a relationship:
 | `read` | Memory references reading a file |
 
 ```bash
-ghost put -n project:api -k refactor-auth "Refactored auth middleware" \
+ghost put -n "coder:learnings" -k "refactor-auth" "Refactored auth middleware" \
   --files src/middleware/auth.go --file-rel modified
 ```
 
@@ -318,7 +408,7 @@ ghost utility-inc <memory-id>
 
 1. **Text in, text out.** No embedded LLM calls. The library is a storage and retrieval layer. Intelligence lives in the calling agent.
 
-2. **Namespace over kind.** Use the 3-kind taxonomy for _what_ type of knowledge it is. Use namespaces for _who_ or _what project_ it belongs to.
+2. **Namespace over kind.** Use the 3-kind taxonomy for _what_ type of knowledge it is. Use namespaces for _who_ or _what_ it belongs to. Well-known namespaces (`identity`, `lore`, `user:*`) are app-agnostic; app-scoped namespaces (`<app>:*`) are isolated by prefix.
 
 3. **Explicit over implicit.** Importance, utility, and tier transitions are either set by the caller or by deterministic rules — never inferred silently.
 
