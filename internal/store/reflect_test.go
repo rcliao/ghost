@@ -104,8 +104,8 @@ func TestRuleSetAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) < 8 { // 7 system + 1 user
-		t.Errorf("expected at least 8 rules, got %d", len(rules))
+	if len(rules) < 7 { // 6 system + 1 user
+		t.Errorf("expected at least 7 rules, got %d", len(rules))
 	}
 
 	// First rule should be highest priority
@@ -282,13 +282,13 @@ func TestReflectSensoryPromote(t *testing.T) {
 	}
 }
 
-func TestReflectIdentityPinProtection(t *testing.T) {
+func TestReflectPinnedProtection(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Identity-tier memory that is old and unaccessed — PIN should protect it
-	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
-		VALUES ('id1', 'identity', 'core-self', 'I am helpful', 'semantic', 1, ?, 'normal', 0, 0.5, 'identity', 20)`,
+	// Pinned memory that is old and unaccessed — should be protected
+	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens, pinned)
+		VALUES ('id1', 'agent:test', 'core-self', 'I am helpful', 'semantic', 1, ?, 'normal', 0, 0.5, 'stm', 20, 1)`,
 		time.Now().Add(-720*time.Hour).UTC().Format(time.RFC3339)) // 30 days old, 0 accesses
 
 	_, err := s.Reflect(ctx, ReflectParams{})
@@ -301,14 +301,14 @@ func TestReflectIdentityPinProtection(t *testing.T) {
 	var importance float64
 	var deletedAt *string
 	s.db.QueryRow(`SELECT tier, importance, deleted_at FROM memories WHERE id = 'id1'`).Scan(&tier, &importance, &deletedAt)
-	if tier != "identity" {
-		t.Errorf("identity memory tier changed to %q — PIN should have protected it", tier)
+	if tier != "stm" {
+		t.Errorf("pinned memory tier changed to %q — should have been protected", tier)
 	}
 	if importance != 0.5 {
-		t.Errorf("identity memory importance changed to %f — PIN should have protected it", importance)
+		t.Errorf("pinned memory importance changed to %f — should have been protected", importance)
 	}
 	if deletedAt != nil {
-		t.Error("identity memory was deleted — PIN should have protected it")
+		t.Error("pinned memory was deleted — should have been protected")
 	}
 }
 
@@ -447,8 +447,8 @@ func TestBuiltinRulesSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) < 7 {
-		t.Errorf("expected at least 7 built-in rules, got %d", len(rules))
+	if len(rules) < 6 {
+		t.Errorf("expected at least 6 built-in rules, got %d", len(rules))
 	}
 
 	// Check specific built-in rule exists

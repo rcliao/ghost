@@ -575,20 +575,24 @@ func TestEvalReflectLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("identity_protected", func(t *testing.T) {
+	t.Run("pinned_protected", func(t *testing.T) {
 		var tier string
+		var pinned int
 		var importance float64
 		var deletedAt *string
-		s.db.QueryRow(`SELECT tier, importance, deleted_at FROM memories WHERE id = ?`,
-			ids["reflect-identity-safe"]).Scan(&tier, &importance, &deletedAt)
-		if tier != "identity" {
-			t.Errorf("expected 'identity', got %q", tier)
+		s.db.QueryRow(`SELECT tier, pinned, importance, deleted_at FROM memories WHERE id = ?`,
+			ids["reflect-identity-safe"]).Scan(&tier, &pinned, &importance, &deletedAt)
+		if tier != "ltm" {
+			t.Errorf("expected 'ltm', got %q", tier)
+		}
+		if pinned != 1 {
+			t.Errorf("expected pinned=1, got %d", pinned)
 		}
 		if importance != 1.0 {
 			t.Errorf("expected importance 1.0, got %.2f", importance)
 		}
 		if deletedAt != nil {
-			t.Error("identity must not be deleted")
+			t.Error("pinned memory must not be deleted")
 		}
 	})
 
@@ -1903,11 +1907,12 @@ func TestEvalReport(t *testing.T) {
 			s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["reflect-prune-target"]).Scan(&deletedAt)
 			return deletedAt != nil
 		}},
-		{"reflect/identity_safe", func() bool {
+		{"reflect/pinned_safe", func() bool {
 			var tier string
+			var pinned int
 			var imp float64
-			s.db.QueryRow(`SELECT tier, importance FROM memories WHERE id = ?`, ids["reflect-identity-safe"]).Scan(&tier, &imp)
-			return tier == "identity" && imp == 1.0
+			s.db.QueryRow(`SELECT tier, pinned, importance FROM memories WHERE id = ?`, ids["reflect-identity-safe"]).Scan(&tier, &pinned, &imp)
+			return tier == "ltm" && pinned == 1 && imp == 1.0
 		}},
 	}
 

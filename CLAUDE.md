@@ -25,8 +25,11 @@ make install   # Install to $GOPATH/bin
 ## Key Patterns
 
 - Memories indexed by (namespace, key) with automatic versioning
-- Search: FTS5 ranked → LIKE fallback → vector embeddings (enabled by default via local all-MiniLM-L6-v2)
-- Context assembly fills a token budget scored by relevance, recency, and priority
+- Namespace = agent identity (`agent:pikamini`), tags = categorization (`identity`, `project:ghost`, `chat:123`)
+- Tier = lifecycle stage: sensory → stm → ltm → dormant (no more `identity` tier)
+- Pinned = chronic accessibility: always loaded in context, exempt from decay (replaces old `identity` tier)
+- Search: FTS5 ranked → LIKE fallback → vector embeddings, all support tag filtering
+- Context assembly: Phase 1 loads pinned memories, Phase 2 fills remaining budget with search results
 - Soft-delete (recoverable) vs hard-delete (permanent)
 - TTL/expiration support with auto-GC on startup
 - Memory links (relates_to, contradicts, depends_on, refines) and file references

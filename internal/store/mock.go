@@ -101,6 +101,11 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 		importance = 0.5
 	}
 
+	pinned := p.Pinned
+	if p.Tier == "identity" {
+		pinned = true
+	}
+
 	mem := model.Memory{
 		ID:         id,
 		NS:         p.NS,
@@ -114,6 +119,7 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 		Priority:   priority,
 		Importance: importance,
 		Tier:       tier,
+		Pinned:     pinned,
 		EstTokens:  (len(p.Content) / 4) + 20,
 		Meta:       p.Meta,
 		ExpiresAt:  expiresAt,
@@ -983,14 +989,14 @@ func (m *MockStore) Peek(_ context.Context, ns string) (*PeekResult, error) {
 		result.TotalEstTokens[tier] += mem.EstTokens
 	}
 
-	// Identity summary
+	// Pinned summary
 	for _, mem := range active {
-		if mem.Tier == "identity" {
+		if mem.Pinned {
 			summary := mem.Content
 			if len(summary) > 200 {
 				summary = summary[:200] + "..."
 			}
-			result.IdentitySummary = summary
+			result.PinnedSummary = summary
 			break
 		}
 	}
@@ -1086,6 +1092,14 @@ func (m *MockStore) Curate(ctx context.Context, p CurateParams) (*CurateResult, 
 		result.OldTier = mem.Tier
 		mem.Tier = "dormant"
 		result.NewTier = "dormant"
+	case "pin":
+		result.OldPinned = mem.Pinned
+		mem.Pinned = true
+		result.NewPinned = true
+	case "unpin":
+		result.OldPinned = mem.Pinned
+		mem.Pinned = false
+		result.NewPinned = false
 	}
 	m.memories[key] = mem
 	return result, nil

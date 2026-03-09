@@ -71,7 +71,8 @@ Use ghost_curate to act on individual memories:
   ghost_curate(ns="project:myapp", key="old-pattern", op="archive")
 
 Operations: promote (tier up), demote (tier down), boost (importance +0.2),
-diminish (importance -0.2), archive (→dormant), delete (soft-delete).
+diminish (importance -0.2), archive (→dormant), delete (soft-delete),
+pin (always in context), unpin (remove from always-on).
 
 Use this when reviewing memories from ghost_context or ghost_search and
 deciding which ones to keep, promote, or remove.
@@ -83,11 +84,21 @@ or after a long session with many stored learnings.
 
 ### Key Behaviors
 
-**Namespace conventions** — The server instructions suggest these conventions:
-- `identity` — core agent identity
-- `lore` — background knowledge
+**Namespace conventions** — Namespaces represent agent identity. Each namespace is one agent's isolated memory space:
+- `agent:<name>` — per-agent memory space (e.g. `agent:pikamini`, `agent:coder`)
+
+Memories are isolated by namespace — no cross-namespace visibility.
+
+**Tag conventions** — Tags are first-class metadata for categorization and filtering:
+- `identity` — core agent persona (name, personality, appearance)
+- `lore` — background knowledge (relationships, fun facts)
+- `chat:<id>` — per-conversation context
+- `project:<name>` — project knowledge
+- `learning` — accumulated insights
+- `convention` — coding/writing rules
 - `user:<name>` — per-user preferences
-- `<app>:<scope>` — app-specific data
+
+**Pinned memories** — Set `pinned: true` for memories that should always be loaded in context (Phase 1 of context assembly). Pinned memories are exempt from all lifecycle/reflect rules. Use for core identity, critical preferences, and always-on knowledge.
 
 **Compaction signal** — When `ghost_context` exhausts its budget and skips candidates, the response includes `"compaction_suggested": true`. The agent should then call `ghost_reflect` to promote/decay/prune memories and free up space.
 
@@ -97,13 +108,15 @@ or after a long session with many stored learnings.
 
 1. **Be specific in CLAUDE.md** — Generic instructions like "use ghost" don't work well. List concrete scenarios and examples.
 
-2. **Namespace per project** — Use `project:<name>` namespaces so memories are scoped and searchable. Cross-project knowledge can go in `coder:learnings` or similar shared namespaces.
+2. **Use tags for scoping** — Tag memories with `project:<name>`, `chat:<id>`, etc. for filtering. Search and context support `tags` parameter.
 
 3. **Importance scores matter** — They affect retrieval ranking. Use 0.5 for general notes, 0.7-0.8 for useful learnings, 0.9+ for critical decisions.
 
-4. **Tier selection** — Default tier is `stm` (subject to decay). Use `sensory` for raw transient observations (auto-deleted if unaccessed). Set `tier: "ltm"` for knowledge that should persist long-term. Only use `identity` tier for core agent identity facts.
+4. **Tier selection** — Default tier is `stm` (subject to decay). Use `sensory` for raw transient observations (auto-deleted if unaccessed). Set `tier: "ltm"` for knowledge that should persist long-term.
 
-5. **Reflect periodically** — The reflect cycle promotes frequently-accessed STM memories to LTM and decays unused ones. Without it, STM memories accumulate without curation.
+5. **Pin critical memories** — Set `pinned: true` for core identity, critical preferences, and knowledge that must always be in context. Pinned memories bypass lifecycle decay.
+
+6. **Reflect periodically** — The reflect cycle promotes frequently-accessed STM memories to LTM and decays unused ones. Without it, STM memories accumulate without curation.
 
 ### Curating Memories (ghost_curate)
 
@@ -113,12 +126,14 @@ or after a long session with many stored learnings.
 
 | Op | Effect |
 |----|--------|
-| `promote` | Tier up: dormant → stm → ltm → identity |
-| `demote` | Tier down: identity → ltm → stm → dormant |
+| `promote` | Tier up: dormant → stm → ltm |
+| `demote` | Tier down: ltm → stm → dormant |
 | `boost` | Importance +0.2 (caps at 1.0) |
 | `diminish` | Importance -0.2 (floors at 0.1) |
 | `archive` | Move to dormant tier |
 | `delete` | Soft-delete (recoverable) |
+| `pin` | Always loaded in context, exempt from decay |
+| `unpin` | Remove from always-on context |
 
 **Review workflow** — Use `ghost_context` or `ghost_search` to find memories, then `ghost_curate` to act on specific ones:
 
@@ -164,7 +179,8 @@ mem, err := store.Put(ctx, memory.PutParams{
     Kind:       "semantic",       // semantic | episodic | procedural (auto-detected from tier if omitted)
     Priority:   "high",           // low | normal | high | critical
     Importance: 0.8,              // 0.0-1.0, affects retrieval ranking
-    Tier:       "ltm",            // sensory | stm (default) | ltm | identity | dormant
+    Tier:       "ltm",            // sensory | stm (default) | ltm | dormant
+    Pinned:     false,            // true = always loaded in context, exempt from decay
     Tags:       []string{"auth", "architecture"},
 })
 ```
@@ -190,14 +206,15 @@ if result.CompactionSuggested {
 
 ### Logging Exchanges
 
-For conversational agents, store exchanges as episodic memory with TTL:
+For conversational agents, store exchanges as episodic memory with TTL and tags:
 
 ```go
 store.Put(ctx, memory.PutParams{
-    NS:         "myapp:chat:123",
+    NS:         "agent:mybot",
     Key:        fmt.Sprintf("exchange-%d", time.Now().UnixMilli()),
     Content:    fmt.Sprintf("User: %s\nAssistant: %s", userMsg, response),
     Kind:       "episodic",
+    Tags:       []string{"chat:123"},
     TTL:        "7d",
     Importance: 0.3,
 })
@@ -210,7 +227,7 @@ store.Put(ctx, memory.PutParams{
 result, err := store.Curate(ctx, memory.CurateParams{
     NS:  "project:myapp",
     Key: "auth-architecture",
-    Op:  "promote",  // promote | demote | boost | diminish | archive | delete
+    Op:  "promote",  // promote | demote | boost | diminish | archive | delete | pin | unpin
 })
 fmt.Printf("%s: %s → %s\n", result.Op, result.OldTier, result.NewTier)
 ```
@@ -322,19 +339,18 @@ MEMORY.md is your always-on scratchpad. Ghost is your searchable long-term knowl
 
 ### Pattern: System Prompt Injection
 
-For chat agents, load identity/lore memories into the system prompt on every request:
+For chat agents, load pinned memories into the system prompt on every request:
 
 ```go
-// Load always-on identity context
-identityMems, _ := store.List(ctx, memory.ListParams{NS: "identity", Limit: 100})
-loreMems, _ := store.List(ctx, memory.ListParams{NS: "lore", Limit: 100})
+// Load always-on context via Context() — Phase 1 loads pinned memories
+result, _ := store.Context(ctx, memory.ContextParams{
+    NS:     "agent:mybot",
+    Query:  "",        // empty query = pinned only
+    Budget: 2000,
+})
 
-systemPrompt := "## Identity\n"
-for _, m := range identityMems {
-    systemPrompt += "- " + m.Content + "\n"
-}
-systemPrompt += "\n## Lore\n"
-for _, m := range loreMems {
+systemPrompt := "## Core Knowledge\n"
+for _, m := range result.Memories {
     systemPrompt += "- " + m.Content + "\n"
 }
 ```
@@ -345,8 +361,9 @@ Prepend relevant memories to the user message before sending to the LLM:
 
 ```go
 result, _ := store.Context(ctx, memory.ContextParams{
-    NS:    "myapp:chat:123*",
+    NS:    "agent:mybot",
     Query: userMessage,
+    Tags:  []string{"chat:123"},
     Budget: 2000,
 })
 
@@ -361,7 +378,7 @@ augmented += "[End memories]\n\n" + userMessage
 
 ## Reflect Rules
 
-Ghost ships with 7 built-in rules (including sensory tier lifecycle). You can add custom rules for your use case:
+Ghost ships with 6 built-in rules (including sensory tier lifecycle). Pinned memories are exempt from all rules. You can add custom rules for your use case:
 
 ```bash
 # Archive procedural memories older than 30 days with low access

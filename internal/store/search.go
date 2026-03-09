@@ -19,6 +19,7 @@ type SearchParams struct {
 	NS    string
 	Query string
 	Kind  string
+	Tags  []string
 	Limit int
 }
 
@@ -186,11 +187,15 @@ func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) 
 		where = append(where, "m.kind = ?")
 		args = append(args, p.Kind)
 	}
+	for _, tag := range p.Tags {
+		where = append(where, "m.tags LIKE ?")
+		args = append(args, "%\""+tag+"\"%")
+	}
 
 	q := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -257,11 +262,15 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 		where += " AND m.kind = ?"
 		args = append(args, p.Kind)
 	}
+	for _, tag := range p.Tags {
+		where += " AND m.tags LIKE ?"
+		args = append(args, "%\""+tag+"\"%")
+	}
 
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens,
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned,
 		       c.embedding
 		FROM memories m
 		INNER JOIN (
@@ -337,13 +346,13 @@ func scanMemoryWithExtra(row scanner, extras ...interface{}) (model.Memory, erro
 	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier sql.NullString
 	var createdAt string
 	var importance sql.NullFloat64
-	var utilityCount, estTokens sql.NullInt64
+	var utilityCount, estTokens, pinned sql.NullInt64
 
 	dest := []interface{}{
 		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
 		&m.Version, &supersedes, &createdAt, &deletedAt,
 		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
-		&importance, &utilityCount, &tier, &estTokens,
+		&importance, &utilityCount, &tier, &estTokens, &pinned,
 	}
 	dest = append(dest, extras...)
 
@@ -390,6 +399,9 @@ func scanMemoryWithExtra(row scanner, extras ...interface{}) (model.Memory, erro
 	if estTokens.Valid {
 		m.EstTokens = int(estTokens.Int64)
 	}
+	if pinned.Valid && pinned.Int64 != 0 {
+		m.Pinned = true
+	}
 
 	return m, nil
 }
@@ -413,6 +425,10 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 	if p.Kind != "" {
 		where = append(where, "m.kind = ?")
 		args = append(args, p.Kind)
+	}
+	for _, tag := range p.Tags {
+		where = append(where, "m.tags LIKE ?")
+		args = append(args, "%\""+tag+"\"%")
 	}
 	_ = baseWhere // we rebuild where clauses here
 
@@ -439,7 +455,7 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 	sql := fmt.Sprintf(`
 		SELECT DISTINCT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver

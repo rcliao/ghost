@@ -69,15 +69,9 @@ var validActionOps = map[string]bool{
 
 // builtinRules are seeded on startup with ON CONFLICT IGNORE semantics.
 var builtinRules = []ReflectRule{
-	{
-		ID:        "sys-pin-identity",
-		Name:      "Protect identity-tier memories from decay/demotion",
-		Scope:     "reflect",
-		Priority:  1,
-		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "identity"},
-		Action:    RuleAction{Op: "PIN"},
-	},
+	// Note: pinned memories are skipped before rule evaluation,
+	// so no PIN rule is needed. The old sys-pin-identity rule is
+	// kept in existing DBs but never matches (no more identity tier).
 	{
 		ID:        "sys-promote-sensory",
 		Name:      "Promote attended sensory memories to STM",
@@ -181,7 +175,7 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -210,6 +204,11 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 			continue
 		}
 		result.MemoriesEvaluated++
+
+		// Pinned memories are exempt from all lifecycle rules
+		if m.Pinned {
+			continue
+		}
 
 		ageHours := now.Sub(m.CreatedAt).Hours()
 		utilityRatio := 0.0

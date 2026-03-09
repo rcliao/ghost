@@ -18,18 +18,26 @@ When to use:
 - Search memories when you need context from past sessions or when the user references something you should already know.
 
 Namespace conventions:
-- identity — core agent identity (name, personality, appearance)
+- agent:<name> — per-agent memory space (e.g. agent:pikamini, agent:coder)
+- Each agent's memories are isolated — no cross-namespace visibility.
+
+Tags (first-class filtering, use for categorization):
+- identity — core agent persona (name, personality, appearance)
 - lore — background knowledge, relationships, trivia
-- user:<name> — per-user preferences and context
-- <app>:<scope> — app-specific data (e.g. shell:chat:123, coder:learnings)
+- chat:<id> — per-conversation context
+- project:<name> — project-specific knowledge
+- learning — accumulated insights
+- convention — coding/writing rules
+- user:<name> — per-user preferences
 
 Memory kinds (Tulving's taxonomy, affects retrieval scoring):
 - episodic — events/experiences, scored with recency bias (default for sensory/stm tier)
-- semantic — facts/knowledge, scored with relevance + importance bias (default for ltm/identity tier)
+- semantic — facts/knowledge, scored with relevance + importance bias (default for ltm tier)
 - procedural — how-to/skills/steps, scored with access frequency bias (practice effect)
 
 Priority: low, normal (default), high, critical.
-Tier (Atkinson-Shiffrin model): sensory (ultra-short, aggressive decay), stm (default, subject to decay), ltm (proven useful), identity (permanent core knowledge).
+Tier (Atkinson-Shiffrin model): sensory (ultra-short, aggressive decay), stm (default, subject to decay), ltm (proven useful, long-term).
+Pinned: set pinned=true for memories that should always be loaded in context (e.g. identity, core conventions). Pinned memories are exempt from lifecycle decay.
 
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
@@ -67,14 +75,15 @@ func registerTools(server *mcp.Server, st store.Store) {
 		Name:        "ghost_put",
 		Description: "Store or update a memory. Storing to an existing namespace:key creates a new version.",
 		InputSchema: schema([]string{"ns", "key", "content"}, map[string]map[string]any{
-			"ns":         prop("string", "Namespace, e.g. identity, lore, user:ev, or myapp:learnings"),
-			"key":        prop("string", "Unique key within the namespace"),
+			"ns":         prop("string", "Namespace (agent identity), e.g. agent:pikamini, agent:coder"),
+			"key":        prop("string", "Unique descriptive key within the namespace"),
 			"content":    prop("string", "Memory content text"),
-			"kind":       prop("string", "Memory kind: episodic (events, default for sensory/stm), semantic (facts, default for ltm/identity), or procedural (how-to/skills)"),
-			"tags":       {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for categorization"},
+			"kind":       prop("string", "Memory kind: episodic (events, default for sensory/stm), semantic (facts, default for ltm), or procedural (how-to/skills)"),
+			"tags":       {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for categorization (e.g. identity, lore, project:ghost, chat:123)"},
 			"priority":   prop("string", "Priority: low, normal (default), high, critical"),
 			"importance": prop("number", "Importance score 0.0-1.0 (default 0.5)"),
-			"tier":       prop("string", "Storage tier: sensory (ultra-short), stm (default), ltm (proven useful), identity (permanent)"),
+			"tier":       prop("string", "Storage tier: sensory (ultra-short), stm (default), ltm (proven useful)"),
+			"pinned":     prop("boolean", "If true, always loaded in context and exempt from lifecycle decay"),
 			"ttl":        prop("string", "Time-to-live, e.g. 7d, 24h, 30m"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -87,6 +96,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Priority   string   `json:"priority"`
 			Importance float64  `json:"importance"`
 			Tier       string   `json:"tier"`
+			Pinned     bool     `json:"pinned"`
 			TTL        string   `json:"ttl"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
@@ -104,6 +114,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Priority:   p.Priority,
 			Importance: p.Importance,
 			Tier:       p.Tier,
+			Pinned:     p.Pinned,
 			TTL:        p.TTL,
 		})
 		if err != nil {
@@ -119,14 +130,16 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"query": prop("string", "Search query text"),
 			"ns":    prop("string", "Namespace filter (optional)"),
 			"kind":  prop("string", "Filter by kind: semantic, episodic, procedural"),
+			"tags":  {"type": "array", "items": map[string]any{"type": "string"}, "description": "Filter by tags (e.g. identity, project:ghost)"},
 			"limit": prop("integer", "Max results (default 20)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
-			Query string `json:"query"`
-			NS    string `json:"ns"`
-			Kind  string `json:"kind"`
-			Limit int    `json:"limit"`
+			Query string   `json:"query"`
+			NS    string   `json:"ns"`
+			Kind  string   `json:"kind"`
+			Tags  []string `json:"tags"`
+			Limit int      `json:"limit"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -138,6 +151,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			NS:    p.NS,
 			Query: p.Query,
 			Kind:  p.Kind,
+			Tags:  p.Tags,
 			Limit: p.Limit,
 		})
 		if err != nil {
@@ -185,11 +199,11 @@ func registerTools(server *mcp.Server, st store.Store) {
 
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_curate",
-		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, or delete a specific memory by namespace and key.",
+		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, delete, pin, or unpin a specific memory by namespace and key.",
 		InputSchema: schema([]string{"ns", "key", "op"}, map[string]map[string]any{
 			"ns":  prop("string", "Namespace of the memory"),
 			"key": prop("string", "Key of the memory"),
-			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete)"),
+			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete), pin (always in context), unpin (remove pin)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {

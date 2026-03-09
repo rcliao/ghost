@@ -100,7 +100,7 @@ func (s *SQLiteStore) FindByFile(ctx context.Context, p FindByFileParams) ([]mod
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN memory_files mf ON mf.memory_id = m.id
 		INNER JOIN (

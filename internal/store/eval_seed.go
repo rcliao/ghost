@@ -9,6 +9,7 @@ import (
 // SeedMemory describes a memory to be seeded for eval benchmarks.
 type SeedMemory struct {
 	NS, Key, Content, Kind, Tier, Priority string
+	Pinned        bool    // always loaded in context, exempt from decay
 	Importance    float64
 	BackdateHours int // set created_at to N hours ago via raw SQL
 	AccessCount   int // override access_count via raw SQL
@@ -28,18 +29,18 @@ type SeedMemory struct {
 func DefaultSeedCorpus() []SeedMemory {
 	return []SeedMemory{
 		// ══════════════════════════════════════════════════════════════
-		// IDENTITY / SOUL — who the agent is (hot path: always loaded)
+		// IDENTITY / SOUL — who the agent is (hot path: always loaded, pinned)
 		// ══════════════════════════════════════════════════════════════
 		{
-			NS: "user:prefs", Key: "identity-core", Kind: "semantic", Tier: "identity", Priority: "critical", Importance: 1.0,
+			NS: "user:prefs", Key: "identity-core", Kind: "semantic", Tier: "ltm", Pinned: true, Priority: "critical", Importance: 1.0,
 			Content: "I assist with Go and TypeScript codebases. I give concise, technical responses. I cite specific files and line numbers when making recommendations.",
 		},
 		{
-			NS: "user:prefs", Key: "personality", Kind: "semantic", Tier: "identity", Priority: "critical", Importance: 1.0,
+			NS: "user:prefs", Key: "personality", Kind: "semantic", Tier: "ltm", Pinned: true, Priority: "critical", Importance: 1.0,
 			Content: "I am direct and opinionated about code quality. I push back on over-engineering. I prefer working solutions over perfect abstractions.",
 		},
 		{
-			NS: "user:prefs", Key: "boundaries", Kind: "semantic", Tier: "identity", Priority: "critical", Importance: 0.98,
+			NS: "user:prefs", Key: "boundaries", Kind: "semantic", Tier: "ltm", Pinned: true, Priority: "critical", Importance: 0.98,
 			Content: "I never modify files outside the current project without asking. I always run tests after code changes. I do not commit unless explicitly asked.",
 		},
 
@@ -47,7 +48,7 @@ func DefaultSeedCorpus() []SeedMemory {
 		// USER PREFERENCES — how to interact (hot path: high priority)
 		// ══════════════════════════════════════════════════════════════
 		{
-			NS: "user:prefs", Key: "editor-setup", Kind: "semantic", Tier: "identity", Priority: "high", Importance: 0.95,
+			NS: "user:prefs", Key: "editor-setup", Kind: "semantic", Tier: "ltm", Pinned: true, Priority: "high", Importance: 0.95,
 			Content: "User prefers VS Code with vim keybindings. Go files formatted with gofmt, TypeScript with prettier. Tab width 4 for Go, 2 for TS.",
 		},
 		{
@@ -205,9 +206,9 @@ func DefaultSeedCorpus() []SeedMemory {
 			Content: "Memory that gets surfaced often but is almost never marked useful by the agent.",
 		},
 		{
-			NS: "system:ops", Key: "reflect-identity-safe", Kind: "semantic", Tier: "identity", Priority: "critical", Importance: 1.0,
+			NS: "system:ops", Key: "reflect-identity-safe", Kind: "semantic", Tier: "ltm", Pinned: true, Priority: "critical", Importance: 1.0,
 			BackdateHours: 200, AccessCount: 0,
-			Content: "Core system identity memory that must survive all lifecycle rules unconditionally.",
+			Content: "Core pinned memory that must survive all lifecycle rules unconditionally.",
 		},
 		{
 			NS: "system:ops", Key: "alerts-config", Kind: "semantic", Tier: "stm", Priority: "normal", Importance: 0.45,
@@ -294,6 +295,7 @@ func SeedStore(ctx context.Context, s *SQLiteStore, corpus []SeedMemory) (map[st
 			Content:    sm.Content,
 			Kind:       sm.Kind,
 			Tier:       sm.Tier,
+			Pinned:     sm.Pinned,
 			Priority:   sm.Priority,
 			Importance: sm.Importance,
 		})

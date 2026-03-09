@@ -24,8 +24,8 @@ var peekCmd = &cobra.Command{
 		}
 
 		if formatFlag == "text" {
-			if result.IdentitySummary != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Identity: %s\n", result.IdentitySummary)
+			if result.PinnedSummary != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Pinned: %s\n", result.PinnedSummary)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Memories by tier:\n")
 			for tier, count := range result.MemoryCounts {

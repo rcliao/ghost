@@ -17,7 +17,8 @@ type PutParams struct {
 	Tags       []string
 	Priority   string
 	Importance float64 // 0.0-1.0; 0 means use default (0.5)
-	Tier       string  // "sensory", "stm", "ltm", "identity", "dormant"; empty defaults to "stm"
+	Tier       string  // "sensory", "stm", "ltm", "dormant"; empty defaults to "stm"
+	Pinned     bool    // always loaded in context, exempt from decay
 	Meta       string
 	TTL        string // e.g. "7d", "24h", "30m"
 	Files      []FileParam
@@ -69,7 +70,7 @@ type TagInfo struct {
 // PeekResult is a lightweight memory index for lazy discovery.
 type PeekResult struct {
 	NS              string         `json:"ns"`
-	IdentitySummary string         `json:"identity_summary,omitempty"`
+	PinnedSummary   string         `json:"pinned_summary,omitempty"`
 	RecentTopics    []string       `json:"recent_topics"`
 	MemoryCounts    map[string]int `json:"memory_counts"`
 	HighImportance  []MemoryStub   `json:"high_importance"`

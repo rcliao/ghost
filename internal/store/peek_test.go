@@ -34,8 +34,8 @@ func TestPeekWithMemories(t *testing.T) {
 	s.Put(ctx, PutParams{NS: "test", Key: "stm2", Content: "another stm", Tags: []string{"debug"}})
 	s.Put(ctx, PutParams{NS: "test", Key: "important", Content: "very important memory", Importance: 0.9})
 
-	// Manually set a memory to identity tier
-	s.db.Exec(`UPDATE memories SET tier = 'identity', content = 'I am a test agent' WHERE key = 'important'`)
+	// Manually set a memory as pinned
+	s.db.Exec(`UPDATE memories SET pinned = 1, content = 'I am a test agent' WHERE key = 'important'`)
 
 	result, err := s.Peek(ctx, "test")
 	if err != nil {
@@ -43,16 +43,13 @@ func TestPeekWithMemories(t *testing.T) {
 	}
 
 	// Check tier counts
-	if result.MemoryCounts["stm"] != 2 {
-		t.Errorf("expected 2 stm memories, got %d", result.MemoryCounts["stm"])
-	}
-	if result.MemoryCounts["identity"] != 1 {
-		t.Errorf("expected 1 identity memory, got %d", result.MemoryCounts["identity"])
+	if result.MemoryCounts["stm"] != 3 {
+		t.Errorf("expected 3 stm memories, got %d", result.MemoryCounts["stm"])
 	}
 
-	// Check identity summary
-	if result.IdentitySummary == "" {
-		t.Error("expected identity summary")
+	// Check pinned summary
+	if result.PinnedSummary == "" {
+		t.Error("expected pinned summary")
 	}
 
 	// Check recent topics
@@ -120,20 +117,15 @@ func TestContextTierAwarePinning(t *testing.T) {
 	ctx := context.Background()
 
 	// Create memories in different tiers
-	s.Put(ctx, PutParams{NS: "test", Key: "identity-mem", Content: "I am a helpful assistant", Importance: 0.95})
-	s.Put(ctx, PutParams{NS: "test", Key: "ltm-mem", Content: "user prefers dark mode", Importance: 0.8})
+	s.Put(ctx, PutParams{NS: "test", Key: "identity-mem", Content: "I am a helpful assistant", Importance: 0.95, Pinned: true})
+	s.Put(ctx, PutParams{NS: "test", Key: "ltm-mem", Content: "user prefers dark mode", Importance: 0.8, Pinned: true})
 	s.Put(ctx, PutParams{NS: "test", Key: "stm-mem", Content: "working on search feature today"})
 
-	// Set tiers manually
-	s.db.Exec(`UPDATE memories SET tier = 'identity' WHERE key = 'identity-mem'`)
-	s.db.Exec(`UPDATE memories SET tier = 'ltm' WHERE key = 'ltm-mem'`)
-
-	// Context with pinned tiers
+	// Context loads pinned memories first
 	result, err := s.Context(ctx, ContextParams{
-		NS:       "test",
-		Query:    "search",
-		Budget:   4000,
-		PinTiers: []string{"identity", "ltm"},
+		NS:     "test",
+		Query:  "search",
+		Budget: 4000,
 	})
 	if err != nil {
 		t.Fatal(err)

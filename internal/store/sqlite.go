@@ -189,6 +189,12 @@ func (s *SQLiteStore) migrate() error {
 	// Backfill FTS for any existing chunks not yet indexed
 	s.db.Exec(`INSERT OR IGNORE INTO chunks_fts(rowid, text) SELECT rowid, text FROM chunks`)
 
+	// Phase 4: pinned column for chronic accessibility (replaces tier=identity)
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)`)
+	// Migrate: existing identity-tier memories become pinned LTM
+	s.db.Exec(`UPDATE memories SET pinned = 1, tier = 'ltm' WHERE tier = 'identity' AND pinned = 0`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 
@@ -197,8 +203,10 @@ func (s *SQLiteStore) migrate() error {
 
 func tierOrDefault(tier string) string {
 	switch tier {
-	case "sensory", "stm", "ltm", "identity", "dormant":
+	case "sensory", "stm", "ltm", "dormant":
 		return tier
+	case "identity":
+		return "ltm" // backward compat: identity tier mapped to ltm + pinned
 	default:
 		return "stm"
 	}
@@ -212,6 +220,11 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	now := time.Now().UTC()
 	id := s.newID()
 
+	// Backward compat: tier=identity → ltm + pinned
+	pinned := p.Pinned
+	if p.Tier == "identity" {
+		pinned = true
+	}
 	tier := tierOrDefault(p.Tier)
 
 	kind := p.Kind
@@ -221,7 +234,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		switch tier {
 		case "sensory", "stm":
 			kind = "episodic"
-		default: // ltm, identity, dormant
+		default: // ltm, dormant
 			kind = "semantic"
 		}
 	}
@@ -279,11 +292,15 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	}
 	estTokens := estimateTokens(p.Content)
 
+	pinnedInt := 0
+	if pinned {
+		pinnedInt = 1
+	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at, importance, est_tokens, tier)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at, importance, est_tokens, tier, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
 		id, p.NS, p.Key, p.Content, kind, tagsJSON, version, supersedes,
-		now.Format(time.RFC3339), priority, metaPtr, expiresAt, importance, estTokens, tier)
+		now.Format(time.RFC3339), priority, metaPtr, expiresAt, importance, estTokens, tier, pinnedInt)
 	if err != nil {
 		return nil, fmt.Errorf("insert memory: %w", err)
 	}
@@ -346,6 +363,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		Priority:   priority,
 		Importance: importance,
 		Tier:       tier,
+		Pinned:     pinned,
 		EstTokens:  estTokens,
 		Meta:       p.Meta,
 		ChunkCount: len(chunks),
@@ -372,14 +390,14 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 		// History shows all versions including expired (for audit)
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
 				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
-				        importance, utility_count, tier, est_tokens
+				        importance, utility_count, tier, est_tokens, pinned
 				 FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
 				 ORDER BY version DESC`
 		args = []interface{}{p.NS, p.Key}
 	} else if p.Version > 0 {
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
 				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
-				        importance, utility_count, tier, est_tokens
+				        importance, utility_count, tier, est_tokens, pinned
 				 FROM memories WHERE ns = ? AND key = ? AND version = ? AND deleted_at IS NULL
 				   AND (expires_at IS NULL OR expires_at > ?)
 				 LIMIT 1`
@@ -387,7 +405,7 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 	} else {
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
 				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
-				        importance, utility_count, tier, est_tokens
+				        importance, utility_count, tier, est_tokens, pinned
 				 FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
 				   AND (expires_at IS NULL OR expires_at > ?)
 				 ORDER BY version DESC LIMIT 1`
@@ -432,7 +450,7 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 func (s *SQLiteStore) History(ctx context.Context, p HistoryParams) ([]model.Memory, error) {
 	query := `SELECT id, ns, key, content, kind, tags, version, supersedes,
 			         created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
-				        importance, utility_count, tier, est_tokens
+				        importance, utility_count, tier, est_tokens, pinned
 			  FROM memories WHERE ns = ? AND key = ?
 			  ORDER BY version ASC`
 
@@ -496,7 +514,7 @@ func (s *SQLiteStore) List(ctx context.Context, p ListParams) ([]model.Memory, e
 	query := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		       m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		       m.importance, m.utility_count, m.tier, m.est_tokens
+		       m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -1149,13 +1167,13 @@ func (s *SQLiteStore) Peek(ctx context.Context, ns string) (*PeekResult, error) 
 		result.TotalEstTokens[tier] = tokens
 	}
 
-	// 2. Identity summary (first identity-tier memory)
-	var identContent sql.NullString
+	// 2. Pinned summary (first pinned memory)
+	var pinnedContent sql.NullString
 	s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT content FROM memories WHERE %s AND tier = 'identity'
-			ORDER BY importance DESC, created_at DESC LIMIT 1`, where), args...).Scan(&identContent)
-	if identContent.Valid {
-		result.IdentitySummary = truncate(identContent.String, 200)
+		fmt.Sprintf(`SELECT content FROM memories WHERE %s AND pinned = 1
+			ORDER BY importance DESC, created_at DESC LIMIT 1`, where), args...).Scan(&pinnedContent)
+	if pinnedContent.Valid {
+		result.PinnedSummary = truncate(pinnedContent.String, 200)
 	}
 
 	// 3. Recent topics: top-5 tags by recency
@@ -1234,13 +1252,13 @@ func scanMemory(row scanner) (model.Memory, error) {
 	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier sql.NullString
 	var createdAt string
 	var importance sql.NullFloat64
-	var utilityCount, estTokens sql.NullInt64
+	var utilityCount, estTokens, pinned sql.NullInt64
 
 	err := row.Scan(
 		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
 		&m.Version, &supersedes, &createdAt, &deletedAt,
 		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
-		&importance, &utilityCount, &tier, &estTokens,
+		&importance, &utilityCount, &tier, &estTokens, &pinned,
 	)
 	if err != nil {
 		return m, err
@@ -1283,6 +1301,9 @@ func scanMemory(row scanner) (model.Memory, error) {
 	}
 	if estTokens.Valid {
 		m.EstTokens = int(estTokens.Int64)
+	}
+	if pinned.Valid && pinned.Int64 != 0 {
+		m.Pinned = true
 	}
 
 	return m, nil

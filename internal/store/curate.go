@@ -10,38 +10,39 @@ import (
 type CurateParams struct {
 	NS  string // namespace
 	Key string // key within namespace
-	Op  string // promote | demote | boost | diminish | archive | delete
+	Op  string // promote | demote | boost | diminish | archive | delete | pin | unpin
 }
 
 // CurateResult describes what happened after curation.
 type CurateResult struct {
-	NS         string  `json:"ns"`
-	Key        string  `json:"key"`
-	Op         string  `json:"op"`
-	OldTier    string  `json:"old_tier,omitempty"`
-	NewTier    string  `json:"new_tier,omitempty"`
+	NS            string  `json:"ns"`
+	Key           string  `json:"key"`
+	Op            string  `json:"op"`
+	OldTier       string  `json:"old_tier,omitempty"`
+	NewTier       string  `json:"new_tier,omitempty"`
 	OldImportance float64 `json:"old_importance,omitempty"`
 	NewImportance float64 `json:"new_importance,omitempty"`
+	OldPinned     bool    `json:"old_pinned,omitempty"`
+	NewPinned     bool    `json:"new_pinned,omitempty"`
 }
 
-// tier promotion order: dormant → stm → ltm → identity
+// tier promotion order: dormant → stm → ltm (ltm is ceiling)
 var tierUp = map[string]string{
 	"dormant": "stm",
 	"stm":     "ltm",
-	"ltm":     "identity",
 }
 
-// tier demotion order: identity → ltm → stm → dormant
+// tier demotion order: ltm → stm → dormant (dormant is floor)
 var tierDown = map[string]string{
-	"identity": "ltm",
-	"ltm":      "stm",
-	"stm":      "dormant",
+	"ltm": "stm",
+	"stm": "dormant",
 }
 
 // validCurateOps lists the allowed operations.
 var validCurateOps = map[string]bool{
 	"promote": true, "demote": true, "boost": true,
 	"diminish": true, "archive": true, "delete": true,
+	"pin": true, "unpin": true,
 }
 
 // Curate applies a lifecycle action to a single memory identified by ns+key.
@@ -50,7 +51,7 @@ func (s *SQLiteStore) Curate(ctx context.Context, p CurateParams) (*CurateResult
 		return nil, fmt.Errorf("ns and key are required")
 	}
 	if !validCurateOps[p.Op] {
-		return nil, fmt.Errorf("invalid op %q; must be one of: promote, demote, boost, diminish, archive, delete", p.Op)
+		return nil, fmt.Errorf("invalid op %q; must be one of: promote, demote, boost, diminish, archive, delete, pin, unpin", p.Op)
 	}
 
 	// Resolve to latest version
@@ -114,6 +115,20 @@ func (s *SQLiteStore) Curate(ctx context.Context, p CurateParams) (*CurateResult
 	case "delete":
 		now := time.Now().UTC().Format(time.RFC3339)
 		return result, s.applyDelete(ctx, m.ID, now)
+
+	case "pin":
+		result.OldPinned = m.Pinned
+		result.NewPinned = true
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE memories SET pinned = 1 WHERE id = ? AND deleted_at IS NULL`, m.ID)
+		return result, err
+
+	case "unpin":
+		result.OldPinned = m.Pinned
+		result.NewPinned = false
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE memories SET pinned = 0 WHERE id = ? AND deleted_at IS NULL`, m.ID)
+		return result, err
 
 	default:
 		return nil, fmt.Errorf("unhandled op: %s", p.Op)

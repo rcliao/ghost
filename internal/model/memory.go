@@ -23,6 +23,7 @@ type Memory struct {
 	Importance     float64    `json:"importance"`
 	UtilityCount   int        `json:"utility_count"`
 	Tier           string     `json:"tier"`
+	Pinned         bool       `json:"pinned"`
 	EstTokens      int        `json:"est_tokens"`
 	ChunkCount     int        `json:"chunks,omitempty"`
 	Files          []FileRef  `json:"files,omitempty"`

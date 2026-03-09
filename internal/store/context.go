@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/rcliao/ghost/internal/model"
@@ -53,20 +52,14 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	usedTokens := 0
 	seen := map[string]bool{} // track memory IDs to deduplicate
 
-	// Default PinTiers to identity + ltm when not explicitly set.
-	pinTiers := p.PinTiers
-	if len(pinTiers) == 0 {
-		pinTiers = []string{"identity", "ltm"}
-	}
-
-	// Phase 1: Load pinned tier memories first
-	if len(pinTiers) > 0 {
+	// Phase 1: Load pinned memories first (chronically accessible)
+	{
 		pinBudget := p.PinBudget
 		if pinBudget <= 0 {
 			pinBudget = budget / 3
 		}
 
-		pinned, err := s.loadPinnedTierMemories(ctx, p.NS, pinTiers)
+		pinned, err := s.loadPinnedMemories(ctx, p.NS)
 		if err != nil {
 			return nil, fmt.Errorf("load pinned tiers: %w", err)
 		}
@@ -107,6 +100,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		NS:    p.NS,
 		Query: p.Query,
 		Kind:  p.Kind,
+		Tags:  p.Tags,
 		Limit: 50,
 	})
 	if err != nil {
@@ -237,21 +231,12 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	return result, nil
 }
 
-// loadPinnedTierMemories loads memories from the specified tiers, ordered by importance.
-func (s *SQLiteStore) loadPinnedTierMemories(ctx context.Context, ns string, tiers []string) ([]model.Memory, error) {
-	if len(tiers) == 0 {
-		return nil, nil
-	}
-
+// loadPinnedMemories loads memories with pinned=1, ordered by importance.
+func (s *SQLiteStore) loadPinnedMemories(ctx context.Context, ns string) ([]model.Memory, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	placeholders := strings.Repeat("?,", len(tiers))
-	placeholders = placeholders[:len(placeholders)-1]
 
-	where := fmt.Sprintf("m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.tier IN (%s)", placeholders)
+	where := "m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.pinned = 1"
 	args := []interface{}{now}
-	for _, t := range tiers {
-		args = append(args, t)
-	}
 
 	if ns != "" {
 		nsf := ParseNSFilter(ns)
@@ -264,7 +249,7 @@ func (s *SQLiteStore) loadPinnedTierMemories(ctx context.Context, ns string, tie
 
 	query := fmt.Sprintf(`SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		m.importance, m.utility_count, m.tier, m.est_tokens
+		m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
@@ -293,18 +278,16 @@ func (s *SQLiteStore) loadPinnedTierMemories(ctx context.Context, ns string, tie
 
 func tierScore(tier string) float64 {
 	switch tier {
-	case "identity":
-		return 1.0
 	case "ltm":
-		return 0.75
+		return 1.0
 	case "stm":
-		return 0.25
+		return 0.5
 	case "sensory":
-		return 0.05
-	case "dormant":
 		return 0.1
+	case "dormant":
+		return 0.15
 	default:
-		return 0.25
+		return 0.5
 	}
 }
 

@@ -54,16 +54,17 @@ The core unit. Indexed by `(namespace, key)` with automatic versioning.
 ```
 Memory {
   ID             string      // ULID
-  NS             string      // hierarchical namespace (e.g. "project:ghost")
-  Key            string      // unique within namespace
+  NS             string      // agent namespace (e.g. "agent:pikamini")
+  Key            string      // unique within namespace, descriptive
   Content        string      // the actual memory text
   Kind           string      // semantic | episodic | procedural
-  Tier           string      // sensory | stm | ltm | identity | dormant
+  Tier           string      // sensory | stm | ltm | dormant (lifecycle stage)
+  Pinned         bool        // always loaded in context, exempt from decay
   Priority       string      // low | normal | high | critical
   Importance     float64     // 0.0–1.0 continuous score
   Version        int         // auto-incremented on update
   Supersedes     string      // ID of previous version
-  Tags           []string
+  Tags           []string    // first-class filtering (identity, lore, project:ghost, chat:123)
   AccessCount    int         // incremented on every retrieval
   UtilityCount   int         // incremented when memory was actually useful
   EstTokens      int         // rough token estimate (len/4 + 20)
@@ -106,38 +107,39 @@ Schema evolution uses `ALTER TABLE ADD COLUMN` with safe defaults — executed o
 
 FTS5 is kept in sync with chunks via `AFTER INSERT/DELETE/UPDATE` triggers.
 
-## Namespace Conventions
+## Namespace & Tag Conventions
 
-Namespaces are hierarchical strings using `:` as separator. Ghost doesn't enforce naming, but recommends these conventions for interoperability across apps.
+### Namespaces
 
-### Well-Known Namespaces (Agent Profile)
+Namespaces represent **agent identity** — each namespace is one agent's isolated memory space.
 
-These top-level namespaces define the agent's core identity and are typically always injected into the system prompt. They are app-agnostic — any app using the same ghost DB shares them.
+| Namespace | Purpose |
+|-----------|---------|
+| `agent:<name>` | Per-agent memory space (e.g. `agent:pikamini`, `agent:coder`) |
 
-| Namespace | Purpose | Example |
-|-----------|---------|---------|
-| `identity` | Who the agent is — name, personality, pronouns, appearance | `"Atlas — a helpful AI assistant"` |
-| `lore` | Background knowledge, family facts, relationships, fun trivia | `"The team does weekly retros every Friday"` |
-| `user:<name>` | Per-user preferences and context | `user:alice`, `user:bob` |
+Memories are isolated by namespace — no cross-namespace visibility.
 
-### App-Scoped Namespaces
+### Tags (First-Class Filtering)
 
-Apps prefix with their name to avoid collisions. These are managed by the owning app.
+Tags replace the old namespace hierarchy for categorization. Use tags to classify what a memory is about:
 
-| Pattern | Purpose | Example |
-|---------|---------|---------|
-| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:12345` |
-| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:12345` |
-| `<app>:capabilities` | What the agent can do in this app | `shell:capabilities` |
-| `<app>:conventions` | Coding/writing conventions | `coder:conventions` |
-| `<app>:learnings` | Accumulated insights | `coder:learnings` |
+| Tag | Purpose |
+|-----|---------|
+| `identity` | Core agent persona (name, personality, appearance) |
+| `lore` | Background knowledge (relationships, fun facts) |
+| `chat:<id>` | Per-conversation context |
+| `project:<name>` | Project knowledge |
+| `learning` | Accumulated insights |
+| `convention` | Coding/writing rules |
+| `capability` | What the agent can do |
+| `user:<name>` | Per-user preferences |
 
 ### Design Rationale
 
-- **Well-known namespaces are app-agnostic.** A Telegram bridge, Discord bot, or CLI tool all share the same `identity` and `lore` — the agent is the same entity across surfaces.
-- **App namespaces are isolated.** `shell:chat:*` belongs to shell; a different app won't write there.
-- **Wildcard queries** (`shell:chat:*`) let apps query all their namespaces without listing each one.
-- **No enforced schema.** These are conventions, not constraints. Apps can define any namespace they need.
+- **Namespace = agent identity.** One DB can host multiple agents. Each is isolated.
+- **Tags = flexible metadata.** Categories are tags, not namespace segments.
+- **Pinned = chronic accessibility.** Replaces the old `identity` tier. Based on cognitive science — self-knowledge is chronically accessible LTM, not a separate memory store.
+- **No enforced schema.** These are conventions, not constraints.
 
 ## Retrieval Pipeline
 
@@ -155,8 +157,8 @@ RRF merges ranked results: `score = Σ 1/(60 + rank_i)` across methods.
 
 Two-phase greedy packing within a token budget:
 
-1. **Phase 1 (Pinned)**: Load `identity` + `ltm` tier memories, ordered by importance. Fills up to `budget/3`.
-2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric. Fills remaining budget.
+1. **Phase 1 (Pinned)**: Load all `pinned = true` memories, ordered by importance. Fills up to `budget/3`.
+2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric, filterable by tags. Fills remaining budget.
 
 **Composite scoring** (5 factors, kind-specific weights):
 
@@ -170,7 +172,7 @@ Weights vary by memory kind to match cognitive retrieval patterns:
 | Access freq | 0.15 | 0.10 | 0.35 |
 | Tier boost | 0.15 | 0.20 | 0.15 |
 
-Tier boost values: identity=1.0, ltm=0.75, stm=0.25, sensory=0.05, dormant=0.1
+Tier boost values: ltm=1.0, stm=0.5, dormant=0.15, sensory=0.1
 
 Memories that don't fully fit get excerpted (truncated with "...") if at least 25 tokens remain.
 
@@ -180,9 +182,10 @@ Rule-based lifecycle management. No LLM calls — purely deterministic.
 
 Each rule has a **condition** (AND-joined fields) and an **action**:
 
+Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they skip rule evaluation entirely.
+
 | Built-in Rule | Condition | Action |
 |---------------|-----------|--------|
-| `sys-pin-identity` | tier=identity | PIN (blocks other rules) |
 | `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
 | `sys-decay-sensory` | sensory, >4h old | DELETE |
 | `sys-decay-unaccessed` | STM, >72h old, <3 accesses | DECAY importance ×0.95 (min 0.1) |
@@ -198,7 +201,7 @@ Exposes 5 tools over stdio transport using `github.com/modelcontextprotocol/go-s
 - `ghost_put` — Store/update a memory
 - `ghost_search` — Full-text search with ranking
 - `ghost_context` — Budget-aware context assembly (includes `compaction_suggested` signal)
-- `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete)
+- `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin)
 - `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune)
 
 Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
