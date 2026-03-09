@@ -18,14 +18,16 @@ When to use:
 - Search memories when you need context from past sessions or when the user references something you should already know.
 
 Namespace conventions:
-- user:prefs — personal preferences (editor, timezone, dietary restrictions)
-- user:persona — communication style, personality traits
-- project:<name> — project-specific knowledge (architecture, patterns, decisions)
-- session:<id> — ephemeral context (use TTL)
+- identity — core agent identity (name, personality, appearance)
+- lore — background knowledge, relationships, trivia
+- user:<name> — per-user preferences and context
+- <app>:<scope> — app-specific data (e.g. shell:chat:123, coder:learnings)
 
 Memory kinds: semantic (facts, default), episodic (events/experiences), procedural (how-to/steps).
 Priority: low, normal (default), high, critical.
-Tier: stm (default, subject to decay), ltm (proven useful), identity (permanent core knowledge).`
+Tier: stm (default, subject to decay), ltm (proven useful), identity (permanent core knowledge).
+
+When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
 // Serve starts the MCP server on stdio, blocking until the connection closes.
 func Serve(ctx context.Context, st store.Store) error {
@@ -61,7 +63,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 		Name:        "ghost_put",
 		Description: "Store or update a memory. Storing to an existing namespace:key creates a new version.",
 		InputSchema: schema([]string{"ns", "key", "content"}, map[string]map[string]any{
-			"ns":         prop("string", "Namespace, e.g. user:prefs or project:myapp"),
+			"ns":         prop("string", "Namespace, e.g. identity, lore, user:ev, or myapp:learnings"),
 			"key":        prop("string", "Unique key within the namespace"),
 			"content":    prop("string", "Memory content text"),
 			"kind":       prop("string", "Memory kind: semantic (default), episodic, or procedural"),
@@ -170,6 +172,31 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Kind:   p.Kind,
 			Tags:   p.Tags,
 			Budget: p.Budget,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(result)
+	})
+
+	server.AddTool(&mcp.Tool{
+		Name:        "ghost_reflect",
+		Description: "Run the reflect cycle to promote, decay, demote, archive, or delete memories based on lifecycle rules. Call this to maintain memory hygiene — especially when ghost_context indicates compaction is needed (compaction_suggested: true).",
+		InputSchema: schema([]string{}, map[string]map[string]any{
+			"ns":      prop("string", "Namespace filter (optional, empty = all namespaces)"),
+			"dry_run": prop("boolean", "If true, preview what would happen without applying changes"),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS     string `json:"ns"`
+			DryRun bool   `json:"dry_run"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		result, err := st.Reflect(ctx, store.ReflectParams{
+			NS:     p.NS,
+			DryRun: p.DryRun,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil

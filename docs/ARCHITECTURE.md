@@ -106,6 +106,39 @@ Schema evolution uses `ALTER TABLE ADD COLUMN` with safe defaults — executed o
 
 FTS5 is kept in sync with chunks via `AFTER INSERT/DELETE/UPDATE` triggers.
 
+## Namespace Conventions
+
+Namespaces are hierarchical strings using `:` as separator. Ghost doesn't enforce naming, but recommends these conventions for interoperability across apps.
+
+### Well-Known Namespaces (Agent Profile)
+
+These top-level namespaces define the agent's core identity and are typically always injected into the system prompt. They are app-agnostic — any app using the same ghost DB shares them.
+
+| Namespace | Purpose | Example |
+|-----------|---------|---------|
+| `identity` | Who the agent is — name, personality, pronouns, appearance | `"Pikamini is a girl pikachu plush"` |
+| `lore` | Background knowledge, family facts, relationships, fun trivia | `"EV and Jennifer love Project Sekai"` |
+| `user:<name>` | Per-user preferences and context | `user:ev`, `user:jennifer` |
+
+### App-Scoped Namespaces
+
+Apps prefix with their name to avoid collisions. These are managed by the owning app.
+
+| Pattern | Purpose | Example |
+|---------|---------|---------|
+| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:832881763` |
+| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:832881763` |
+| `<app>:capabilities` | What the agent can do in this app | `shell:capabilities` |
+| `<app>:conventions` | Coding/writing conventions | `coder:conventions` |
+| `<app>:learnings` | Accumulated insights | `coder:learnings` |
+
+### Design Rationale
+
+- **Well-known namespaces are app-agnostic.** A Telegram bridge, Discord bot, or CLI tool all share the same `identity` and `lore` — the agent is the same entity across surfaces.
+- **App namespaces are isolated.** `shell:chat:*` belongs to shell; a different app won't write there.
+- **Wildcard queries** (`shell:chat:*`) let apps query all their namespaces without listing each one.
+- **No enforced schema.** These are conventions, not constraints. Apps can define any namespace they need.
+
 ## Retrieval Pipeline
 
 ### Search

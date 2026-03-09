@@ -14,54 +14,67 @@ go install github.com/rcliao/ghost/cmd/ghost@latest
 
 ```bash
 # Store a memory
-ghost put -n "user:prefs" -k "editor" "Prefers Neovim with Lazy plugin manager"
+ghost put -n "identity" -k "name" "Pikamini — a girl pikachu plush"
 
 # Store with priority
-ghost put -n "user:prefs" -k "allergies" -p critical "Allergic to peanuts"
+ghost put -n "user:ev" -k "allergies" -p critical "Allergic to peanuts"
 
 # Store with TTL (auto-expires)
-ghost put -n "session" -k "token" --ttl 24h "abc123"
+ghost put -n "myapp:session" -k "token" --ttl 24h "abc123"
 
 # Pipe content from stdin
-cat session-notes.md | ghost put -n "project:myapp" -k "session-2026-02-16" --kind episodic
+cat session-notes.md | ghost put -n "myapp:logs" -k "session-2026-02-16" --kind episodic
 
 # Retrieve latest version
-ghost get -n "user:prefs" -k "editor"
+ghost get -n "identity" -k "name"
 
 # Get all versions
-ghost get -n "user:prefs" -k "editor" --history
+ghost get -n "identity" -k "name" --history
 
 # Get specific version
-ghost get -n "user:prefs" -k "editor" -v 1
+ghost get -n "identity" -k "name" -v 1
 
 # List all memories in a namespace
-ghost list -n "user:prefs"
+ghost list -n "identity"
 
 # List with filters
-ghost list -n "project:myapp" --kind episodic --tags "deploy,infra"
+ghost list -n "myapp:logs" --kind episodic --tags "deploy,infra"
 
 # List keys only
-ghost list -n "project:myapp" --keys-only
+ghost list -n "myapp:logs" --keys-only
 
 # Search memories
-ghost search -n "user:prefs" "neovim"
+ghost search -n "identity" "pikachu"
 ghost search "deploy"
 
 # Database stats
 ghost stats
 
 # Export memories
-ghost export -n "user:prefs" > backup.json
+ghost export -n "identity" > backup.json
 
 # Import memories
 ghost import < backup.json
 
 # Soft-delete (recoverable)
-ghost rm -n "user:prefs" -k "old-thing"
+ghost rm -n "lore" -k "old-thing"
 
 # Hard-delete all versions (permanent)
-ghost rm -n "user:prefs" -k "old-thing" --all-versions --hard
+ghost rm -n "lore" -k "old-thing" --all-versions --hard
 ```
+
+## Namespace Conventions
+
+Namespaces use `:` as separator. Ghost recommends these conventions:
+
+| Namespace | Purpose |
+|-----------|---------|
+| `identity` | Core agent identity — name, personality, appearance |
+| `lore` | Background knowledge, relationships, trivia |
+| `user:<name>` | Per-user preferences and context |
+| `<app>:<scope>` | App-specific data (e.g. `shell:chat:123`, `coder:learnings`) |
+
+Well-known namespaces (`identity`, `lore`, `user:*`) are app-agnostic and shared across all apps using the same ghost DB. App-scoped namespaces are isolated by prefix. See [Architecture](docs/ARCHITECTURE.md) for details.
 
 ## Commands
 
