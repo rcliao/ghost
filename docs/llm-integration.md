@@ -30,14 +30,15 @@ Add ghost to your Claude Code MCP config (`~/.claude.json`):
 }
 ```
 
-This exposes 4 tools to the agent:
+This exposes 5 tools to the agent:
 
 | Tool | Purpose |
 |------|---------|
 | `ghost_put` | Store or update a memory |
 | `ghost_search` | Full-text search with ranking |
 | `ghost_context` | Budget-aware context assembly |
-| `ghost_reflect` | Run lifecycle rules (promote, decay, prune) |
+| `ghost_curate` | Instance-level lifecycle actions on a single memory |
+| `ghost_reflect` | Run lifecycle rules across all memories (promote, decay, prune) |
 
 ### Teaching the Agent to Use Ghost
 
@@ -64,6 +65,16 @@ Set importance 0.6-0.8 for most learnings, 0.9+ for critical decisions.
 ### When to retrieve (ghost_context)
 At the start of a task, query ghost for relevant context:
   ghost_context(query="<current task>", ns="project:<name>", budget=2000)
+
+### When to curate (ghost_curate)
+Use ghost_curate to act on individual memories:
+  ghost_curate(ns="project:myapp", key="old-pattern", op="archive")
+
+Operations: promote (tier up), demote (tier down), boost (importance +0.2),
+diminish (importance -0.2), archive (→dormant), delete (soft-delete).
+
+Use this when reviewing memories from ghost_context or ghost_search and
+deciding which ones to keep, promote, or remove.
 
 ### When to reflect (ghost_reflect)
 Run ghost_reflect when ghost_context returns compaction_suggested: true,
@@ -93,6 +104,41 @@ or after a long session with many stored learnings.
 4. **Tier selection** — Default tier is `stm` (subject to decay). Set `tier: "ltm"` for knowledge that should persist long-term. Only use `identity` tier for core agent identity facts.
 
 5. **Reflect periodically** — The reflect cycle promotes frequently-accessed STM memories to LTM and decays unused ones. Without it, STM memories accumulate without curation.
+
+### Curating Memories (ghost_curate)
+
+`ghost_curate` provides direct, instance-level control over individual memories. Unlike `ghost_reflect` (which applies rules to all memories), `ghost_curate` lets you act on a specific memory by namespace and key.
+
+**Operations:**
+
+| Op | Effect |
+|----|--------|
+| `promote` | Tier up: dormant → stm → ltm → identity |
+| `demote` | Tier down: identity → ltm → stm → dormant |
+| `boost` | Importance +0.2 (caps at 1.0) |
+| `diminish` | Importance -0.2 (floors at 0.1) |
+| `archive` | Move to dormant tier |
+| `delete` | Soft-delete (recoverable) |
+
+**Review workflow** — Use `ghost_context` or `ghost_search` to find memories, then `ghost_curate` to act on specific ones:
+
+```
+# 1. Find memories about a topic
+ghost_search(query="database migration", ns="project:myapp")
+
+# 2. Promote a useful one
+ghost_curate(ns="project:myapp", key="pg-migration-steps", op="promote")
+
+# 3. Archive an outdated one
+ghost_curate(ns="project:myapp", key="old-mysql-config", op="archive")
+
+# 4. Boost importance of a frequently-needed fact
+ghost_curate(ns="project:myapp", key="connection-pool-settings", op="boost")
+```
+
+**When to use curate vs reflect:**
+- `ghost_curate` — You know which specific memory to act on (intent-driven)
+- `ghost_reflect` — Run bulk lifecycle maintenance across all memories (rule-driven)
 
 ---
 
@@ -157,6 +203,18 @@ store.Put(ctx, memory.PutParams{
 })
 ```
 
+### Curating Individual Memories
+
+```go
+// Promote a useful memory from STM to LTM
+result, err := store.Curate(ctx, memory.CurateParams{
+    NS:  "project:myapp",
+    Key: "auth-architecture",
+    Op:  "promote",  // promote | demote | boost | diminish | archive | delete
+})
+fmt.Printf("%s: %s → %s\n", result.Op, result.OldTier, result.NewTier)
+```
+
 ### Running Reflect
 
 ```go
@@ -185,6 +243,11 @@ ghost context -n "project:myapp" -q "database setup" --budget 2000
 
 # Search for specific knowledge
 ghost search "PostgreSQL" -n "project:myapp"
+
+# Curate a specific memory
+ghost curate -n "project:myapp" -k "old-decision" --op archive
+ghost curate -n "project:myapp" -k "key-insight" --op promote
+ghost curate -n "project:myapp" -k "critical-fact" --op boost
 
 # Run lifecycle maintenance
 ghost reflect --ns "project:myapp"
@@ -227,6 +290,18 @@ After N conversational exchanges, consolidate old episodic memories into a singl
 5. Delete the individual exchanges
 
 This prevents episodic memory from growing unboundedly while preserving the gist.
+
+### Pattern: Memory Review with Curate
+
+Use `ghost_search` or `ghost_context` to surface memories, then `ghost_curate` to act on individual ones. This is the recommended workflow for LLM agents doing memory hygiene:
+
+1. Query memories for a topic: `ghost_search(query="deployment")`
+2. Review each result — is it still accurate? still useful?
+3. Promote valuable ones: `ghost_curate(ns, key, op="promote")`
+4. Archive outdated ones: `ghost_curate(ns, key, op="archive")`
+5. Boost frequently-needed facts: `ghost_curate(ns, key, op="boost")`
+
+This is more natural for LLMs than defining reflect rules, since agents reason better about individual memories than about policies.
 
 ### Pattern: Compaction-Triggered Reflect
 
