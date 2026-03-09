@@ -42,7 +42,7 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 | `internal/chunker` | Markdown-aware text splitting (~400 char targets) | 193 LOC |
 | `internal/embedding` | Pluggable vector embeddings (local/Ollama/OpenAI) | ~320 LOC |
 | `internal/ingest` | Markdown file parser (H2 → sections → memories) | 154 LOC |
-| `internal/mcpserver` | MCP server over stdio (3 tools: put, search, context) | 210 LOC |
+| `internal/mcpserver` | MCP server over stdio (4 tools: put, search, context, reflect) | ~230 LOC |
 | `memory.go` | Public library API — re-exports from internal packages | 102 LOC |
 
 ## Data Model
@@ -185,12 +185,13 @@ Rules are evaluated in priority order. First matching rule wins per memory. Cust
 
 ## MCP Server
 
-Exposes 3 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
+Exposes 4 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
 - `ghost_put` — Store/update a memory
 - `ghost_search` — Full-text search with ranking
-- `ghost_context` — Budget-aware context assembly
+- `ghost_context` — Budget-aware context assembly (includes `compaction_suggested` signal)
+- `ghost_reflect` — Run lifecycle rules (promote, decay, prune)
 
-Started via `ghost mcp` subcommand.
+Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
 
 ## Library API
 
