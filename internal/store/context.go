@@ -35,9 +35,11 @@ type ContextMemory struct {
 
 // ContextResult is the assembled context response.
 type ContextResult struct {
-	Budget   int             `json:"budget"`
-	Used     int             `json:"used"`
-	Memories []ContextMemory `json:"memories"`
+	Budget              int             `json:"budget"`
+	Used                int             `json:"used"`
+	Memories            []ContextMemory `json:"memories"`
+	Skipped             int             `json:"skipped,omitempty"`
+	CompactionSuggested bool            `json:"compaction_suggested,omitempty"`
 }
 
 // Context assembles relevant memories within a token budget.
@@ -168,6 +170,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	})
 
 	// Greedy packing into remaining budget
+	pinnedCount := len(result.Memories)
 	for _, c := range candidates {
 		memTokens := c.memory.EstTokens
 		if memTokens <= 0 {
@@ -206,6 +209,16 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	}
 
 	result.Used = usedTokens
+
+	// Track how many search candidates were skipped due to budget exhaustion.
+	// If many candidates couldn't fit, suggest the caller run reflect/compaction.
+	includedFromSearch := len(result.Memories) - pinnedCount
+	if skipped := len(candidates) - includedFromSearch; skipped > 0 {
+		result.Skipped = skipped
+		if skipped > 2 {
+			result.CompactionSuggested = true
+		}
+	}
 
 	// Touch access metadata for all returned memories
 	var ids []string

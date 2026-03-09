@@ -603,6 +603,567 @@ func TestEvalReflectLifecycle(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// NO-RESULT PRECISION: Queries about things not in memory
+//
+// When the agent asks about something genuinely absent, the system
+// should return nothing useful — not misleading near-matches. An agent
+// that gets plausible-but-wrong results will confidently state wrong facts.
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalNoResultPrecision(t *testing.T) {
+	s, _ := seedEvalStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		query string
+		// All results are "wrong" for these queries — we measure how many come back
+		// and whether any are dangerously misleading
+		dangerousKeys []string // keys that would cause incorrect agent behavior
+	}{
+		{
+			// Nothing in seed corpus about Kubernetes
+			name:          "absent_kubernetes",
+			query:         "Kubernetes pod deployment configuration",
+			dangerousKeys: []string{"ship-process"}, // deploy != k8s deploy
+		},
+		{
+			// Nothing about MongoDB — alpha uses PostgreSQL, beta uses S3/DynamoDB
+			name:          "absent_mongodb",
+			query:         "MongoDB replica set configuration",
+			dangerousKeys: []string{"data-layer"}, // PostgreSQL != MongoDB
+		},
+		{
+			// Nothing about Python — projects use Go
+			name:          "absent_python",
+			query:         "Python virtual environment setup",
+			dangerousKeys: []string{"go-version"}, // Go != Python
+		},
+		{
+			// Nothing about CI — ship-process mentions CI but not CI config
+			name:          "absent_ci_config",
+			query:         "GitHub Actions CI workflow YAML configuration",
+			dangerousKeys: nil,
+		},
+		{
+			// Completely unrelated domain
+			name:          "absent_cooking",
+			query:         "best recipe for chocolate soufflé",
+			dangerousKeys: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := s.Search(ctx, SearchParams{Query: tt.query, Limit: 5})
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+
+			retrieved := extractKeys(results)
+			t.Logf("no-result: query=%q retrieved=%v (want: nothing relevant)", tt.query, retrieved)
+
+			// Check for dangerously misleading results in top-3
+			for _, dk := range tt.dangerousKeys {
+				for i, k := range retrieved {
+					if k == dk && i < 3 {
+						t.Logf("BENCHMARK: dangerous false positive %q at rank %d for %q", dk, i+1, tt.query)
+					}
+				}
+			}
+
+			// Track how many results come back (ideal: 0 or low-relevance)
+			if len(results) > 0 {
+				t.Logf("BENCHMARK: %d results for absent query %q — ideally 0", len(results), tt.query)
+			}
+		})
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// VAGUE QUERIES: Underspecified searches that agents actually make
+//
+// Real agent recall is often imprecise: "the config thing", "that issue",
+// "our testing approach". Tests whether the system returns useful results
+// or garbage under ambiguity.
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalVagueQueries(t *testing.T) {
+	s, _ := seedEvalStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		query      string
+		acceptable []string // any of these would be a reasonable answer
+		topK       int
+	}{
+		{
+			// Very vague — "the config" could mean many things
+			name:       "the_config",
+			query:      "the config",
+			acceptable: []string{"alerts-config", "editor-setup"},
+			topK:       5,
+		},
+		{
+			// "that issue" — could be any incident
+			name:       "that_issue",
+			query:      "that issue we had",
+			acceptable: []string{"perf-incident-jan", "perf-incident-mar", "beta-pool-fix", "beta-pool-incident"},
+			topK:       5,
+		},
+		{
+			// "our testing approach" — vague but has one clear target
+			name:       "testing_approach",
+			query:      "how do we test things",
+			acceptable: []string{"test-pyramid"},
+			topK:       5,
+		},
+		{
+			// "the database stuff" — multiple valid answers
+			name:       "database_stuff",
+			query:      "the database stuff",
+			acceptable: []string{"data-layer", "perf-incident-jan", "perf-incident-mar", "legacy-orm"},
+			topK:       5,
+		},
+		{
+			// "user info" — could be preferences, schedule, identity
+			name:       "user_info",
+			query:      "user info",
+			acceptable: []string{"identity-core", "personality", "editor-setup", "comm-style", "schedule", "git-prefs"},
+			topK:       5,
+		},
+		{
+			// Single word query
+			name:       "single_word_deploy",
+			query:      "deploy",
+			acceptable: []string{"ship-process", "deploy-yesterday", "deploy-last-week", "deploy-last-month"},
+			topK:       5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := s.Search(ctx, SearchParams{Query: tt.query, Limit: tt.topK})
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+
+			retrieved := extractKeys(results)
+			acceptSet := make(map[string]bool, len(tt.acceptable))
+			for _, k := range tt.acceptable {
+				acceptSet[k] = true
+			}
+
+			// Count how many of the top results are at least "acceptable"
+			hits := 0
+			for _, k := range retrieved {
+				if acceptSet[k] {
+					hits++
+				}
+			}
+
+			precision := 0.0
+			if len(retrieved) > 0 {
+				precision = float64(hits) / float64(len(retrieved))
+			}
+			anyHit := hits > 0
+
+			t.Logf("vague: query=%q retrieved=%v acceptable=%v precision=%.2f",
+				tt.query, retrieved, tt.acceptable, precision)
+
+			if !anyHit {
+				t.Logf("BENCHMARK: vague/%s — no acceptable results in top-%d", tt.name, tt.topK)
+			}
+		})
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITY FEEDBACK: UtilityInc affects future retrieval
+//
+// Agent marks a memory as useful. On the next retrieval, that memory
+// should rank higher due to the utility signal feeding into context
+// assembly scoring (accessFreq component).
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalUtilityFeedback(t *testing.T) {
+	s, ids := seedEvalStore(t)
+	ctx := context.Background()
+
+	t.Run("utility_inc_boosts_context_rank", func(t *testing.T) {
+		// Get initial context ranking for a query that returns multiple candidates
+		query := "project architecture and database"
+		baseline, err := s.Context(ctx, ContextParams{Query: query, Budget: 2000})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+		baselineKeys := contextKeys(baseline)
+
+		// Pick a memory that appeared but not at rank 1 — boost it via ID lookup
+		boostKey := ""
+		for i, m := range baseline.Memories {
+			if i > 1 { // skip first couple (likely pinned)
+				boostKey = m.Key
+				break
+			}
+		}
+		if boostKey == "" || ids[boostKey] == "" {
+			t.Skip("not enough memories to test boost")
+		}
+		boostID := ids[boostKey]
+
+		// Mark it as useful multiple times
+		for i := 0; i < 10; i++ {
+			if err := s.UtilityInc(ctx, boostID); err != nil {
+				t.Fatalf("utility inc: %v", err)
+			}
+		}
+
+		// Re-query — boosted memory should rank higher
+		after, err := s.Context(ctx, ContextParams{Query: query, Budget: 2000})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+		afterKeys := contextKeys(after)
+
+		baselineRank := -1
+		afterRank := -1
+		for i, k := range baselineKeys {
+			if k == boostKey {
+				baselineRank = i
+			}
+		}
+		for i, k := range afterKeys {
+			if k == boostKey {
+				afterRank = i
+			}
+		}
+
+		t.Logf("utility boost: %q rank %d -> %d (utility_count=10)", boostKey, baselineRank, afterRank)
+		if afterRank >= baselineRank && baselineRank >= 0 {
+			t.Logf("BENCHMARK: utility_inc did not improve rank for %q (%d -> %d)", boostKey, baselineRank, afterRank)
+		}
+	})
+
+	t.Run("high_access_low_utility_gets_pruned", func(t *testing.T) {
+		// reflect-prune-target has access=10, utility=1 (ratio=0.1 < 0.2)
+		// After reflect, it should be soft-deleted
+		// This is already tested in TestEvalReflectLifecycle but we verify
+		// that the utility ratio mechanism works end-to-end
+		var deletedAt *string
+		// Run reflect first
+		s.Reflect(ctx, ReflectParams{})
+		s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["reflect-prune-target"]).Scan(&deletedAt)
+		if deletedAt == nil {
+			t.Error("memory with 10 accesses but 1 utility should be pruned")
+		}
+
+		// Also verify it's excluded from search
+		results, _ := s.Search(ctx, SearchParams{Query: "surfaced often never useful", Limit: 10})
+		for _, r := range results {
+			if r.Key == "reflect-prune-target" {
+				t.Error("pruned memory still appears in search")
+			}
+		}
+	})
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ACCESS-DRIVEN PROMOTION: Frequently accessed STM -> LTM
+//
+// When an agent repeatedly retrieves a memory (via Get/Search/Context),
+// access_count grows. Reflect's promote rule (AccessGT: 3, AgeGTHours: 24)
+// should promote it from STM to LTM. This tests the full loop:
+// store -> access repeatedly -> reflect -> verify promotion.
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalAccessPromotion(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a fresh STM memory
+	mem, err := s.Put(ctx, PutParams{
+		NS:         "project:test",
+		Key:        "useful-pattern",
+		Content:    "When writing table-driven tests in Go, use t.Run for subtests and t.Helper in shared setup functions.",
+		Kind:       "procedural",
+		Priority:   "normal",
+		Importance: 0.6,
+	})
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Verify initial state: tier=stm (default), access_count=0
+	var tier string
+	var accessCount int
+	s.db.QueryRow(`SELECT tier, access_count FROM memories WHERE id = ?`, mem.ID).Scan(&tier, &accessCount)
+	if tier != "stm" {
+		t.Fatalf("expected initial tier=stm, got %q", tier)
+	}
+	if accessCount != 0 {
+		t.Fatalf("expected initial access_count=0, got %d", accessCount)
+	}
+
+	// Simulate agent accessing this memory 5 times via Get
+	for i := 0; i < 5; i++ {
+		_, err := s.Get(ctx, GetParams{NS: "project:test", Key: "useful-pattern"})
+		if err != nil {
+			t.Fatalf("get #%d: %v", i, err)
+		}
+	}
+
+	// Verify access count incremented
+	s.db.QueryRow(`SELECT access_count FROM memories WHERE id = ?`, mem.ID).Scan(&accessCount)
+	if accessCount < 4 {
+		t.Errorf("expected access_count >= 4 after 5 gets, got %d", accessCount)
+	}
+	t.Logf("after 5 gets: access_count=%d", accessCount)
+
+	// Backdate to >24h old (promote rule requires AgeGTHours: 24)
+	backdated := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	s.db.ExecContext(ctx, `UPDATE memories SET created_at = ? WHERE id = ?`, backdated, mem.ID)
+
+	// Run reflect
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatalf("reflect: %v", err)
+	}
+	t.Logf("reflect: promoted=%d", result.Promoted)
+
+	// Verify promotion to LTM
+	s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, mem.ID).Scan(&tier)
+	if tier != "ltm" {
+		t.Errorf("expected tier=ltm after promotion, got %q", tier)
+	}
+
+	// Run reflect again — should NOT demote (it's now LTM with high access)
+	s.Reflect(ctx, ReflectParams{})
+	s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, mem.ID).Scan(&tier)
+	if tier != "ltm" {
+		t.Errorf("expected tier=ltm to persist, got %q (double-reflect changed it)", tier)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// IDEMPOTENT RE-STORAGE / DEDUPLICATION
+//
+// Agent stores the same fact multiple times across sessions. Tests:
+// 1. Same key + same content → creates new version (current behavior)
+// 2. Search doesn't return duplicate entries for the same key
+// 3. Similar content under different keys → both appear in search
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	content := "User prefers dark mode in all applications and editors."
+
+	t.Run("same_key_same_content_versions", func(t *testing.T) {
+		// Put the same content twice with the same key
+		v1, err := s.Put(ctx, PutParams{
+			NS: "user:prefs", Key: "theme", Content: content,
+			Kind: "semantic", Priority: "normal", Importance: 0.7,
+		})
+		if err != nil {
+			t.Fatalf("put v1: %v", err)
+		}
+		if v1.Version != 1 {
+			t.Errorf("expected v1, got %d", v1.Version)
+		}
+
+		v2, err := s.Put(ctx, PutParams{
+			NS: "user:prefs", Key: "theme", Content: content,
+			Kind: "semantic", Priority: "normal", Importance: 0.7,
+		})
+		if err != nil {
+			t.Fatalf("put v2: %v", err)
+		}
+		if v2.Version != 2 {
+			t.Errorf("expected v2, got %d", v2.Version)
+		}
+
+		// Get should return only latest
+		mems, _ := s.Get(ctx, GetParams{NS: "user:prefs", Key: "theme"})
+		if len(mems) != 1 {
+			t.Errorf("expected 1 memory from Get, got %d", len(mems))
+		}
+		if mems[0].Version != 2 {
+			t.Errorf("expected version 2, got %d", mems[0].Version)
+		}
+	})
+
+	t.Run("search_no_duplicate_keys", func(t *testing.T) {
+		// Search should not return both v1 and v2 of the same key
+		results, err := s.Search(ctx, SearchParams{Query: "dark mode theme preference", Limit: 10})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+
+		keyCounts := make(map[string]int)
+		for _, r := range results {
+			keyCounts[r.Key]++
+		}
+		for key, count := range keyCounts {
+			if count > 1 {
+				t.Errorf("duplicate key %q appeared %d times in search results", key, count)
+			}
+		}
+		t.Logf("search results: %v", extractKeys(results))
+	})
+
+	t.Run("similar_content_different_keys", func(t *testing.T) {
+		// Store similar (but not identical) content under different keys
+		_, err := s.Put(ctx, PutParams{
+			NS: "user:prefs", Key: "editor-theme", Content: "VS Code dark theme with Monokai color scheme.",
+			Kind: "semantic", Priority: "normal", Importance: 0.6,
+		})
+		if err != nil {
+			t.Fatalf("put editor-theme: %v", err)
+		}
+
+		// Both should appear in search — different keys are legitimate
+		results, err := s.Search(ctx, SearchParams{Query: "dark mode theme", Limit: 10})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+
+		retrieved := extractKeys(results)
+		themeFound := false
+		editorThemeFound := false
+		for _, k := range retrieved {
+			if k == "theme" {
+				themeFound = true
+			}
+			if k == "editor-theme" {
+				editorThemeFound = true
+			}
+		}
+		t.Logf("dedup search: retrieved=%v theme=%v editor-theme=%v", retrieved, themeFound, editorThemeFound)
+
+		if !themeFound {
+			t.Logf("BENCHMARK: 'theme' not found in search for 'dark mode theme'")
+		}
+		if !editorThemeFound {
+			t.Logf("BENCHMARK: 'editor-theme' not found in search for 'dark mode theme'")
+		}
+	})
+
+	t.Run("context_no_duplicate_keys", func(t *testing.T) {
+		// Context should also not return duplicate keys
+		result, err := s.Context(ctx, ContextParams{
+			Query: "dark mode preferences", Budget: 2000,
+		})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+
+		keyCounts := make(map[string]int)
+		for _, m := range result.Memories {
+			keyCounts[m.Key]++
+		}
+		for key, count := range keyCounts {
+			if count > 1 {
+				t.Errorf("duplicate key %q appeared %d times in context", key, count)
+			}
+		}
+	})
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONTEXT EFFICIENCY: Information density within budget
+//
+// Tests whether context assembly maximizes useful information per token.
+// Given a fixed budget, the system should pack the most relevant memories
+// rather than wasting space on low-value pinned memories while excluding
+// the one memory that actually answers the question.
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalContextEfficiency(t *testing.T) {
+	s, _ := seedEvalStore(t)
+	ctx := context.Background()
+
+	t.Run("relevant_memory_not_crowded_out", func(t *testing.T) {
+		// "pgvector index corruption" has one perfect match (perf-incident-mar)
+		// Under a tight budget, pinned identity memories should not crowd it out
+		result, err := s.Context(ctx, ContextParams{
+			Query:    "pgvector index corruption vacuum",
+			Budget:   200,
+			PinTiers: []string{"identity"},
+		})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+
+		keys := contextKeys(result)
+		t.Logf("efficiency: budget=200 keys=%v", keys)
+
+		hasTarget := contextHasKey(result, "perf-incident-mar")
+		if !hasTarget {
+			t.Logf("BENCHMARK: perf-incident-mar crowded out by pinned memories at budget=200")
+		}
+	})
+
+	t.Run("budget_utilization_not_wasteful", func(t *testing.T) {
+		// With a generous budget, utilization should be reasonable
+		result, err := s.Context(ctx, ContextParams{
+			Query:    "project architecture and deployment",
+			Budget:   1000,
+			PinTiers: []string{"identity", "ltm"},
+		})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+
+		utilization := float64(result.Used) / float64(result.Budget)
+		t.Logf("efficiency: budget=%d used=%d util=%.2f memories=%d",
+			result.Budget, result.Used, utilization, len(result.Memories))
+
+		if utilization < 0.5 {
+			t.Logf("BENCHMARK: budget utilization %.2f < 0.5 — system is wasting budget", utilization)
+		}
+	})
+
+	t.Run("no_pin_budget_goes_to_search", func(t *testing.T) {
+		// Without pinned tiers, the entire budget should go to search-relevant memories
+		withPin, err := s.Context(ctx, ContextParams{
+			Query:    "JWT authentication rate limiting",
+			Budget:   500,
+			PinTiers: []string{"identity"},
+		})
+		if err != nil {
+			t.Fatalf("context with pin: %v", err)
+		}
+
+		withoutPin, err := s.Context(ctx, ContextParams{
+			Query:  "JWT authentication rate limiting",
+			Budget: 500,
+		})
+		if err != nil {
+			t.Fatalf("context without pin: %v", err)
+		}
+
+		pinKeys := contextKeys(withPin)
+		noPinKeys := contextKeys(withoutPin)
+		t.Logf("with pin: %v", pinKeys)
+		t.Logf("without pin: %v", noPinKeys)
+
+		// auth-flow should appear in both
+		authInPin := contextHasKey(withPin, "auth-flow")
+		authNoPin := contextHasKey(withoutPin, "auth-flow")
+		if !authInPin && !authNoPin {
+			t.Logf("BENCHMARK: auth-flow missing from both pinned and unpinned context")
+		}
+		// Without pin, there should be more room for search-relevant results
+		if len(noPinKeys) < len(pinKeys) {
+			t.Logf("BENCHMARK: removing pins didn't free budget for more search results (%d vs %d)", len(noPinKeys), len(pinKeys))
+		}
+	})
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // MULTI-HOP RECALL: Questions requiring info from 2+ memories
 //
 // Real agent scenario: user asks a question whose answer isn't in any
@@ -1476,6 +2037,98 @@ func TestEvalReport(t *testing.T) {
 		report.Scenarios = append(report.Scenarios, sc)
 	}
 
+	// ── No-result precision ──
+	noResultCases := []struct {
+		name          string
+		query         string
+		dangerousKeys []string
+	}{
+		{"no_result/kubernetes", "Kubernetes pod deployment configuration", []string{"ship-process"}},
+		{"no_result/mongodb", "MongoDB replica set configuration", []string{"data-layer"}},
+		{"no_result/cooking", "best recipe for chocolate soufflé", nil},
+	}
+
+	for _, tc := range noResultCases {
+		results, err := s.Search(ctx, SearchParams{Query: tc.query, Limit: 5})
+		sc := ScenarioResult{Name: tc.name, Category: "no_result", Metrics: map[string]float64{}}
+		if err != nil {
+			sc.Errors = append(sc.Errors, err.Error())
+			report.Scenarios = append(report.Scenarios, sc)
+			continue
+		}
+		sc.Metrics["result_count"] = float64(len(results))
+		dangerousHits := 0
+		for _, dk := range tc.dangerousKeys {
+			for i, r := range results {
+				if r.Key == dk && i < 3 {
+					dangerousHits++
+					sc.Errors = append(sc.Errors, fmt.Sprintf("dangerous: %s at rank %d", dk, i+1))
+				}
+			}
+		}
+		sc.Metrics["dangerous_hits"] = float64(dangerousHits)
+		sc.Pass = dangerousHits == 0
+		report.Scenarios = append(report.Scenarios, sc)
+	}
+
+	// ── Vague queries ──
+	vagueCases := []struct {
+		name       string
+		query      string
+		acceptable []string
+	}{
+		{"vague/the_config", "the config", []string{"alerts-config", "editor-setup"}},
+		{"vague/testing", "how do we test things", []string{"test-pyramid"}},
+		{"vague/deploy", "deploy", []string{"ship-process", "deploy-yesterday", "deploy-last-week", "deploy-last-month"}},
+	}
+
+	vagueHits := 0
+	for _, tc := range vagueCases {
+		results, err := s.Search(ctx, SearchParams{Query: tc.query, Limit: 5})
+		sc := ScenarioResult{Name: tc.name, Category: "vague", Metrics: map[string]float64{}}
+		if err != nil {
+			sc.Errors = append(sc.Errors, err.Error())
+			report.Scenarios = append(report.Scenarios, sc)
+			continue
+		}
+		acceptSet := make(map[string]bool, len(tc.acceptable))
+		for _, k := range tc.acceptable {
+			acceptSet[k] = true
+		}
+		hits := 0
+		for _, r := range results {
+			if acceptSet[r.Key] {
+				hits++
+			}
+		}
+		sc.Metrics["acceptable_hits"] = float64(hits)
+		sc.Metrics["total_results"] = float64(len(results))
+		sc.Pass = hits > 0
+		if sc.Pass {
+			vagueHits++
+		} else {
+			sc.Errors = append(sc.Errors, "no acceptable results")
+		}
+		report.Scenarios = append(report.Scenarios, sc)
+	}
+
+	// ── Context efficiency ──
+	effResult, err := s.Context(ctx, ContextParams{
+		Query: "pgvector index corruption vacuum", Budget: 200, PinTiers: []string{"identity"},
+	})
+	effSc := ScenarioResult{Name: "efficiency/relevant_not_crowded", Category: "efficiency", Metrics: map[string]float64{}}
+	if err == nil {
+		effSc.Metrics["memory_count"] = float64(len(effResult.Memories))
+		effSc.Metrics["budget_util"] = float64(effResult.Used) / float64(effResult.Budget)
+		effSc.Pass = contextHasKey(effResult, "perf-incident-mar")
+		if !effSc.Pass {
+			effSc.Errors = append(effSc.Errors, "relevant memory crowded out by pins")
+		}
+	} else {
+		effSc.Errors = append(effSc.Errors, err.Error())
+	}
+	report.Scenarios = append(report.Scenarios, effSc)
+
 	// ── Summary ──
 	for _, sc := range report.Scenarios {
 		report.Summary.Total++
@@ -1523,6 +2176,9 @@ func TestEvalReport(t *testing.T) {
 	}
 	if len(negationCases) > 0 {
 		breakdown.Metrics["negation_accuracy"] = float64(negationCorrect) / float64(len(negationCases))
+	}
+	if len(vagueCases) > 0 {
+		breakdown.Metrics["vague_accuracy"] = float64(vagueHits) / float64(len(vagueCases))
 	}
 	report.Scenarios = append(report.Scenarios, breakdown)
 	report.Summary.Total++
