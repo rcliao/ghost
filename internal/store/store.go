@@ -169,6 +169,10 @@ type Store interface {
 	// Peek returns a lightweight index of memory state for lazy discovery.
 	Peek(ctx context.Context, ns string) (*PeekResult, error)
 
+	// Curate applies a lifecycle action to a single memory identified by ns+key.
+	// Supported ops: promote, demote, boost, diminish, archive, delete.
+	Curate(ctx context.Context, p CurateParams) (*CurateResult, error)
+
 	// Reflect evaluates rules against memories and applies tier/importance changes.
 	Reflect(ctx context.Context, p ReflectParams) (*ReflectResult, error)
 

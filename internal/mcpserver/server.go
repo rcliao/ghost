@@ -180,6 +180,37 @@ func registerTools(server *mcp.Server, st store.Store) {
 	})
 
 	server.AddTool(&mcp.Tool{
+		Name:        "ghost_curate",
+		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, or delete a specific memory by namespace and key.",
+		InputSchema: schema([]string{"ns", "key", "op"}, map[string]map[string]any{
+			"ns":  prop("string", "Namespace of the memory"),
+			"key": prop("string", "Key of the memory"),
+			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete)"),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS  string `json:"ns"`
+			Key string `json:"key"`
+			Op  string `json:"op"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" || p.Key == "" || p.Op == "" {
+			return errResult("ns, key, and op are required"), nil
+		}
+		result, err := st.Curate(ctx, store.CurateParams{
+			NS:  p.NS,
+			Key: p.Key,
+			Op:  p.Op,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(result)
+	})
+
+	server.AddTool(&mcp.Tool{
 		Name:        "ghost_reflect",
 		Description: "Run the reflect cycle to promote, decay, demote, archive, or delete memories based on lifecycle rules. Call this to maintain memory hygiene — especially when ghost_context indicates compaction is needed (compaction_suggested: true).",
 		InputSchema: schema([]string{}, map[string]map[string]any{

@@ -1034,6 +1034,56 @@ func (m *MockStore) Peek(_ context.Context, ns string) (*PeekResult, error) {
 	return result, nil
 }
 
+func (m *MockStore) Curate(ctx context.Context, p CurateParams) (*CurateResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := p.NS + ":" + p.Key
+	mem, ok := m.memories[key]
+	if !ok {
+		return nil, fmt.Errorf("memory not found: %s/%s", p.NS, p.Key)
+	}
+
+	result := &CurateResult{NS: p.NS, Key: p.Key, Op: p.Op}
+	switch p.Op {
+	case "promote":
+		result.OldTier = mem.Tier
+		if t, ok := tierUp[mem.Tier]; ok {
+			mem.Tier = t
+			result.NewTier = t
+		}
+	case "demote":
+		result.OldTier = mem.Tier
+		if t, ok := tierDown[mem.Tier]; ok {
+			mem.Tier = t
+			result.NewTier = t
+		}
+	case "boost":
+		result.OldImportance = mem.Importance
+		mem.Importance += 0.2
+		if mem.Importance > 1.0 {
+			mem.Importance = 1.0
+		}
+		result.NewImportance = mem.Importance
+	case "diminish":
+		result.OldImportance = mem.Importance
+		mem.Importance -= 0.2
+		if mem.Importance < 0.1 {
+			mem.Importance = 0.1
+		}
+		result.NewImportance = mem.Importance
+	case "delete":
+		now := time.Now()
+		mem.DeletedAt = &now
+	case "archive":
+		result.OldTier = mem.Tier
+		mem.Tier = "dormant"
+		result.NewTier = "dormant"
+	}
+	m.memories[key] = mem
+	return result, nil
+}
+
 func (m *MockStore) Reflect(_ context.Context, p ReflectParams) (*ReflectResult, error) {
 	// Simplified mock: just count memories that would be evaluated
 	m.mu.RLock()

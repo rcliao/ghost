@@ -81,6 +81,12 @@ type GCResult = store.GCResult
 // GCStaleResult holds stale GC results.
 type GCStaleResult = store.GCStaleResult
 
+// CurateParams holds parameters for a single-memory lifecycle action.
+type CurateParams = store.CurateParams
+
+// CurateResult describes what happened after curation.
+type CurateResult = store.CurateResult
+
 // ReflectParams controls a reflect cycle.
 type ReflectParams = store.ReflectParams
 
