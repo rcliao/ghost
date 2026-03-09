@@ -10,9 +10,9 @@ A memory is the fundamental unit. Each has these attributes:
 
 | Field | Type | Description | Example |
 |-------|------|-------------|---------|
-| **ns** | string | Hierarchical namespace (`:` separated) | `identity`, `lore`, `user:ev`, `shell:chat:832881763` |
+| **ns** | string | Hierarchical namespace (`:` separated) | `identity`, `lore`, `user:alice`, `shell:chat:12345` |
 | **key** | string | Unique identifier within namespace | `name`, `timezone`, `deploy-2026-03-01` |
-| **content** | string | The actual memory text | `"Pikamini is a girl pikachu plush"` |
+| **content** | string | The actual memory text | `"Atlas — a helpful AI assistant"` |
 | **kind** | string | Knowledge type: `semantic`, `episodic`, `procedural` | `semantic` (default) |
 | **tier** | string | Persistence level: `stm`, `ltm`, `identity`, `dormant` | `stm` (default) |
 | **priority** | string | Retrieval urgency: `low`, `normal`, `high`, `critical` | `normal` (default) |
@@ -39,7 +39,7 @@ A memory is the fundamental unit. Each has these attributes:
 ghost put -n "identity" -k "name" \
   --tier identity -p high --importance 0.9 \
   --tags "core,personality" \
-  "Pikamini is a girl pikachu plush — EV's daughter, not son"
+  "Atlas — a helpful AI assistant built for developer workflows"
 ```
 
 This creates:
@@ -47,7 +47,7 @@ This creates:
 {
   "ns": "identity",
   "key": "name",
-  "content": "Pikamini is a girl pikachu plush — EV's daughter, not son",
+  "content": "Atlas — a helpful AI assistant built for developer workflows",
   "kind": "semantic",
   "tier": "identity",
   "priority": "high",
@@ -70,8 +70,8 @@ These top-level namespaces define the agent's core identity. They are **app-agno
 
 | Namespace | Purpose | Example content |
 |-----------|---------|-----------------|
-| `identity` | Who the agent is — name, personality, appearance | `"Pikamini is a girl pikachu plush"` |
-| `lore` | Background knowledge, relationships, trivia | `"EV and Jennifer love Project Sekai"` |
+| `identity` | Who the agent is — name, personality, appearance | `"Atlas — a helpful AI assistant"` |
+| `lore` | Background knowledge, relationships, trivia | `"The team does weekly retros every Friday"` |
 | `user:<name>` | Per-user preferences and context | `"Timezone: America/Los_Angeles"` |
 
 ### App-Scoped Namespaces
@@ -80,8 +80,8 @@ Apps prefix with their name to avoid collisions. Owned and managed by the app.
 
 | Pattern | Purpose | Example |
 |---------|---------|---------|
-| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:832881763` |
-| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:832881763` |
+| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:12345` |
+| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:12345` |
 | `<app>:capabilities` | What the agent can do in this app | `shell:capabilities` |
 | `<app>:conventions` | Coding/writing conventions | `coder:conventions` |
 | `<app>:learnings` | Accumulated insights | `coder:learnings` |
@@ -116,7 +116,7 @@ Kinds classify _what_ a memory represents. Borrowed from cognitive science:
 Fact-based, context-independent knowledge. The "what" of memory.
 
 ```bash
-ghost put -n "identity" -k "role" "Helpful AI assistant for EV"
+ghost put -n "identity" -k "role" "Helpful AI assistant for developer workflows"
 ghost put -n "coder:conventions" -k "auth" "JWT with refresh tokens, 15min access / 7d refresh"
 ```
 
@@ -124,7 +124,7 @@ ghost put -n "coder:conventions" -k "auth" "JWT with refresh tokens, 15min acces
 Event or experience-based memories with temporal context. The "when and what happened."
 
 ```bash
-ghost put -n "shell:chat:832881763" -k "deploy-2026-03-01" --kind episodic \
+ghost put -n "shell:chat:12345" -k "deploy-2026-03-01" --kind episodic \
   "Deployed v2.3. Migration took 4min. Redis cache needed manual flush."
 ```
 
@@ -188,7 +188,7 @@ Core system/agent memories. Exempt from all decay. Always included in context as
 
 ```bash
 ghost put -n "identity" -k "role" --tier identity \
-  "You are Pikamini, a helpful AI assistant for EV."
+  "You are Atlas, a helpful AI assistant for developer workflows."
 ```
 
 ### `dormant`
@@ -208,7 +208,7 @@ Priority provides an urgency signal for retrieval ranking. Orthogonal to tier.
 | `critical` | 1.00 | Must-have, safety-relevant |
 
 ```bash
-ghost put -n "user:ev" -k "allergies" -p critical "Allergic to peanuts"
+ghost put -n "user:alice" -k "allergies" -p critical "Allergic to peanuts"
 ```
 
 ---

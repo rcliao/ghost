@@ -14,10 +14,10 @@ go install github.com/rcliao/ghost/cmd/ghost@latest
 
 ```bash
 # Store a memory
-ghost put -n "identity" -k "name" "Pikamini — a girl pikachu plush"
+ghost put -n "identity" -k "name" "Atlas — a helpful AI assistant"
 
 # Store with priority
-ghost put -n "user:ev" -k "allergies" -p critical "Allergic to peanuts"
+ghost put -n "user:alice" -k "allergies" -p critical "Allergic to peanuts"
 
 # Store with TTL (auto-expires)
 ghost put -n "myapp:session" -k "token" --ttl 24h "abc123"
@@ -44,7 +44,7 @@ ghost list -n "myapp:logs" --kind episodic --tags "deploy,infra"
 ghost list -n "myapp:logs" --keys-only
 
 # Search memories
-ghost search -n "identity" "pikachu"
+ghost search -n "identity" "atlas"
 ghost search "deploy"
 
 # Database stats

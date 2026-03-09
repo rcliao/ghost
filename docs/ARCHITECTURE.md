@@ -116,9 +116,9 @@ These top-level namespaces define the agent's core identity and are typically al
 
 | Namespace | Purpose | Example |
 |-----------|---------|---------|
-| `identity` | Who the agent is — name, personality, pronouns, appearance | `"Pikamini is a girl pikachu plush"` |
-| `lore` | Background knowledge, family facts, relationships, fun trivia | `"EV and Jennifer love Project Sekai"` |
-| `user:<name>` | Per-user preferences and context | `user:ev`, `user:jennifer` |
+| `identity` | Who the agent is — name, personality, pronouns, appearance | `"Atlas — a helpful AI assistant"` |
+| `lore` | Background knowledge, family facts, relationships, fun trivia | `"The team does weekly retros every Friday"` |
+| `user:<name>` | Per-user preferences and context | `user:alice`, `user:bob` |
 
 ### App-Scoped Namespaces
 
@@ -126,8 +126,8 @@ Apps prefix with their name to avoid collisions. These are managed by the owning
 
 | Pattern | Purpose | Example |
 |---------|---------|---------|
-| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:832881763` |
-| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:832881763` |
+| `<app>:chat:<id>` | Per-conversation memories | `shell:chat:12345` |
+| `<app>:heartbeat:<id>` | Periodic reflection learnings | `shell:heartbeat:12345` |
 | `<app>:capabilities` | What the agent can do in this app | `shell:capabilities` |
 | `<app>:conventions` | Coding/writing conventions | `coder:conventions` |
 | `<app>:learnings` | Accumulated insights | `coder:learnings` |
