@@ -215,6 +215,22 @@ func DefaultSeedCorpus() []SeedMemory {
 		},
 
 		// ══════════════════════════════════════════════════════════════
+		// SENSORY — ultra-short-lived buffer entries
+		// ══════════════════════════════════════════════════════════════
+		{
+			// Recent sensory input — should be promoted to STM if accessed
+			NS: "system:ops", Key: "sensory-attended", Kind: "episodic", Tier: "sensory", Priority: "normal", Importance: 0.3,
+			BackdateHours: 2, AccessCount: 3,
+			Content: "User asked about the deployment pipeline and I explained the ArgoCD sync process in detail.",
+		},
+		{
+			// Old sensory input — should be deleted (unattended after 4h)
+			NS: "system:ops", Key: "sensory-unattended", Kind: "episodic", Tier: "sensory", Priority: "normal", Importance: 0.2,
+			BackdateHours: 5, AccessCount: 0,
+			Content: "Transient observation about a temporary log message that appeared during testing.",
+		},
+
+		// ══════════════════════════════════════════════════════════════
 		// MULTI-HOP — facts that must be combined to answer a question
 		// ══════════════════════════════════════════════════════════════
 		{
@@ -286,7 +302,8 @@ func SeedStore(ctx context.Context, s *SQLiteStore, corpus []SeedMemory) (map[st
 		}
 		ids[sm.Key] = mem.ID
 
-		// Put doesn't set tier (schema defaults to "stm"), so always override via SQL
+		// Put now writes tier correctly, but we keep this override for
+		// cases where seed setup needs to bypass normal defaults.
 		if sm.Tier != "" && sm.Tier != "stm" {
 			if _, err := s.db.ExecContext(ctx,
 				`UPDATE memories SET tier = ? WHERE id = ?`, sm.Tier, mem.ID); err != nil {

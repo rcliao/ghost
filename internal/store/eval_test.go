@@ -600,6 +600,22 @@ func TestEvalReflectLifecycle(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("sensory_attended_promoted_to_stm", func(t *testing.T) {
+		var tier string
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, ids["sensory-attended"]).Scan(&tier)
+		if tier != "stm" {
+			t.Errorf("expected attended sensory promoted to 'stm', got %q", tier)
+		}
+	})
+
+	t.Run("sensory_unattended_deleted", func(t *testing.T) {
+		var deletedAt *string
+		s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["sensory-unattended"]).Scan(&deletedAt)
+		if deletedAt == nil {
+			t.Error("expected unattended sensory memory (>4h) to be deleted")
+		}
+	})
 }
 
 // ═══════════════════════════════════════════════════════════════════════
