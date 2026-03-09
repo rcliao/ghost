@@ -52,9 +52,16 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 	now := time.Now().UTC()
 	id := m.newID()
 
+	tier := tierOrDefault(p.Tier)
+
 	kind := p.Kind
 	if kind == "" {
-		kind = "semantic"
+		switch tier {
+		case "sensory", "stm":
+			kind = "episodic"
+		default:
+			kind = "semantic"
+		}
 	}
 	priority := p.Priority
 	if priority == "" {
@@ -106,7 +113,7 @@ func (m *MockStore) Put(_ context.Context, p PutParams) (*model.Memory, error) {
 		CreatedAt:  now,
 		Priority:   priority,
 		Importance: importance,
-		Tier:       "stm",
+		Tier:       tier,
 		EstTokens:  (len(p.Content) / 4) + 20,
 		Meta:       p.Meta,
 		ExpiresAt:  expiresAt,

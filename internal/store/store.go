@@ -17,7 +17,7 @@ type PutParams struct {
 	Tags       []string
 	Priority   string
 	Importance float64 // 0.0-1.0; 0 means use default (0.5)
-	Tier       string  // "stm", "ltm", "identity"; empty defaults to "stm"
+	Tier       string  // "sensory", "stm", "ltm", "identity", "dormant"; empty defaults to "stm"
 	Meta       string
 	TTL        string // e.g. "7d", "24h", "30m"
 	Files      []FileParam

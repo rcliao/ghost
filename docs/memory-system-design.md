@@ -13,8 +13,8 @@ A memory is the fundamental unit. Each has these attributes:
 | **ns** | string | Hierarchical namespace (`:` separated) | `identity`, `lore`, `user:alice`, `shell:chat:12345` |
 | **key** | string | Unique identifier within namespace | `name`, `timezone`, `deploy-2026-03-01` |
 | **content** | string | The actual memory text | `"Atlas — a helpful AI assistant"` |
-| **kind** | string | Knowledge type: `semantic`, `episodic`, `procedural` | `semantic` (default) |
-| **tier** | string | Persistence level: `stm`, `ltm`, `identity`, `dormant` | `stm` (default) |
+| **kind** | string | Knowledge type: `semantic`, `episodic`, `procedural` | auto-detected from tier |
+| **tier** | string | Persistence level: `sensory`, `stm`, `ltm`, `identity`, `dormant` | `stm` (default) |
 | **priority** | string | Retrieval urgency: `low`, `normal`, `high`, `critical` | `normal` (default) |
 | **importance** | float64 | Continuous 0.0–1.0 score for ranking | `0.5` (default) |
 | **tags** | []string | Freeform labels for filtering | `["deploy", "infra"]` |
@@ -101,7 +101,7 @@ Ghost models memory after cognitive science with three orthogonal dimensions:
 | Dimension | What it describes | Values |
 |-----------|------------------|--------|
 | **Kind** | What type of knowledge | `semantic`, `episodic`, `procedural` |
-| **Tier** | How persistent/important | `stm`, `ltm`, `identity`, `dormant` |
+| **Tier** | How persistent/important | `sensory`, `stm`, `ltm`, `identity`, `dormant` |
 | **Priority** | Urgency for retrieval | `low`, `normal`, `high`, `critical` |
 
 These dimensions are independent. A memory can be any combination (e.g., `kind=procedural, tier=ltm, priority=high`).
@@ -112,16 +112,16 @@ These dimensions are independent. A memory can be any combination (e.g., `kind=p
 
 Kinds classify _what_ a memory represents. Borrowed from cognitive science:
 
-### `semantic` (default)
-Fact-based, context-independent knowledge. The "what" of memory.
+### `semantic`
+Fact-based, context-independent knowledge. The "what" of memory. Default kind for `ltm` and `identity` tier memories.
 
 ```bash
 ghost put -n "identity" -k "role" "Helpful AI assistant for developer workflows"
 ghost put -n "coder:conventions" -k "auth" "JWT with refresh tokens, 15min access / 7d refresh"
 ```
 
-### `episodic`
-Event or experience-based memories with temporal context. The "when and what happened."
+### `episodic` (default for sensory/stm)
+Event or experience-based memories with temporal context. The "when and what happened." Default kind for `sensory` and `stm` tier memories — new observations start as episodic and can be reclassified as they mature.
 
 ```bash
 ghost put -n "shell:chat:12345" -k "deploy-2026-03-01" --kind episodic \
@@ -169,16 +169,23 @@ Tiers describe _how persistent_ a memory is and control its lifecycle through th
                     └────┬─────┘
                          │ DEMOTE
                     ┌────┴─────┐
-  new memories ──►  │   stm    │  Recent. Subject to decay.
+                    │   stm    │  Recent. Subject to decay.
                     └────┬─────┘
-                         │ ARCHIVE
+                         │ PROMOTE (from sensory)
+                    ┌────┴─────┐
+  new inputs ────►  │ sensory  │  Ultra-short-lived buffer.
+                    └────┬─────┘
+                         │ DELETE (unattended)
                     ┌────┴─────┐
                     │ dormant  │  Archived. Recoverable but inactive.
                     └──────────┘
 ```
 
+### `sensory`
+Ultra-short-lived buffer for raw context window observations (e.g., conversation exchanges). Sensory memories that receive attention (accessed >1 time within 1 hour) are promoted to STM. Unattended sensory memories are deleted after 4 hours. Default kind is `episodic`.
+
 ### `stm` (short-term memory) — default
-Where all new memories start. Subject to importance decay and promotion rules.
+Where most new memories start. Subject to importance decay and promotion rules. Default kind is `episodic`.
 
 ### `ltm` (long-term memory)
 Memories that have proven their value through repeated access. Protected from routine decay. Promoted automatically when accessed 3+ times over 24+ hours.
@@ -296,11 +303,19 @@ Two-phase greedy packing within a token budget:
 1. **Phase 1 (Pinned):** Load memories from pinned tiers (`identity`, `ltm`) ordered by importance. Fills `PinBudget` (default: budget/3).
 2. **Phase 2 (Search):** Query-relevant memories scored by composite metric. Fills remaining budget.
 
-**Composite scoring:**
-- Relevance (0.4) — FTS rank or cosine similarity
-- Recency (0.2) — Exponential decay, 7-day half-life
-- Importance (0.2) — The 0.0–1.0 score
-- Access frequency (0.2) — `log(access_count + 1) / log(100)`
+**Composite scoring** (kind-specific weights):
+
+Weights vary by memory kind to match cognitive retrieval patterns:
+
+| Factor | Semantic | Episodic | Procedural |
+|--------|----------|----------|------------|
+| Relevance | 0.40 | 0.25 | 0.30 |
+| Recency | 0.05 | 0.30 | 0.05 |
+| Importance | 0.25 | 0.15 | 0.15 |
+| Access freq | 0.15 | 0.10 | 0.35 |
+| Tier boost | 0.15 | 0.20 | 0.15 |
+
+Episodic memories favor recency (recent events matter most). Procedural memories favor access frequency (well-practiced skills surface first). Semantic memories favor relevance (factual accuracy over timing).
 
 ```bash
 ghost context "deploy the API to production" --budget 4000
@@ -358,6 +373,8 @@ ghost reflect --dry-run    # Preview what would change
 
 | Rule | Condition | Action |
 |------|-----------|--------|
+| `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
+| `sys-decay-sensory` | sensory, >4h old | DELETE |
 | `sys-decay-unaccessed` | STM, >72h old, <3 accesses | DECAY importance by 0.95 |
 | `sys-promote-to-ltm` | STM, >24h old, >3 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >7d unaccessed, <2 accesses | DEMOTE to dormant |

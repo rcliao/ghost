@@ -21,10 +21,11 @@ func init() {
 
 	cmd.Flags().StringP("ns", "n", "", "Namespace (required)")
 	cmd.Flags().StringP("key", "k", "", "Key (required)")
-	cmd.Flags().String("kind", "semantic", "Kind: semantic, episodic, procedural")
+	cmd.Flags().String("kind", "", "Kind: semantic, episodic, procedural (auto-detected from tier if omitted)")
 	cmd.Flags().StringP("tags", "t", "", "Comma-separated tags")
 	cmd.Flags().StringP("priority", "p", "normal", "Priority: low, normal, high, critical")
 	cmd.Flags().String("meta", "", "JSON metadata")
+	cmd.Flags().String("tier", "", "Storage tier: sensory, stm (default), ltm, identity")
 	cmd.Flags().String("ttl", "", "Time-to-live (e.g. 7d, 24h, 30m)")
 	cmd.Flags().String("files", "", "Comma-separated file paths to link")
 	cmd.Flags().String("file-rel", "modified", "File relationship: modified, created, deleted, read")
@@ -42,6 +43,7 @@ func runPut(cmd *cobra.Command, args []string) {
 	tagsStr, _ := cmd.Flags().GetString("tags")
 	priority, _ := cmd.Flags().GetString("priority")
 	meta, _ := cmd.Flags().GetString("meta")
+	tier, _ := cmd.Flags().GetString("tier")
 	ttl, _ := cmd.Flags().GetString("ttl")
 	filesStr, _ := cmd.Flags().GetString("files")
 	fileRel, _ := cmd.Flags().GetString("file-rel")
@@ -118,6 +120,7 @@ func runPut(cmd *cobra.Command, args []string) {
 		Kind:     kind,
 		Tags:     tags,
 		Priority: priority,
+		Tier:     tier,
 		Meta:     meta,
 		TTL:      ttl,
 		Files:    files,

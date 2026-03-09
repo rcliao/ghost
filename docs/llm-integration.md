@@ -101,7 +101,7 @@ or after a long session with many stored learnings.
 
 3. **Importance scores matter** — They affect retrieval ranking. Use 0.5 for general notes, 0.7-0.8 for useful learnings, 0.9+ for critical decisions.
 
-4. **Tier selection** — Default tier is `stm` (subject to decay). Set `tier: "ltm"` for knowledge that should persist long-term. Only use `identity` tier for core agent identity facts.
+4. **Tier selection** — Default tier is `stm` (subject to decay). Use `sensory` for raw transient observations (auto-deleted if unaccessed). Set `tier: "ltm"` for knowledge that should persist long-term. Only use `identity` tier for core agent identity facts.
 
 5. **Reflect periodically** — The reflect cycle promotes frequently-accessed STM memories to LTM and decays unused ones. Without it, STM memories accumulate without curation.
 
@@ -161,10 +161,10 @@ mem, err := store.Put(ctx, memory.PutParams{
     NS:         "project:myapp",
     Key:        "auth-architecture",
     Content:    "Using JWT with refresh tokens, 15min access / 7d refresh",
-    Kind:       "semantic",       // semantic | episodic | procedural
+    Kind:       "semantic",       // semantic | episodic | procedural (auto-detected from tier if omitted)
     Priority:   "high",           // low | normal | high | critical
     Importance: 0.8,              // 0.0-1.0, affects retrieval ranking
-    Tier:       "ltm",            // stm (default) | ltm | identity
+    Tier:       "ltm",            // sensory | stm (default) | ltm | identity | dormant
     Tags:       []string{"auth", "architecture"},
 })
 ```
@@ -361,7 +361,7 @@ augmented += "[End memories]\n\n" + userMessage
 
 ## Reflect Rules
 
-Ghost ships with 5 built-in rules. You can add custom rules for your use case:
+Ghost ships with 7 built-in rules (including sensory tier lifecycle). You can add custom rules for your use case:
 
 ```bash
 # Archive procedural memories older than 30 days with low access

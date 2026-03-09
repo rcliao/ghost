@@ -197,7 +197,7 @@ func (s *SQLiteStore) migrate() error {
 
 func tierOrDefault(tier string) string {
 	switch tier {
-	case "stm", "ltm", "identity", "dormant":
+	case "sensory", "stm", "ltm", "identity", "dormant":
 		return tier
 	default:
 		return "stm"
@@ -212,9 +212,18 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	now := time.Now().UTC()
 	id := s.newID()
 
+	tier := tierOrDefault(p.Tier)
+
 	kind := p.Kind
 	if kind == "" {
-		kind = "semantic"
+		// Default kind based on tier: sensory/stm memories are temporal observations
+		// (episodic) until consolidated into decontextualized facts (semantic).
+		switch tier {
+		case "sensory", "stm":
+			kind = "episodic"
+		default: // ltm, identity, dormant
+			kind = "semantic"
+		}
 	}
 	priority := p.Priority
 	if priority == "" {
@@ -271,10 +280,10 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	estTokens := estimateTokens(p.Content)
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at, importance, est_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+		`INSERT INTO memories (id, ns, key, content, kind, tags, version, supersedes, created_at, priority, access_count, meta, expires_at, importance, est_tokens, tier)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
 		id, p.NS, p.Key, p.Content, kind, tagsJSON, version, supersedes,
-		now.Format(time.RFC3339), priority, metaPtr, expiresAt, importance, estTokens)
+		now.Format(time.RFC3339), priority, metaPtr, expiresAt, importance, estTokens, tier)
 	if err != nil {
 		return nil, fmt.Errorf("insert memory: %w", err)
 	}
@@ -336,7 +345,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		CreatedAt:  now,
 		Priority:   priority,
 		Importance: importance,
-		Tier:       tierOrDefault(p.Tier),
+		Tier:       tier,
 		EstTokens:  estTokens,
 		Meta:       p.Meta,
 		ChunkCount: len(chunks),

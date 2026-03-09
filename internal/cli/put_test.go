@@ -69,8 +69,8 @@ func TestPutBasic(t *testing.T) {
 	if mem.Version != 1 {
 		t.Errorf("version: want 1, got %d", mem.Version)
 	}
-	if mem.Kind != "semantic" {
-		t.Errorf("kind: want %q, got %q", "semantic", mem.Kind)
+	if mem.Kind != "episodic" {
+		t.Errorf("kind: want %q, got %q (default for stm tier)", "episodic", mem.Kind)
 	}
 	if mem.Priority != "normal" {
 		t.Errorf("priority: want %q, got %q", "normal", mem.Priority)

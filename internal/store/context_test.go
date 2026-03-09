@@ -79,6 +79,81 @@ func TestContextEmpty(t *testing.T) {
 	}
 }
 
+func TestKindWeightsSum(t *testing.T) {
+	// All kind weight vectors must sum to 1.0
+	for _, kind := range []string{"episodic", "semantic", "procedural"} {
+		w := kindWeights(kind)
+		sum := w.relevance + w.recency + w.importance + w.access + w.tier
+		if sum < 0.99 || sum > 1.01 {
+			t.Errorf("kindWeights(%q) sums to %f, want 1.0", kind, sum)
+		}
+	}
+}
+
+func TestKindWeightsEpisodicFavorsRecency(t *testing.T) {
+	ep := kindWeights("episodic")
+	sem := kindWeights("semantic")
+	if ep.recency <= sem.recency {
+		t.Errorf("episodic recency weight (%f) should exceed semantic (%f)", ep.recency, sem.recency)
+	}
+}
+
+func TestKindWeightsProceduralFavorsAccess(t *testing.T) {
+	proc := kindWeights("procedural")
+	sem := kindWeights("semantic")
+	if proc.access <= sem.access {
+		t.Errorf("procedural access weight (%f) should exceed semantic (%f)", proc.access, sem.access)
+	}
+}
+
+func TestTierScoreSensory(t *testing.T) {
+	score := tierScore("sensory")
+	stmScore := tierScore("stm")
+	dormantScore := tierScore("dormant")
+	if score >= stmScore {
+		t.Errorf("sensory tier score (%f) should be below stm (%f)", score, stmScore)
+	}
+	if score >= dormantScore {
+		t.Errorf("sensory tier score (%f) should be below dormant (%f)", score, dormantScore)
+	}
+}
+
+func TestKindDefaultByTier(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// stm tier → episodic default
+	stmMem, _ := s.Put(ctx, PutParams{NS: "test", Key: "stm-mem", Content: "stm observation"})
+	if stmMem.Kind != "episodic" {
+		t.Errorf("stm tier default kind: want episodic, got %s", stmMem.Kind)
+	}
+
+	// sensory tier → episodic default
+	senMem, _ := s.Put(ctx, PutParams{NS: "test", Key: "sen-mem", Content: "sensory input", Tier: "sensory"})
+	if senMem.Kind != "episodic" {
+		t.Errorf("sensory tier default kind: want episodic, got %s", senMem.Kind)
+	}
+
+	// ltm tier → semantic default
+	ltmMem, _ := s.Put(ctx, PutParams{NS: "test", Key: "ltm-mem", Content: "proven fact", Tier: "ltm"})
+	if ltmMem.Kind != "semantic" {
+		t.Errorf("ltm tier default kind: want semantic, got %s", ltmMem.Kind)
+	}
+
+	// identity tier → semantic default
+	idMem, _ := s.Put(ctx, PutParams{NS: "test", Key: "id-mem", Content: "core truth", Tier: "identity"})
+	if idMem.Kind != "semantic" {
+		t.Errorf("identity tier default kind: want semantic, got %s", idMem.Kind)
+	}
+
+	// explicit kind always wins
+	explMem, _ := s.Put(ctx, PutParams{NS: "test", Key: "expl-mem", Content: "how to do X", Kind: "procedural"})
+	if explMem.Kind != "procedural" {
+		t.Errorf("explicit kind should win: want procedural, got %s", explMem.Kind)
+	}
+}
+
 func TestContextPriorityBoosting(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()

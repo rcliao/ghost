@@ -58,7 +58,7 @@ Memory {
   Key            string      // unique within namespace
   Content        string      // the actual memory text
   Kind           string      // semantic | episodic | procedural
-  Tier           string      // stm | ltm | identity | dormant
+  Tier           string      // sensory | stm | ltm | identity | dormant
   Priority       string      // low | normal | high | critical
   Importance     float64     // 0.0–1.0 continuous score
   Version        int         // auto-incremented on update
@@ -158,12 +158,19 @@ Two-phase greedy packing within a token budget:
 1. **Phase 1 (Pinned)**: Load `identity` + `ltm` tier memories, ordered by importance. Fills up to `budget/3`.
 2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric. Fills remaining budget.
 
-**Composite scoring** (5 factors):
-- Relevance (0.35) — FTS rank or cosine similarity
-- Importance (0.20) — The 0.0–1.0 score
-- Recency (0.15) — Exponential decay, 7-day half-life
-- Access frequency (0.15) — `log(access_count + 1) / log(100)`
-- Tier boost (0.15) — identity=1.0, ltm=0.75, stm=0.25, dormant=0.1
+**Composite scoring** (5 factors, kind-specific weights):
+
+Weights vary by memory kind to match cognitive retrieval patterns:
+
+| Factor | Semantic | Episodic | Procedural |
+|--------|----------|----------|------------|
+| Relevance | 0.40 | 0.25 | 0.30 |
+| Recency | 0.05 | 0.30 | 0.05 |
+| Importance | 0.25 | 0.15 | 0.15 |
+| Access freq | 0.15 | 0.10 | 0.35 |
+| Tier boost | 0.15 | 0.20 | 0.15 |
+
+Tier boost values: identity=1.0, ltm=0.75, stm=0.25, sensory=0.05, dormant=0.1
 
 Memories that don't fully fit get excerpted (truncated with "...") if at least 25 tokens remain.
 
@@ -176,12 +183,14 @@ Each rule has a **condition** (AND-joined fields) and an **action**:
 | Built-in Rule | Condition | Action |
 |---------------|-----------|--------|
 | `sys-pin-identity` | tier=identity | PIN (blocks other rules) |
+| `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
+| `sys-decay-sensory` | sensory, >4h old | DELETE |
 | `sys-decay-unaccessed` | STM, >72h old, <3 accesses | DECAY importance ×0.95 (min 0.1) |
 | `sys-promote-to-ltm` | STM, >24h old, >3 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >7d unaccessed, <2 accesses | DEMOTE to dormant |
 | `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
 
-Rules are evaluated in priority order. First matching rule wins per memory. Custom rules can be added via `ghost rule set`.
+Rules are evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones. Custom rules can be added via `ghost rule set`.
 
 ## MCP Server
 

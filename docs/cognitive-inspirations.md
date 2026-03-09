@@ -14,7 +14,9 @@ Endel Tulving (1972) distinguished three types of long-term memory:
 
 Ghost adopts these directly as `kind`: `semantic`, `episodic`, `procedural`.
 
-We keep kinds as a pure classification — they describe _what type_ of knowledge a memory holds. We intentionally do not vary retrieval behavior by kind (e.g., weighting recency higher for episodic). This is a simplification: Tulving argued these are fundamentally different memory systems with different retrieval mechanisms. We chose a single retrieval pipeline for simplicity, and use **namespaces** for organizational structure instead.
+Kinds now influence retrieval scoring through **kind-specific weights**. Episodic memories weight recency higher (0.30 vs 0.05), matching Tulving's observation that episodic retrieval is temporally-indexed. Procedural memories weight access frequency higher (0.35 vs 0.15), reflecting that well-practiced procedures should surface more readily. Semantic memories weight relevance highest (0.40), prioritizing factual accuracy over timing.
+
+Kind defaults are also tier-aware: `sensory` and `stm` tier memories default to `episodic` (new observations are events), while `ltm` and `identity` tier memories default to `semantic` (proven knowledge is factual). Explicit kind always overrides the default.
 
 **What we left out:** Tulving later expanded to five systems (adding priming and perceptual memory). These don't map well to text-based agent memory, so we stopped at three.
 
@@ -36,7 +38,7 @@ Ghost's tier system is a direct adaptation:
 
 | Cognitive model | Ghost tier | Behavior |
 |----------------|-----------|----------|
-| (Context window) | — | The LLM's context window acts as sensory/working memory — outside ghost's scope |
+| Sensory register | `sensory` | Ultra-short-lived buffer. Promoted to STM if attended (accessed >1 time), deleted after 4h otherwise |
 | Short-term memory | `stm` | Default tier. Subject to importance decay |
 | Long-term memory | `ltm` | Promoted from STM after repeated access (the "rehearsal" analog) |
 | — | `identity` | No direct analog. Functions like _self-schema_ — permanently accessible core knowledge |
@@ -44,7 +46,7 @@ Ghost's tier system is a direct adaptation:
 
 **What we adapted:** The original model has no "identity" tier. We added it because agents need permanently pinned knowledge (role, core instructions) that should never decay. Cognitively, this resembles _autobiographical self-knowledge_ — the facts about yourself you never forget.
 
-**What we left out:** Sensory memory (millisecond-scale raw perception buffer). For an agent, the LLM's context window fills this role. Ghost starts at STM because there's no meaningful pre-attentive stage for a CLI memory tool.
+**Sensory tier:** We initially left out sensory memory, reasoning that the LLM's context window fills this role. However, we found that raw context window observations (conversation exchanges, transient inputs) benefit from a brief buffer stage before committing to STM. The `sensory` tier implements this: memories enter as sensory, and the reflect system either promotes them to STM (if accessed/attended) or deletes them (if ignored after 4 hours). This prevents STM from accumulating low-value observations that were never revisited.
 
 ---
 
@@ -95,9 +97,11 @@ Sleep plays a critical role: slow oscillations coordinate the transfer. The brai
 Ghost's `reflect` command is the consolidation analog. It evaluates rule-based conditions and applies tier transitions:
 
 ```
-STM (unaccessed, decaying) → dormant     [synaptic trace weakening]
-STM (repeatedly accessed)  → LTM         [hippocampal-to-cortical transfer]
-LTM (stale, unused)        → dormant     [cortical trace weakening]
+sensory (attended)          → STM         [attentional selection]
+sensory (unattended, >4h)   → deleted     [sensory trace decay]
+STM (unaccessed, decaying)  → dormant     [synaptic trace weakening]
+STM (repeatedly accessed)   → LTM         [hippocampal-to-cortical transfer]
+LTM (stale, unused)         → dormant     [cortical trace weakening]
 Low utility                 → deleted     [synaptic pruning]
 ```
 
@@ -151,8 +155,8 @@ ReMe's utility-based evaluation inspired ghost's `utility_count` / `access_count
 
 | Inspiration | What ghost does | Where ghost diverges |
 |------------|----------------|---------------------|
-| Tulving's taxonomy | 3 kinds: semantic, episodic, procedural | Kinds are labels only — no different retrieval strategies per kind |
-| Atkinson-Shiffrin | 4 tiers: stm → ltm → identity → dormant | Added identity tier (no cognitive analog); skipped sensory tier |
+| Tulving's taxonomy | 3 kinds: semantic, episodic, procedural | Kind-specific retrieval weights (episodic→recency, procedural→access, semantic→relevance) |
+| Atkinson-Shiffrin | 5 tiers: sensory → stm → ltm → identity → dormant | Added identity tier (no cognitive analog); sensory tier added for raw observations |
 | Ebbinghaus decay | Exponential recency scoring, importance decay with minimum floor | Fixed decay rate — doesn't lengthen intervals after rehearsal |
 | Spaced repetition | Access-count-based promotion to LTM | Reactive only — no proactive review scheduling |
 | Consolidation | Reflect system with rule-based tier transitions | No content transformation — only metadata changes |

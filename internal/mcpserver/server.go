@@ -23,9 +23,13 @@ Namespace conventions:
 - user:<name> — per-user preferences and context
 - <app>:<scope> — app-specific data (e.g. shell:chat:123, coder:learnings)
 
-Memory kinds: semantic (facts, default), episodic (events/experiences), procedural (how-to/steps).
+Memory kinds (Tulving's taxonomy, affects retrieval scoring):
+- episodic — events/experiences, scored with recency bias (default for sensory/stm tier)
+- semantic — facts/knowledge, scored with relevance + importance bias (default for ltm/identity tier)
+- procedural — how-to/skills/steps, scored with access frequency bias (practice effect)
+
 Priority: low, normal (default), high, critical.
-Tier: stm (default, subject to decay), ltm (proven useful), identity (permanent core knowledge).
+Tier (Atkinson-Shiffrin model): sensory (ultra-short, aggressive decay), stm (default, subject to decay), ltm (proven useful), identity (permanent core knowledge).
 
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
@@ -66,11 +70,11 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"ns":         prop("string", "Namespace, e.g. identity, lore, user:ev, or myapp:learnings"),
 			"key":        prop("string", "Unique key within the namespace"),
 			"content":    prop("string", "Memory content text"),
-			"kind":       prop("string", "Memory kind: semantic (default), episodic, or procedural"),
+			"kind":       prop("string", "Memory kind: episodic (events, default for sensory/stm), semantic (facts, default for ltm/identity), or procedural (how-to/skills)"),
 			"tags":       {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for categorization"},
 			"priority":   prop("string", "Priority: low, normal (default), high, critical"),
 			"importance": prop("number", "Importance score 0.0-1.0 (default 0.5)"),
-			"tier":       prop("string", "Storage tier: stm (default), ltm, identity"),
+			"tier":       prop("string", "Storage tier: sensory (ultra-short), stm (default), ltm (proven useful), identity (permanent)"),
 			"ttl":        prop("string", "Time-to-live, e.g. 7d, 24h, 30m"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

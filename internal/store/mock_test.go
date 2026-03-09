@@ -19,8 +19,8 @@ func TestMockStorePutGet(t *testing.T) {
 	if mem.NS != "test" || mem.Key != "k1" || mem.Content != "hello" {
 		t.Fatalf("unexpected memory: %+v", mem)
 	}
-	if mem.Version != 1 || mem.Kind != "semantic" || mem.Priority != "normal" {
-		t.Fatalf("unexpected defaults: version=%d kind=%s priority=%s", mem.Version, mem.Kind, mem.Priority)
+	if mem.Version != 1 || mem.Kind != "episodic" || mem.Priority != "normal" {
+		t.Fatalf("unexpected defaults: version=%d kind=%s priority=%s (expected episodic for stm tier)", mem.Version, mem.Kind, mem.Priority)
 	}
 
 	got, err := s.Get(ctx, GetParams{NS: "test", Key: "k1"})
@@ -65,7 +65,7 @@ func TestMockStoreList(t *testing.T) {
 
 	s.Put(ctx, PutParams{NS: "ns1", Key: "a", Content: "a", Kind: "semantic", Tags: []string{"go"}})
 	s.Put(ctx, PutParams{NS: "ns1", Key: "b", Content: "b", Kind: "episodic"})
-	s.Put(ctx, PutParams{NS: "ns2", Key: "c", Content: "c"})
+	s.Put(ctx, PutParams{NS: "ns2", Key: "c", Content: "c", Kind: "semantic"})
 
 	all, _ := s.List(ctx, ListParams{})
 	if len(all) != 3 {

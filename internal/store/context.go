@@ -117,7 +117,11 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		return &ContextResult{Budget: budget, Used: 0, Memories: []ContextMemory{}}, nil
 	}
 
-	// Score each memory
+	// Score each memory using kind-specific weights.
+	// Cognitive rationale:
+	//   Episodic (events): recency dominates — time-bound observations
+	//   Semantic (facts): relevance + importance — timeless knowledge
+	//   Procedural (skills): access frequency — strengthened by practice (testing effect)
 	now := time.Now()
 	type scored struct {
 		memory model.Memory
@@ -158,8 +162,9 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		// Tier boost: identity/ltm memories score higher than stm/dormant
 		tierBoost := tierScore(m.Tier)
 
-		// Composite score: relevance + recency + importance + access + tier
-		score := relevance*0.35 + recency*0.15 + importance*0.2 + accessFreq*0.15 + tierBoost*0.15
+		// Kind-specific composite weights
+		w := kindWeights(m.Kind)
+		score := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access + tierBoost*w.tier
 
 		candidates = append(candidates, scored{memory: m, score: score})
 	}
@@ -294,6 +299,8 @@ func tierScore(tier string) float64 {
 		return 0.75
 	case "stm":
 		return 0.25
+	case "sensory":
+		return 0.05
 	case "dormant":
 		return 0.1
 	default:
@@ -313,5 +320,30 @@ func priorityScore(p string) float64 {
 		return 0.25
 	default:
 		return 0.5
+	}
+}
+
+// scoreWeights holds kind-specific scoring weights for context assembly.
+type scoreWeights struct {
+	relevance float64
+	recency   float64
+	importance float64
+	access    float64
+	tier      float64
+}
+
+// kindWeights returns scoring weights tuned for different memory kinds.
+// Inspired by cognitive science:
+//   - Episodic: recency-heavy (temporal, context-dependent retrieval)
+//   - Semantic: relevance + importance (decontextualized, timeless facts)
+//   - Procedural: access-heavy (skills strengthen through practice/testing effect)
+func kindWeights(kind string) scoreWeights {
+	switch kind {
+	case "episodic":
+		return scoreWeights{relevance: 0.25, recency: 0.30, importance: 0.15, access: 0.10, tier: 0.20}
+	case "procedural":
+		return scoreWeights{relevance: 0.30, recency: 0.05, importance: 0.15, access: 0.35, tier: 0.15}
+	default: // semantic
+		return scoreWeights{relevance: 0.40, recency: 0.05, importance: 0.25, access: 0.15, tier: 0.15}
 	}
 }
