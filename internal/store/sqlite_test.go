@@ -13,8 +13,11 @@ import (
 
 func TestMain(m *testing.M) {
 	// Disable local embeddings in tests to avoid model download and
-	// keep search result counts deterministic.
-	os.Setenv("GHOST_EMBED_PROVIDER", "none")
+	// keep search result counts deterministic — unless explicitly set
+	// (e.g. GHOST_EMBED_PROVIDER=local for eval benchmarks).
+	if os.Getenv("GHOST_EMBED_PROVIDER") == "" {
+		os.Setenv("GHOST_EMBED_PROVIDER", "none")
+	}
 	os.Exit(m.Run())
 }
 
