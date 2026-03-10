@@ -379,6 +379,7 @@ ghost reflect --dry-run    # Preview what would change
 | `sys-promote-to-ltm` | STM, >24h old, >3 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >7d unaccessed, <2 accesses | DEMOTE to dormant |
 | `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
+| `sys-merge-similar` | STM, embedding similarity >0.9 | MERGE (keep highest importance) |
 
 ### Rule Actions
 
@@ -390,7 +391,19 @@ ghost reflect --dry-run    # Preview what would change
 | `DEMOTE` | Move to lower tier (e.g., `{"to_tier": "dormant"}`) |
 | `ARCHIVE` | Move to dormant tier |
 | `TTL_SET` | Set expiration (e.g., `{"ttl": "30d"}`) |
-| `PIN` | Move to identity tier (permanent) |
+| `PIN` | Mark as pinned (exempt from lifecycle rules) |
+| `MERGE` | Consolidate similar memories into one survivor (e.g., `{"strategy": "keep_highest_importance"}`) |
+
+### Similarity Merge
+
+The `MERGE` action works with the `--cond-similarity-gt` condition to automatically deduplicate semantically similar memories. Unlike other rules which evaluate per-memory, similarity rules run as a **separate pass** after the per-memory rules:
+
+1. **Pre-filter** — Narrow candidates using standard conditions (tier, kind, tags, age)
+2. **Embedding comparison** — Load seq=0 chunk embeddings and compute pairwise cosine similarity
+3. **Greedy clustering** — Group memories above the similarity threshold, pivoting from highest importance
+4. **Merge** — Survivor (highest importance) inherits union of tags, summed access/utility counts, and highest tier. Absorbed memories are soft-deleted with `merged_into` links.
+
+Pinned memories are never absorbed (but can be the survivor). Memories without embeddings are silently skipped.
 
 ### Custom Rules
 
@@ -401,6 +414,15 @@ ghost rule set \
   --cond-age-gt 168 \
   --cond-kind episodic \
   --action ARCHIVE
+
+# Merge similar episodic memories in STM
+ghost rule set \
+  --name "merge-similar-episodes" \
+  --cond-tier stm \
+  --cond-kind episodic \
+  --cond-similarity-gt 0.85 \
+  --action MERGE \
+  --action-params '{"strategy": "keep_highest_importance"}'
 ```
 
 ---

@@ -192,8 +192,13 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 | `sys-promote-to-ltm` | STM, >24h old, >3 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >7d unaccessed, <2 accesses | DEMOTE to dormant |
 | `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
+| `sys-merge-similar` | STM, embedding similarity >0.9 | MERGE (keep highest importance) |
 
-Rules are evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones. Custom rules can be added via `ghost rule set`.
+Rules are evaluated in two passes:
+1. **Per-memory pass** — evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones.
+2. **Similarity merge pass** — rules with `cond_similarity_gt` run pairwise embedding comparison and consolidate similar memories. Survivor keeps highest importance, inherits union of tags and summed access/utility counts. Absorbed memories are soft-deleted with `merged_into` links.
+
+Custom rules can be added via `ghost rule set`.
 
 ## MCP Server
 
@@ -202,7 +207,7 @@ Exposes 5 tools over stdio transport using `github.com/modelcontextprotocol/go-s
 - `ghost_search` — Full-text search with ranking
 - `ghost_context` — Budget-aware context assembly (includes `compaction_suggested` signal)
 - `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin)
-- `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune)
+- `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar)
 
 Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
 

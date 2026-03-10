@@ -651,7 +651,7 @@ The two approaches are complementary: hooks ensure nothing is lost even if the a
 
 ## Reflect Rules
 
-Ghost ships with 6 built-in rules (including sensory tier lifecycle). Pinned memories are exempt from all rules. You can add custom rules for your use case:
+Ghost ships with 7 built-in rules (including sensory tier lifecycle and similarity merge). Pinned memories are exempt from all rules. You can add custom rules for your use case:
 
 ```bash
 # Archive procedural memories older than 30 days with low access
@@ -670,6 +670,19 @@ ghost rule set \
   --cond-age-gt 12 \
   --cond-access-gt 2 \
   --action PROMOTE
+
+# Merge similar episodic memories (deduplication)
+ghost rule set \
+  --name "merge-similar-episodes" \
+  --cond-tier stm \
+  --cond-kind episodic \
+  --cond-similarity-gt 0.85 \
+  --action MERGE \
+  --action-params '{"strategy": "keep_highest_importance"}'
 ```
 
-Rules are evaluated in priority order during `ghost reflect`. First matching rule wins per memory.
+Rules are evaluated in two passes during `ghost reflect`:
+1. **Per-memory pass** — first matching rule wins per memory (standard conditions: tier, age, access count, etc.)
+2. **Similarity merge pass** — rules with `--cond-similarity-gt` compare embeddings pairwise and consolidate similar memories. The survivor (highest importance) keeps the union of tags and summed access/utility counts. Absorbed memories are soft-deleted with `merged_into` links.
+
+The built-in `sys-merge-similar` rule automatically deduplicates STM memories with >0.9 cosine similarity.

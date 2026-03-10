@@ -101,11 +101,12 @@ sensory (attended)          → STM         [attentional selection]
 sensory (unattended, >4h)   → deleted     [sensory trace decay]
 STM (unaccessed, decaying)  → dormant     [synaptic trace weakening]
 STM (repeatedly accessed)   → LTM         [hippocampal-to-cortical transfer]
+STM (similar memories)      → merged      [memory consolidation / deduplication]
 LTM (stale, unused)         → dormant     [cortical trace weakening]
 Low utility                 → deleted     [synaptic pruning]
 ```
 
-**Where we diverge significantly:** Brain consolidation _transforms_ memories — abstracting, generalizing, and integrating them with existing knowledge. Ghost's reflect only changes metadata (tier, importance). It never synthesizes new content from existing memories. This is the largest gap between ghost and the cognitive science. Park et al.'s Generative Agents (2023) implement this missing piece with a "reflection" mechanism that generates higher-level insights from raw memories — something ghost could adopt in the future.
+**Narrowing the gap:** Brain consolidation _transforms_ memories — abstracting, generalizing, and integrating them with existing knowledge. Ghost's reflect primarily changes metadata (tier, importance), but the **similarity merge** feature begins to bridge this gap. The `MERGE` action uses embedding cosine similarity to find semantically overlapping memories and consolidate them — the survivor inherits the combined access history and tags from absorbed memories. This is a structural form of consolidation (deduplication), not yet semantic synthesis. Park et al.'s Generative Agents (2023) implement the full version with a "reflection" mechanism that generates higher-level insights from raw memories — ghost's `MERGE` action supports a `strategy` field that could adopt LLM-based synthesis (`llm_synthesize`) in the future.
 
 **Another divergence:** Consolidation happens during sleep — a quiet period. Ghost's reflect runs on-demand, regardless of agent activity. There's no concept of "idle-time processing."
 
