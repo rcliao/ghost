@@ -195,6 +195,9 @@ func (s *SQLiteStore) migrate() error {
 	// Migrate: existing identity-tier memories become pinned LTM
 	s.db.Exec(`UPDATE memories SET pinned = 1, tier = 'ltm' WHERE tier = 'identity' AND pinned = 0`)
 
+	// Phase 5: similarity condition for reflect rules
+	s.db.Exec(`ALTER TABLE reflect_rules ADD COLUMN cond_similarity_gt REAL`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -447,21 +448,309 @@ func TestBuiltinRulesSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) < 6 {
-		t.Errorf("expected at least 6 built-in rules, got %d", len(rules))
+	if len(rules) < 7 {
+		t.Errorf("expected at least 7 built-in rules (including sys-merge-similar), got %d", len(rules))
 	}
 
-	// Check specific built-in rule exists
-	found := false
+	// Check specific built-in rules exist
+	foundPromote := false
+	foundMerge := false
 	for _, r := range rules {
 		if r.ID == "sys-promote-to-ltm" {
-			found = true
+			foundPromote = true
 			if r.Action.Op != "PROMOTE" {
 				t.Errorf("expected PROMOTE op, got %q", r.Action.Op)
 			}
 		}
+		if r.ID == "sys-merge-similar" {
+			foundMerge = true
+			if r.Action.Op != "MERGE" {
+				t.Errorf("expected MERGE op for sys-merge-similar, got %q", r.Action.Op)
+			}
+			if r.Cond.SimilarityGT != 0.9 {
+				t.Errorf("expected similarity_gt 0.9, got %f", r.Cond.SimilarityGT)
+			}
+			if r.Cond.Tier != "stm" {
+				t.Errorf("expected tier 'stm', got %q", r.Cond.Tier)
+			}
+		}
 	}
-	if !found {
+	if !foundPromote {
 		t.Error("sys-promote-to-ltm not found in rules")
+	}
+	if !foundMerge {
+		t.Error("sys-merge-similar not found in rules")
+	}
+}
+
+// insertMemoryWithEmbedding is a test helper that inserts a memory and a chunk with a pre-computed embedding.
+func insertMemoryWithEmbedding(t *testing.T, s *SQLiteStore, id, ns, key, content, tier string, importance float64, pinned bool, emb []float32) {
+	t.Helper()
+	now := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	pinnedInt := 0
+	if pinned {
+		pinnedInt = 1
+	}
+	_, err := s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens, pinned)
+		VALUES (?, ?, ?, ?, 'semantic', 1, ?, 'normal', 1, ?, ?, 30, ?)`,
+		id, ns, key, content, now, importance, tier, pinnedInt)
+	if err != nil {
+		t.Fatalf("insert memory %s: %v", id, err)
+	}
+
+	embJSON, _ := json.Marshal(emb)
+	_, err = s.db.Exec(`INSERT INTO chunks (id, memory_id, seq, text, start_line, end_line, embedding)
+		VALUES (?, ?, 0, ?, 0, 0, ?)`,
+		id+"-c0", id, content, string(embJSON))
+	if err != nil {
+		t.Fatalf("insert chunk for %s: %v", id, err)
+	}
+}
+
+func TestSimilarityMergeDryRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a merge rule with low threshold so our test vectors match
+	s.RuleSet(ctx, ReflectRule{
+		ID:       "test-merge",
+		Name:     "test merge",
+		Priority: 40,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.95},
+		Action:   RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+	})
+
+	// Three nearly identical vectors (will have very high cosine similarity)
+	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
+	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
+	vec3 := []float32{0.98, 0.02, 0.0, 0.0}
+	// One different vector
+	vecDiff := []float32{0.0, 0.0, 1.0, 0.0}
+
+	insertMemoryWithEmbedding(t, s, "m1", "test", "similar-1", "heartbeat noop", "stm", 0.5, false, vec1)
+	insertMemoryWithEmbedding(t, s, "m2", "test", "similar-2", "heartbeat noop idle", "stm", 0.3, false, vec2)
+	insertMemoryWithEmbedding(t, s, "m3", "test", "similar-3", "heartbeat noop quiet", "stm", 0.4, false, vec3)
+	insertMemoryWithEmbedding(t, s, "m4", "test", "different", "totally different content", "stm", 0.5, false, vecDiff)
+
+	result, err := s.Reflect(ctx, ReflectParams{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Merged != 2 {
+		t.Errorf("expected 2 merged (dry-run), got %d", result.Merged)
+	}
+}
+
+func TestSimilarityMergeApplied(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.RuleSet(ctx, ReflectRule{
+		ID:       "test-merge",
+		Name:     "test merge",
+		Priority: 40,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.95},
+		Action:   RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+	})
+
+	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
+	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
+	vec3 := []float32{0.98, 0.02, 0.0, 0.0}
+
+	insertMemoryWithEmbedding(t, s, "m1", "test", "high-imp", "important content", "stm", 0.8, false, vec1)
+	insertMemoryWithEmbedding(t, s, "m2", "test", "med-imp", "medium content", "stm", 0.5, false, vec2)
+	insertMemoryWithEmbedding(t, s, "m3", "test", "low-imp", "low content", "stm", 0.3, false, vec3)
+
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Merged != 2 {
+		t.Errorf("expected 2 merged, got %d", result.Merged)
+	}
+
+	// Survivor (m1, highest importance) should be alive
+	var deletedAt *string
+	s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = 'm1'`).Scan(&deletedAt)
+	if deletedAt != nil {
+		t.Error("survivor m1 should not be deleted")
+	}
+
+	// Absorbed memories should be soft-deleted
+	s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = 'm2'`).Scan(&deletedAt)
+	if deletedAt == nil {
+		t.Error("absorbed m2 should be soft-deleted")
+	}
+	s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = 'm3'`).Scan(&deletedAt)
+	if deletedAt == nil {
+		t.Error("absorbed m3 should be soft-deleted")
+	}
+
+	// Survivor should have summed access counts
+	var accessCount int
+	s.db.QueryRow(`SELECT access_count FROM memories WHERE id = 'm1'`).Scan(&accessCount)
+	if accessCount != 3 {
+		t.Errorf("expected survivor access_count=3, got %d", accessCount)
+	}
+
+	// Survivor should have max importance
+	var importance float64
+	s.db.QueryRow(`SELECT importance FROM memories WHERE id = 'm1'`).Scan(&importance)
+	if importance != 0.8 {
+		t.Errorf("expected survivor importance=0.8, got %f", importance)
+	}
+
+	// Check merged_into links exist
+	var linkCount int
+	s.db.QueryRow(`SELECT COUNT(*) FROM memory_links WHERE to_id = 'm1' AND rel = 'merged_into'`).Scan(&linkCount)
+	if linkCount != 2 {
+		t.Errorf("expected 2 merged_into links to survivor, got %d", linkCount)
+	}
+}
+
+func TestSimilarityMergePinnedProtection(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.RuleSet(ctx, ReflectRule{
+		ID:       "test-merge",
+		Name:     "test merge",
+		Priority: 40,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.95},
+		Action:   RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+	})
+
+	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
+	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
+
+	// m1 is pinned with lower importance, m2 is not pinned with higher importance
+	insertMemoryWithEmbedding(t, s, "m1", "test", "pinned-mem", "pinned content", "stm", 0.3, true, vec1)
+	insertMemoryWithEmbedding(t, s, "m2", "test", "unpinned-mem", "unpinned content", "stm", 0.8, false, vec2)
+
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pinned memory should never be absorbed, even if it has lower importance
+	var deletedAt *string
+	s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = 'm1'`).Scan(&deletedAt)
+	if deletedAt != nil {
+		t.Error("pinned memory m1 should never be absorbed/deleted")
+	}
+
+	// m2 (higher importance, not pinned) should be the survivor if merge happened,
+	// but m1 (pinned) can't be absorbed. Depending on who is survivor:
+	// If m2 is survivor (higher imp), m1 would be absorbed — but m1 is pinned, so it's skipped.
+	// Result: merge count should be 0 (only 1 non-pinned in group, nothing to absorb after protection)
+	if result.Merged != 0 {
+		t.Errorf("expected 0 merged (pinned protection), got %d", result.Merged)
+	}
+}
+
+func TestSimilarityMergeNoEmbeddings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.RuleSet(ctx, ReflectRule{
+		ID:       "test-merge",
+		Name:     "test merge",
+		Priority: 40,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.9},
+		Action:   RuleAction{Op: "MERGE"},
+	})
+
+	// Insert memories without embeddings
+	now := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
+		VALUES ('m1', 'test', 'no-emb-1', 'content 1', 'semantic', 1, ?, 'normal', 1, 0.5, 'stm', 20)`, now)
+	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
+		VALUES ('m2', 'test', 'no-emb-2', 'content 2', 'semantic', 1, ?, 'normal', 1, 0.5, 'stm', 20)`, now)
+
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No embeddings → no similarity comparison → no merges
+	if result.Merged != 0 {
+		t.Errorf("expected 0 merged (no embeddings), got %d", result.Merged)
+	}
+}
+
+func TestSimilarityMergeRespectsPreFilters(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Rule scoped to stm tier only
+	s.RuleSet(ctx, ReflectRule{
+		ID:       "test-merge",
+		Name:     "test merge stm only",
+		Priority: 40,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.95},
+		Action:   RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+	})
+
+	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
+	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
+
+	// m1 in stm, m2 in ltm — different tiers, should not be compared
+	insertMemoryWithEmbedding(t, s, "m1", "test", "stm-mem", "stm content", "stm", 0.5, false, vec1)
+	insertMemoryWithEmbedding(t, s, "m2", "test", "ltm-mem", "ltm content", "ltm", 0.5, false, vec2)
+
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Merged != 0 {
+		t.Errorf("expected 0 merged (different tiers), got %d", result.Merged)
+	}
+}
+
+func TestMergeRuleSetAndGet(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rule, err := s.RuleSet(ctx, ReflectRule{
+		Name:     "custom-merge",
+		Priority: 45,
+		Cond:     RuleCond{Tier: "stm", SimilarityGT: 0.85, Kind: "episodic"},
+		Action:   RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.RuleGet(ctx, rule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Cond.SimilarityGT != 0.85 {
+		t.Errorf("expected similarity_gt=0.85, got %f", got.Cond.SimilarityGT)
+	}
+	if got.Cond.Tier != "stm" {
+		t.Errorf("expected tier='stm', got %q", got.Cond.Tier)
+	}
+	if got.Cond.Kind != "episodic" {
+		t.Errorf("expected kind='episodic', got %q", got.Cond.Kind)
+	}
+	if got.Action.Op != "MERGE" {
+		t.Errorf("expected action MERGE, got %q", got.Action.Op)
+	}
+}
+
+func TestRuleMatchesSkipsSimilarity(t *testing.T) {
+	// Rules with SimilarityGT should never match in the per-memory pass
+	rule := ReflectRule{
+		Cond:   RuleCond{Tier: "stm", SimilarityGT: 0.9},
+		Action: RuleAction{Op: "MERGE"},
+	}
+	mem := model.Memory{Tier: "stm"}
+	if ruleMatches(rule, mem, 100, 0) {
+		t.Error("similarity rules should not match in per-memory pass")
 	}
 }

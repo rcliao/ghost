@@ -31,7 +31,8 @@ func init() {
 	ruleSetCmd.Flags().Float64("cond-utility-lt", 0, "Match memories with utility ratio below threshold")
 	ruleSetCmd.Flags().String("cond-kind", "", "Match memory kind")
 	ruleSetCmd.Flags().String("cond-tag", "", "Match memories with this tag")
-	ruleSetCmd.Flags().String("action", "", "Action: DECAY, DELETE, PROMOTE, DEMOTE, ARCHIVE, TTL_SET, PIN")
+	ruleSetCmd.Flags().Float64("cond-similarity-gt", 0, "Match memories with embedding similarity above threshold (0.0-1.0, used with MERGE action)")
+	ruleSetCmd.Flags().String("action", "", "Action: DECAY, DELETE, PROMOTE, DEMOTE, ARCHIVE, TTL_SET, PIN, MERGE")
 	ruleSetCmd.Flags().String("action-params", "", "Action params as JSON (e.g. '{\"factor\":0.9}')")
 
 	ruleListCmd.Flags().String("ns", "", "Namespace filter")
@@ -65,6 +66,7 @@ var reflectCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "  Demoted:            %d\n", result.Demoted)
 			fmt.Fprintf(cmd.OutOrStdout(), "  Archived:           %d\n", result.Archived)
 			fmt.Fprintf(cmd.OutOrStdout(), "  Deleted:            %d\n", result.Deleted)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Merged:             %d\n", result.Merged)
 			if len(result.Errors) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "  Errors:\n")
 				for _, e := range result.Errors {
@@ -109,6 +111,7 @@ var ruleSetCmd = &cobra.Command{
 		condUtilLT, _ := cmd.Flags().GetFloat64("cond-utility-lt")
 		condKind, _ := cmd.Flags().GetString("cond-kind")
 		condTag, _ := cmd.Flags().GetString("cond-tag")
+		condSimGT, _ := cmd.Flags().GetFloat64("cond-similarity-gt")
 		actionParamsStr, _ := cmd.Flags().GetString("action-params")
 
 		var actionParams map[string]any
@@ -132,6 +135,7 @@ var ruleSetCmd = &cobra.Command{
 				UtilityLT:    condUtilLT,
 				Kind:         condKind,
 				TagIncludes:  condTag,
+				SimilarityGT: condSimGT,
 			},
 			Action: store.RuleAction{
 				Op:     action,

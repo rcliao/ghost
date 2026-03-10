@@ -230,7 +230,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_reflect",
-		Description: "Run the reflect cycle to promote, decay, demote, archive, or delete memories based on lifecycle rules. Call this to maintain memory hygiene — especially when ghost_context indicates compaction is needed (compaction_suggested: true).",
+		Description: "Run the reflect cycle to promote, decay, demote, archive, delete, or merge similar memories based on lifecycle rules. Includes automatic similarity-based deduplication using embedding vectors. Call this to maintain memory hygiene — especially when ghost_context indicates compaction is needed (compaction_suggested: true).",
 		InputSchema: schema([]string{}, map[string]map[string]any{
 			"ns":      prop("string", "Namespace filter (optional, empty = all namespaces)"),
 			"dry_run": prop("boolean", "If true, preview what would happen without applying changes"),

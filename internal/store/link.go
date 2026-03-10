@@ -29,6 +29,7 @@ var validRels = map[string]bool{
 	"contradicts": true,
 	"depends_on":  true,
 	"refines":     true,
+	"merged_into": true,
 }
 
 // Link creates or removes a relation between two memories.
