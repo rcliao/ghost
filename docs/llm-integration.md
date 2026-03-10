@@ -42,45 +42,54 @@ This exposes 5 tools to the agent:
 
 ### Teaching the Agent to Use Ghost
 
-Ghost's MCP server includes built-in instructions that tell the agent what ghost is and how to use it. However, agents tend to under-use ghost_put unless explicitly instructed. The most effective way to encourage memory writes is through a **CLAUDE.md** file in your project root.
+Ghost's MCP server includes built-in instructions that tell the agent what ghost is and how to use it. However, agents tend to under-use ghost unless explicitly instructed. The most effective way to drive adoption is through a **CLAUDE.md** file in your project root (or `~/.claude/CLAUDE.md` globally) with **strong, directive language**. Soft instructions like "consider using ghost" get ignored. Use "MUST", "Do NOT skip", and bold emphasis on required behaviors.
 
 Example CLAUDE.md section:
 
 ```markdown
 ## Ghost Memory (MCP)
 
-You have access to a persistent memory system via Ghost MCP tools.
+You have access to a persistent memory system via Ghost MCP tools. This is how you learn across sessions. **Use it.**
+
+### MUST: Retrieve before working (ghost_context)
+**Before starting any non-trivial task**, call ghost_context to check for relevant past learnings:
+  ghost_context(query="<describe the task>", ns="agent:claude-code", budget=2000)
+
+Trigger on:
+- Debugging an error — past sessions may have hit the same issue
+- Working in an unfamiliar repo/service — check for project-specific conventions
+- Making architecture or design decisions — check for prior decisions
+- Any task where you think "I might have seen this before"
+
+Do NOT skip this step. The cost is one tool call; the benefit is avoiding repeated mistakes.
 
 ### When to write (ghost_put)
 Store memories when you encounter:
-- Project decisions and architecture choices
-- Debugging insights and root causes
+- Debugging insights (error → root cause → fix)
+- Architecture or design decisions with rationale
 - User corrections (store the correct information)
 - Patterns and conventions discovered
-- Cross-project knowledge
+- Non-obvious gotchas that cost time
 
+Use namespace `agent:claude-code` for general knowledge, or `project:<name>` for project-specific.
 Use descriptive keys (e.g. "auth-flow-decision", "db-migration-gotcha").
 Set importance 0.6-0.8 for most learnings, 0.9+ for critical decisions.
-
-### When to retrieve (ghost_context)
-At the start of a task, query ghost for relevant context:
-  ghost_context(query="<current task>", ns="project:<name>", budget=2000)
+Set priority "high" for important learnings, "critical" for must-never-forget.
 
 ### When to curate (ghost_curate)
 Use ghost_curate to act on individual memories:
-  ghost_curate(ns="project:myapp", key="old-pattern", op="archive")
+  ghost_curate(ns="agent:claude-code", key="old-pattern", op="archive")
 
 Operations: promote (tier up), demote (tier down), boost (importance +0.2),
-diminish (importance -0.2), archive (→dormant), delete (soft-delete),
+diminish (importance -0.2), archive (dormant), delete (soft-delete),
 pin (always in context), unpin (remove from always-on).
-
-Use this when reviewing memories from ghost_context or ghost_search and
-deciding which ones to keep, promote, or remove.
 
 ### When to reflect (ghost_reflect)
 Run ghost_reflect when ghost_context returns compaction_suggested: true,
 or after a long session with many stored learnings.
 ```
+
+**Why the strong language matters:** LLM agents respond to directive framing. "MUST" and "Do NOT" create behavioral anchors that generic suggestions don't. The `ghost_context` call before work is the single highest-value habit — it prevents the agent from re-discovering things it already learned in prior sessions.
 
 ### Key Behaviors
 
@@ -375,6 +384,196 @@ augmented += "[End memories]\n\n" + userMessage
 ```
 
 ---
+
+## Automated Memory via Claude Code Hooks
+
+CLAUDE.md instructions tell the agent _when_ to use ghost, but agents tend to forget — especially during long debugging sessions where the focus is on solving the problem, not recording learnings. Claude Code **hooks** can automate memory capture as a safety net.
+
+### How Hooks Work
+
+Hooks are shell commands that fire on specific Claude Code lifecycle events. Relevant events for memory automation:
+
+| Hook Event | When It Fires | Use For |
+|------------|--------------|---------|
+| `Stop` | Agent finishes responding to a prompt | Capture learnings from each turn |
+| `PreCompact` | Before context window compression | Capture knowledge before it's lost in long sessions |
+
+Both hooks run with `async: true` so they never block the user.
+
+### Architecture: Shell Script + Headless Claude
+
+The recommended approach uses `type: "command"` hooks that call shell scripts. Each script:
+
+1. Reads hook input from stdin (JSON with `transcript_path` and/or `session_id`)
+2. Extracts the session transcript (JSONL format)
+3. Pipes it to `claude -p` (headless mode) for LLM-powered analysis
+4. Executes the resulting `ghost put` CLI commands
+
+This avoids relying on `type: "agent"` hooks (which may not inherit MCP servers) and keeps the integration self-contained via the ghost CLI.
+
+### Setup
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ghost-precompact.sh",
+            "timeout": 120000,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ghost-stop.sh",
+            "timeout": 120000,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### PreCompact Hook Script
+
+`~/.claude/hooks/ghost-precompact.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Ghost memory curator — PreCompact hook
+# Reads hook input from stdin, extracts transcript, pipes to claude -p for analysis.
+# Runs async so it doesn't block compaction.
+
+set -euo pipefail
+
+DEBUG_LOG="/tmp/ghost-precompact-debug.log"
+HOOK_INPUT=$(cat)
+
+echo "=== $(date -Iseconds) ===" >> "$DEBUG_LOG"
+echo "$HOOK_INPUT" | jq '.' >> "$DEBUG_LOG" 2>&1 || echo "$HOOK_INPUT" >> "$DEBUG_LOG"
+
+# Extract transcript path from hook input
+TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
+
+if [ -z "$TRANSCRIPT_PATH" ]; then
+  SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+  if [ -n "$SESSION_ID" ]; then
+    TRANSCRIPT_PATH=$(find ~/.claude/projects -name "${SESSION_ID}*.jsonl" 2>/dev/null | head -1)
+    echo "Found transcript via session_id: $TRANSCRIPT_PATH" >> "$DEBUG_LOG"
+  fi
+fi
+
+if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
+  echo "No readable transcript found, skipping" >> "$DEBUG_LOG"
+  exit 0
+fi
+
+echo "Processing transcript: $TRANSCRIPT_PATH" >> "$DEBUG_LOG"
+
+# Extract the last ~100 lines of the transcript for analysis
+TRANSCRIPT_TAIL=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+
+if [ -z "$TRANSCRIPT_TAIL" ]; then
+  echo "Transcript empty or unreadable" >> "$DEBUG_LOG"
+  exit 0
+fi
+
+PROMPT='You are a memory curator. Analyze the following Claude Code session transcript (JSONL format) for notable learnings worth remembering long-term.
+
+Look for:
+- Debugging insights (error encountered → root cause found → fix applied)
+- Architecture or design decisions with rationale
+- User corrections or stated preferences
+- Non-obvious gotchas or patterns discovered
+- Solutions that took multiple attempts to find
+
+If the session was routine (simple file reads, straightforward edits, no surprises), output NOTHING.
+
+If you find notable learnings, output ONLY shell commands to store them, one per learning.
+The ghost CLI syntax is:
+  ghost put -n "agent:claude-code" -k "<descriptive-key>" --kind semantic -p high -t learning "<the insight in one or two sentences>"
+
+Available flags:
+  -n, --ns        Namespace (always use "agent:claude-code")
+  -k, --key       Descriptive key like "spanner-empty-array-gotcha"
+  --kind          Kind: semantic, episodic, procedural
+  -p, --priority  Priority: low, normal, high, critical
+  -t, --tags      Comma-separated tags
+  --tier          Storage tier: sensory, stm (default), ltm
+
+Use priority "high" for important learnings, "critical" for must-never-forget decisions.
+Output ONLY the ghost put commands, nothing else. No explanation, no markdown.'
+
+COMMANDS=$(echo "$TRANSCRIPT_TAIL" | claude -p --model claude-sonnet-4-6 "$PROMPT" 2>> "$DEBUG_LOG")
+
+echo "Claude output:" >> "$DEBUG_LOG"
+echo "$COMMANDS" >> "$DEBUG_LOG"
+
+if [ -z "$COMMANDS" ]; then
+  echo "No learnings found" >> "$DEBUG_LOG"
+  exit 0
+fi
+
+# Execute only lines starting with "ghost put"
+echo "$COMMANDS" | grep '^ghost put' | while IFS= read -r cmd; do
+  echo "Executing: $cmd" >> "$DEBUG_LOG"
+  eval "$cmd" >> "$DEBUG_LOG" 2>&1 || echo "Failed: $cmd" >> "$DEBUG_LOG"
+done
+
+echo "Done" >> "$DEBUG_LOG"
+```
+
+### Stop Hook Script
+
+`~/.claude/hooks/ghost-stop.sh` — Same pattern, but reads more transcript lines (200 vs 100) since this is the final chance to capture learnings from the session:
+
+```bash
+#!/usr/bin/env bash
+# Ghost memory curator — Stop hook
+# Same pattern as PreCompact but reads more transcript (last 200 lines).
+# Runs async so it doesn't block session exit.
+
+set -euo pipefail
+
+DEBUG_LOG="/tmp/ghost-stop-debug.log"
+HOOK_INPUT=$(cat)
+
+# ... (same transcript extraction logic as PreCompact) ...
+
+# Use more lines for Stop hook since this is the final chance
+TRANSCRIPT_TAIL=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+
+# ... (same prompt and execution logic) ...
+
+# NOTE: Unset CLAUDECODE env var to avoid nested Claude Code detection
+COMMANDS=$(echo "$TRANSCRIPT_TAIL" | unset CLAUDECODE 2>/dev/null; claude -p --model claude-sonnet-4-6 "$PROMPT" 2>> "$DEBUG_LOG")
+```
+
+The Stop hook includes `unset CLAUDECODE` before calling `claude -p` to prevent nested Claude Code detection issues.
+
+### Design Notes
+
+1. **Shell scripts + `claude -p`** — More reliable than `type: "agent"` hooks because agent subprocesses may not inherit MCP servers. Shell scripts call the ghost CLI directly, which always works.
+
+2. **Both hooks are async** — Neither blocks the user. PreCompact runs during compaction; Stop runs after the agent responds. Memory storage happens in the background.
+
+3. **Transcript extraction** — Hook input provides `transcript_path` or `session_id`. The scripts try `transcript_path` first, then fall back to finding the JSONL file by session_id under `~/.claude/projects/`.
+
+4. **Safety** — Only lines starting with `ghost put` are executed. The LLM is prompted to output nothing for routine sessions, keeping noise low.
+
+5. **Debug logs** — Both scripts log to `/tmp/ghost-{precompact,stop}-debug.log` for troubleshooting.
 
 ## Reflect Rules
 

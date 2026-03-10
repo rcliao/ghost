@@ -206,6 +206,15 @@ Exposes 5 tools over stdio transport using `github.com/modelcontextprotocol/go-s
 
 Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
 
+### Automated Memory via Hooks
+
+Claude Code hooks can automate memory capture without relying on the agent remembering to call `ghost_put`. Both hooks use `type: "command"` shell scripts that pipe the session transcript to `claude -p` (headless mode) for analysis, then execute the resulting `ghost put` CLI commands.
+
+- **PreCompact hook (async)** — fires before context compression on long sessions. Reads the last ~100 transcript lines, extracts learnings, stores them via `ghost` CLI. Zero latency cost.
+- **Stop hook (async)** — fires after each agent turn. Same pattern but reads more transcript (last ~200 lines) as the final chance to capture learnings. Zero latency cost.
+
+See the [Automated Memory via Claude Code Hooks](llm-integration.md#automated-memory-via-claude-code-hooks) section in the LLM Integration Guide.
+
 ## Library API
 
 `memory.go` at the package root provides a public Go API by re-exporting internal types:
