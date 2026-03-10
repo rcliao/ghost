@@ -601,6 +601,54 @@ echo "Done" >> "$DEBUG_LOG"
 
 6. **Debug logs** — Both scripts log to `/tmp/ghost-{precompact,stop}-debug.log` for troubleshooting.
 
+## Active Learning via Skill + Loop
+
+Hooks capture learnings passively at lifecycle boundaries (compaction, session end). For **active, on-demand** capture, use a Claude Code skill that runs within the session with full tool access.
+
+### The `/ghost-learn` Skill
+
+A custom skill (`~/.claude/skills/ghost-learn/SKILL.md`) that reviews the current session or repo for learnings and stores them via ghost MCP tools directly — no shell escaping, no transcript parsing.
+
+**Modes:**
+
+| Mode | What it does |
+|------|-------------|
+| `/ghost-learn` or `/ghost-learn chat` | Review the current conversation for learnings |
+| `/ghost-learn repo` | Scan the current repo for conventions, patterns, and architecture |
+| `/ghost-learn both` | Do both |
+
+**Workflow:**
+
+1. Calls `ghost_context` to check existing memories (prevents duplicates)
+2. Reviews conversation for stm-worthy learnings (debugging insights, decisions, corrections) and sensory-worthy observations (file paths, error messages, patterns noticed)
+3. For repo mode, scans key files (README, Makefile, CLAUDE.md, etc.) for non-obvious conventions
+4. Stores via `ghost_put` MCP tool with appropriate tier, kind, and project tags
+5. Reports a summary of what was captured
+
+**Same tier policy as hooks:** sensory for raw observations, stm for confirmed learnings, never ltm.
+
+### Periodic Capture with `/loop`
+
+Combine the skill with `/loop` for periodic mid-session capture:
+
+```
+/loop 15m /ghost-learn
+```
+
+This fills the gap where hooks don't fire — long sessions that never hit context limits. Each loop run focuses on what's new in the conversation since the last run.
+
+### Hooks vs Skill: When to Use Which
+
+| | Hooks (passive) | Skill (active) |
+|--|----------------|----------------|
+| **Trigger** | Lifecycle events (compaction, stop) | On-demand or periodic via `/loop` |
+| **Context** | Transcript tail only (100-200 lines) | Full conversation + repo access |
+| **Tools** | Ghost CLI via shell | Ghost MCP tools directly |
+| **Best for** | Safety net — captures what the agent forgot to store | Deliberate review — richer analysis with repo exploration |
+| **Tier policy** | sensory or stm only (ltm blocked) | Same — sensory or stm only |
+
+The two approaches are complementary: hooks ensure nothing is lost even if the agent forgets, while the skill provides richer, more contextual capture when invoked.
+
 ## Reflect Rules
 
 Ghost ships with 6 built-in rules (including sensory tier lifecycle). Pinned memories are exempt from all rules. You can add custom rules for your use case:
