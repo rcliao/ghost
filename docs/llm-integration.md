@@ -446,7 +446,9 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-### PreCompact Hook Script
+### Hook Script (shared pattern)
+
+Both hooks use the same pattern. The LLM outputs a **JSON array** (not shell commands) to avoid `eval`-related content corruption — backticks, braces, and angle brackets in memory content would otherwise be interpreted by the shell.
 
 `~/.claude/hooks/ghost-precompact.sh`:
 
@@ -454,6 +456,7 @@ Add to `~/.claude/settings.json`:
 #!/usr/bin/env bash
 # Ghost memory curator — PreCompact hook
 # Reads hook input from stdin, extracts transcript, pipes to claude -p for analysis.
+# LLM outputs JSON array; we parse with jq and call ghost put safely (no eval).
 # Runs async so it doesn't block compaction.
 
 set -euo pipefail
@@ -482,7 +485,6 @@ fi
 
 echo "Processing transcript: $TRANSCRIPT_PATH" >> "$DEBUG_LOG"
 
-# Extract the last ~100 lines of the transcript for analysis
 TRANSCRIPT_TAIL=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
 
 if [ -z "$TRANSCRIPT_TAIL" ]; then
@@ -499,79 +501,78 @@ Look for:
 - Non-obvious gotchas or patterns discovered
 - Solutions that took multiple attempts to find
 
-If the session was routine (simple file reads, straightforward edits, no surprises), output NOTHING.
+If the session was routine (simple file reads, straightforward edits, no surprises), output ONLY an empty JSON array: []
 
-If you find notable learnings, output ONLY shell commands to store them, one per learning.
-The ghost CLI syntax is:
-  ghost put -n "agent:claude-code" -k "<descriptive-key>" --kind semantic -p high -t learning "<the insight in one or two sentences>"
+If you find notable learnings, output a JSON array of objects. Each object has:
+  - "key": descriptive kebab-case key like "spanner-empty-array-gotcha"
+  - "kind": one of "semantic", "episodic", "procedural"
+  - "priority": one of "low", "normal", "high", "critical"
+  - "tags": comma-separated string like "learning,project:foo"
+  - "content": the insight in one or two sentences (plain text, no backticks or shell metacharacters)
 
-Available flags:
-  -n, --ns        Namespace (always use "agent:claude-code")
-  -k, --key       Descriptive key like "spanner-empty-array-gotcha"
-  --kind          Kind: semantic, episodic, procedural
-  -p, --priority  Priority: low, normal, high, critical
-  -t, --tags      Comma-separated tags
-  --tier          Storage tier: sensory, stm (default), ltm
+Example output:
+[
+  {"key": "redis-nil-vs-empty", "kind": "semantic", "priority": "high", "tags": "learning,debugging", "content": "Redis GET returns nil (not empty string) for missing keys. The Go redis client returns redis.Nil error, not an empty string."}
+]
 
-Use priority "high" for important learnings, "critical" for must-never-forget decisions.
-Output ONLY the ghost put commands, nothing else. No explanation, no markdown.'
+Output ONLY valid JSON. No markdown fences, no explanation.'
 
-COMMANDS=$(echo "$TRANSCRIPT_TAIL" | claude -p --model claude-sonnet-4-6 "$PROMPT" 2>> "$DEBUG_LOG")
+RESULT=$(echo "$TRANSCRIPT_TAIL" | claude -p --model claude-sonnet-4-6 "$PROMPT" 2>> "$DEBUG_LOG")
 
 echo "Claude output:" >> "$DEBUG_LOG"
-echo "$COMMANDS" >> "$DEBUG_LOG"
+echo "$RESULT" >> "$DEBUG_LOG"
 
-if [ -z "$COMMANDS" ]; then
+if [ -z "$RESULT" ]; then
+  echo "No output from claude" >> "$DEBUG_LOG"
+  exit 0
+fi
+
+# Validate JSON
+if ! echo "$RESULT" | jq 'type' > /dev/null 2>&1; then
+  echo "Invalid JSON output, skipping" >> "$DEBUG_LOG"
+  exit 0
+fi
+
+COUNT=$(echo "$RESULT" | jq 'length')
+if [ "$COUNT" -eq 0 ]; then
   echo "No learnings found" >> "$DEBUG_LOG"
   exit 0
 fi
 
-# Execute only lines starting with "ghost put"
-echo "$COMMANDS" | grep '^ghost put' | while IFS= read -r cmd; do
-  echo "Executing: $cmd" >> "$DEBUG_LOG"
-  eval "$cmd" >> "$DEBUG_LOG" 2>&1 || echo "Failed: $cmd" >> "$DEBUG_LOG"
+echo "Processing $COUNT learnings..." >> "$DEBUG_LOG"
+
+# Iterate over each learning and call ghost put safely via jq extraction
+echo "$RESULT" | jq -c '.[]' | while IFS= read -r item; do
+  KEY=$(echo "$item" | jq -r '.key')
+  KIND=$(echo "$item" | jq -r '.kind')
+  PRIORITY=$(echo "$item" | jq -r '.priority')
+  TAGS=$(echo "$item" | jq -r '.tags')
+  CONTENT=$(echo "$item" | jq -r '.content')
+
+  echo "Storing: $KEY" >> "$DEBUG_LOG"
+  ghost put -n "agent:claude-code" -k "$KEY" --kind "$KIND" -p "$PRIORITY" -t "$TAGS" "$CONTENT" >> "$DEBUG_LOG" 2>&1 || echo "Failed to store: $KEY" >> "$DEBUG_LOG"
 done
 
 echo "Done" >> "$DEBUG_LOG"
 ```
 
-### Stop Hook Script
+### Stop Hook Differences
 
-`~/.claude/hooks/ghost-stop.sh` — Same pattern, but reads more transcript lines (200 vs 100) since this is the final chance to capture learnings from the session:
+`~/.claude/hooks/ghost-stop.sh` uses the same JSON-based pattern with two additions:
 
-```bash
-#!/usr/bin/env bash
-# Ghost memory curator — Stop hook
-# Same pattern as PreCompact but reads more transcript (last 200 lines).
-# Runs async so it doesn't block session exit.
-
-set -euo pipefail
-
-DEBUG_LOG="/tmp/ghost-stop-debug.log"
-HOOK_INPUT=$(cat)
-
-# ... (same transcript extraction logic as PreCompact) ...
-
-# Use more lines for Stop hook since this is the final chance
-TRANSCRIPT_TAIL=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
-
-# ... (same prompt and execution logic) ...
-
-# NOTE: Unset CLAUDECODE env var to avoid nested Claude Code detection
-COMMANDS=$(echo "$TRANSCRIPT_TAIL" | unset CLAUDECODE 2>/dev/null; claude -p --model claude-sonnet-4-6 "$PROMPT" 2>> "$DEBUG_LOG")
-```
-
-The Stop hook includes `unset CLAUDECODE` before calling `claude -p` to prevent nested Claude Code detection issues.
+1. **Skips trivial sessions** — exits early if there's no `last_assistant_message` (instant exits, `/clear`) or if the transcript is under 50 lines.
+2. **Samples head + tail** — takes the first 50 and last 150 lines of the transcript to capture the full arc of the session, since the interesting parts may be at the beginning.
+3. **Unsets CLAUDECODE** — prevents nested Claude Code detection when calling `claude -p` from within a session.
 
 ### Design Notes
 
-1. **Shell scripts + `claude -p`** — More reliable than `type: "agent"` hooks because agent subprocesses may not inherit MCP servers. Shell scripts call the ghost CLI directly, which always works.
+1. **JSON output, not shell commands** — The original approach had the LLM output `ghost put` shell commands that were `eval`'d. This caused content corruption: backticks were interpreted as command substitution (e.g., `` `executeCampaignQuery` `` → "command not found"), braces triggered syntax errors, and one memory accidentally ran `npx next build` and stored 4,743 tokens of lint output. The JSON approach parses each field with `jq` and passes them as arguments, avoiding shell interpretation entirely.
 
-2. **Both hooks are async** — Neither blocks the user. PreCompact runs during compaction; Stop runs after the agent responds. Memory storage happens in the background.
+2. **Shell scripts + `claude -p`** — More reliable than `type: "agent"` hooks because agent subprocesses may not inherit MCP servers. Shell scripts call the ghost CLI directly, which always works.
 
-3. **Transcript extraction** — Hook input provides `transcript_path` or `session_id`. The scripts try `transcript_path` first, then fall back to finding the JSONL file by session_id under `~/.claude/projects/`.
+3. **Both hooks are async** — Neither blocks the user. PreCompact runs during compaction; Stop runs after the agent responds. Memory storage happens in the background.
 
-4. **Safety** — Only lines starting with `ghost put` are executed. The LLM is prompted to output nothing for routine sessions, keeping noise low.
+4. **Transcript extraction** — Hook input provides `transcript_path` or `session_id`. The scripts try `transcript_path` first, then fall back to finding the JSONL file by session_id under `~/.claude/projects/`.
 
 5. **Debug logs** — Both scripts log to `/tmp/ghost-{precompact,stop}-debug.log` for troubleshooting.
 
