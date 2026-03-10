@@ -80,10 +80,10 @@ func TestContextEmpty(t *testing.T) {
 }
 
 func TestKindWeightsSum(t *testing.T) {
-	// All kind weight vectors must sum to 1.0
+	// All kind weight vectors must sum to 1.0 (tier is now multiplicative, not additive)
 	for _, kind := range []string{"episodic", "semantic", "procedural"} {
 		w := kindWeights(kind)
-		sum := w.relevance + w.recency + w.importance + w.access + w.tier
+		sum := w.relevance + w.recency + w.importance + w.access
 		if sum < 0.99 || sum > 1.01 {
 			t.Errorf("kindWeights(%q) sums to %f, want 1.0", kind, sum)
 		}
@@ -106,15 +106,24 @@ func TestKindWeightsProceduralFavorsAccess(t *testing.T) {
 	}
 }
 
-func TestTierScoreSensory(t *testing.T) {
-	score := tierScore("sensory")
-	stmScore := tierScore("stm")
-	dormantScore := tierScore("dormant")
-	if score >= stmScore {
-		t.Errorf("sensory tier score (%f) should be below stm (%f)", score, stmScore)
+func TestTierMultiplierOrdering(t *testing.T) {
+	ltm := tierMultiplier("ltm")
+	stm := tierMultiplier("stm")
+	dormant := tierMultiplier("dormant")
+	sensory := tierMultiplier("sensory")
+
+	if ltm <= stm {
+		t.Errorf("ltm (%f) should be > stm (%f)", ltm, stm)
 	}
-	if score >= dormantScore {
-		t.Errorf("sensory tier score (%f) should be below dormant (%f)", score, dormantScore)
+	if stm <= dormant {
+		t.Errorf("stm (%f) should be > dormant (%f)", stm, dormant)
+	}
+	if sensory >= dormant {
+		t.Errorf("sensory (%f) should be < dormant (%f)", sensory, dormant)
+	}
+	// Dormant should meaningfully suppress: multiplier < 0.2
+	if dormant >= 0.2 {
+		t.Errorf("dormant multiplier (%f) should be < 0.2 to meaningfully suppress", dormant)
 	}
 }
 

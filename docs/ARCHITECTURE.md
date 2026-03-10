@@ -160,19 +160,21 @@ Two-phase greedy packing within a token budget:
 1. **Phase 1 (Pinned)**: Load all `pinned = true` memories, ordered by importance. Fills up to `budget/3`.
 2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric, filterable by tags. Fills remaining budget.
 
-**Composite scoring** (5 factors, kind-specific weights):
+**Composite scoring** (4 additive factors + multiplicative tier modifier):
 
-Weights vary by memory kind to match cognitive retrieval patterns:
+Additive weights vary by memory kind to match cognitive retrieval patterns:
 
 | Factor | Semantic | Episodic | Procedural |
 |--------|----------|----------|------------|
-| Relevance | 0.40 | 0.25 | 0.30 |
-| Recency | 0.05 | 0.30 | 0.05 |
-| Importance | 0.25 | 0.15 | 0.15 |
-| Access freq | 0.15 | 0.10 | 0.35 |
-| Tier boost | 0.15 | 0.20 | 0.15 |
+| Relevance | 0.45 | 0.30 | 0.35 |
+| Recency | 0.10 | 0.40 | 0.05 |
+| Importance | 0.30 | 0.15 | 0.15 |
+| Access freq | 0.15 | 0.15 | 0.45 |
 
-Tier boost values: ltm=1.0, stm=0.5, dormant=0.15, sensory=0.1
+The composite score is then multiplied by a **tier modifier** so that tier transitions
+have meaningful impact on ranking (not just a small additive boost):
+
+Tier multipliers: ltm=1.0, stm=0.8, dormant=0.15, sensory=0.1
 
 Memories that don't fully fit get excerpted (truncated with "...") if at least 25 tokens remain.
 

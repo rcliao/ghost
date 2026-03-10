@@ -153,12 +153,10 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 			}
 		}
 
-		// Tier boost: identity/ltm memories score higher than stm/dormant
-		tierBoost := tierScore(m.Tier)
-
-		// Kind-specific composite weights
+		// Kind-specific composite weights, then apply tier as multiplicative modifier
 		w := kindWeights(m.Kind)
-		score := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access + tierBoost*w.tier
+		base := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access
+		score := base * tierMultiplier(m.Tier)
 
 		candidates = append(candidates, scored{memory: m, score: score})
 	}
@@ -276,18 +274,22 @@ func (s *SQLiteStore) loadPinnedMemories(ctx context.Context, ns string) ([]mode
 	return memories, nil
 }
 
-func tierScore(tier string) float64 {
+// tierMultiplier returns a multiplicative penalty/boost for tier.
+// Applied as a multiplier on the final composite score so that
+// tier transitions have meaningful impact on ranking:
+//   ltm=1.0 (no penalty), stm=0.8, dormant=0.15, sensory=0.1
+func tierMultiplier(tier string) float64 {
 	switch tier {
 	case "ltm":
 		return 1.0
 	case "stm":
-		return 0.5
-	case "sensory":
-		return 0.1
+		return 0.8
 	case "dormant":
 		return 0.15
+	case "sensory":
+		return 0.1
 	default:
-		return 0.5
+		return 0.8
 	}
 }
 
@@ -307,12 +309,13 @@ func priorityScore(p string) float64 {
 }
 
 // scoreWeights holds kind-specific scoring weights for context assembly.
+// Tier is applied as a multiplicative modifier (see tierMultiplier), not as
+// an additive component, so it has meaningful impact on ranking.
 type scoreWeights struct {
-	relevance float64
-	recency   float64
+	relevance  float64
+	recency    float64
 	importance float64
-	access    float64
-	tier      float64
+	access     float64
 }
 
 // kindWeights returns scoring weights tuned for different memory kinds.
@@ -320,13 +323,16 @@ type scoreWeights struct {
 //   - Episodic: recency-heavy (temporal, context-dependent retrieval)
 //   - Semantic: relevance + importance (decontextualized, timeless facts)
 //   - Procedural: access-heavy (skills strengthen through practice/testing effect)
+//
+// Weights sum to 1.0. Tier boost was removed from additive weights and is
+// now applied as a multiplier on the composite score.
 func kindWeights(kind string) scoreWeights {
 	switch kind {
 	case "episodic":
-		return scoreWeights{relevance: 0.25, recency: 0.30, importance: 0.15, access: 0.10, tier: 0.20}
+		return scoreWeights{relevance: 0.30, recency: 0.40, importance: 0.15, access: 0.15}
 	case "procedural":
-		return scoreWeights{relevance: 0.30, recency: 0.05, importance: 0.15, access: 0.35, tier: 0.15}
+		return scoreWeights{relevance: 0.35, recency: 0.05, importance: 0.15, access: 0.45}
 	default: // semantic
-		return scoreWeights{relevance: 0.40, recency: 0.05, importance: 0.25, access: 0.15, tier: 0.15}
+		return scoreWeights{relevance: 0.45, recency: 0.10, importance: 0.30, access: 0.15}
 	}
 }
