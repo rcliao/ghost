@@ -492,27 +492,44 @@ if [ -z "$TRANSCRIPT_TAIL" ]; then
   exit 0
 fi
 
-PROMPT='You are a memory curator. Analyze the following Claude Code session transcript (JSONL format) for notable learnings worth remembering long-term.
+PROMPT='You are a memory curator for an AI coding agent. Analyze the following Claude Code session transcript (JSONL format) and extract memories at two confidence levels.
 
-Look for:
-- Debugging insights (error encountered → root cause found → fix applied)
+## Tier: stm (short-term memory)
+Confirmed learnings worth remembering. Use for:
+- Debugging insights (error → root cause → fix)
 - Architecture or design decisions with rationale
 - User corrections or stated preferences
-- Non-obvious gotchas or patterns discovered
+- Non-obvious gotchas confirmed through experience
 - Solutions that took multiple attempts to find
 
-If the session was routine (simple file reads, straightforward edits, no surprises), output ONLY an empty JSON array: []
+## Tier: sensory (raw observations)
+Unconfirmed or partial observations that might be useful later. Use for:
+- File paths, service names, or repo structure noticed during work
+- Error messages encountered (even if not yet resolved)
+- Patterns noticed but not yet confirmed across multiple instances
+- Tools, commands, or workflows seen in use
+- Context about what the session was working on
 
-If you find notable learnings, output a JSON array of objects. Each object has:
+sensory memories are automatically decayed if never accessed, so err on the side of capturing them.
+
+## Rules
+- NEVER use tier "ltm" — long-term memory is only reached through promotion by the user or reflect lifecycle.
+- If the session was trivial (just a greeting, a single file read, or a /clear), output an empty JSON array: []
+- Include the project name in tags when inferrable from file paths or repo names (e.g. "project:ghost", "project:internal-api-campaigns-gql").
+
+## Output format
+Output a JSON array of objects. Each object has:
   - "key": descriptive kebab-case key like "spanner-empty-array-gotcha"
   - "kind": one of "semantic", "episodic", "procedural"
   - "priority": one of "low", "normal", "high", "critical"
+  - "tier": one of "sensory", "stm"
   - "tags": comma-separated string like "learning,project:foo"
   - "content": the insight in one or two sentences (plain text, no backticks or shell metacharacters)
 
 Example output:
 [
-  {"key": "redis-nil-vs-empty", "kind": "semantic", "priority": "high", "tags": "learning,debugging", "content": "Redis GET returns nil (not empty string) for missing keys. The Go redis client returns redis.Nil error, not an empty string."}
+  {"key": "redis-nil-vs-empty", "kind": "semantic", "priority": "high", "tier": "stm", "tags": "learning,debugging,project:myapp", "content": "Redis GET returns nil (not empty string) for missing keys. The Go redis client returns redis.Nil error, not an empty string."},
+  {"key": "myapp-uses-redis-for-sessions", "kind": "episodic", "priority": "low", "tier": "sensory", "tags": "project:myapp", "content": "The myapp service stores user sessions in Redis with a 24h TTL, configured in src/config/redis.js."}
 ]
 
 Output ONLY valid JSON. No markdown fences, no explanation.'
@@ -546,11 +563,17 @@ echo "$RESULT" | jq -c '.[]' | while IFS= read -r item; do
   KEY=$(echo "$item" | jq -r '.key')
   KIND=$(echo "$item" | jq -r '.kind')
   PRIORITY=$(echo "$item" | jq -r '.priority')
+  TIER=$(echo "$item" | jq -r '.tier // "stm"')
   TAGS=$(echo "$item" | jq -r '.tags')
   CONTENT=$(echo "$item" | jq -r '.content')
 
-  echo "Storing: $KEY" >> "$DEBUG_LOG"
-  ghost put -n "agent:claude-code" -k "$KEY" --kind "$KIND" -p "$PRIORITY" -t "$TAGS" "$CONTENT" >> "$DEBUG_LOG" 2>&1 || echo "Failed to store: $KEY" >> "$DEBUG_LOG"
+  # Never allow hooks to write directly to ltm
+  if [ "$TIER" = "ltm" ]; then
+    TIER="stm"
+  fi
+
+  echo "Storing: $KEY (tier=$TIER)" >> "$DEBUG_LOG"
+  ghost put -n "agent:claude-code" -k "$KEY" --kind "$KIND" -p "$PRIORITY" --tier "$TIER" -t "$TAGS" "$CONTENT" >> "$DEBUG_LOG" 2>&1 || echo "Failed to store: $KEY" >> "$DEBUG_LOG"
 done
 
 echo "Done" >> "$DEBUG_LOG"
@@ -566,15 +589,17 @@ echo "Done" >> "$DEBUG_LOG"
 
 ### Design Notes
 
-1. **JSON output, not shell commands** — The original approach had the LLM output `ghost put` shell commands that were `eval`'d. This caused content corruption: backticks were interpreted as command substitution (e.g., `` `executeCampaignQuery` `` → "command not found"), braces triggered syntax errors, and one memory accidentally ran `npx next build` and stored 4,743 tokens of lint output. The JSON approach parses each field with `jq` and passes them as arguments, avoiding shell interpretation entirely.
+1. **Two-tier capture** — The LLM assigns each memory to either `sensory` (raw observations, unconfirmed patterns) or `stm` (confirmed learnings). Sensory memories are automatically decayed if never accessed, so the hooks can capture liberally without polluting long-term storage. LTM is never written directly by hooks — it's only reached through user-initiated promotion or reflect lifecycle rules.
 
-2. **Shell scripts + `claude -p`** — More reliable than `type: "agent"` hooks because agent subprocesses may not inherit MCP servers. Shell scripts call the ghost CLI directly, which always works.
+2. **JSON output, not shell commands** — The original approach had the LLM output `ghost put` shell commands that were `eval`'d. This caused content corruption: backticks were interpreted as command substitution (e.g., `` `executeCampaignQuery` `` → "command not found"), braces triggered syntax errors, and one memory accidentally ran `npx next build` and stored 4,743 tokens of lint output. The JSON approach parses each field with `jq` and passes them as arguments, avoiding shell interpretation entirely.
 
-3. **Both hooks are async** — Neither blocks the user. PreCompact runs during compaction; Stop runs after the agent responds. Memory storage happens in the background.
+3. **Shell scripts + `claude -p`** — More reliable than `type: "agent"` hooks because agent subprocesses may not inherit MCP servers. Shell scripts call the ghost CLI directly, which always works.
 
-4. **Transcript extraction** — Hook input provides `transcript_path` or `session_id`. The scripts try `transcript_path` first, then fall back to finding the JSONL file by session_id under `~/.claude/projects/`.
+4. **Both hooks are async** — Neither blocks the user. PreCompact runs during compaction; Stop runs after the agent responds. Memory storage happens in the background.
 
-5. **Debug logs** — Both scripts log to `/tmp/ghost-{precompact,stop}-debug.log` for troubleshooting.
+5. **Transcript extraction** — Hook input provides `transcript_path` or `session_id`. The scripts try `transcript_path` first, then fall back to finding the JSONL file by session_id under `~/.claude/projects/`.
+
+6. **Debug logs** — Both scripts log to `/tmp/ghost-{precompact,stop}-debug.log` for troubleshooting.
 
 ## Reflect Rules
 
