@@ -216,13 +216,22 @@ func DefaultSeedCorpus() []SeedMemory {
 		},
 
 		// ══════════════════════════════════════════════════════════════
+		// DORMANT — archived memories that should not surface in search/context
+		// ══════════════════════════════════════════════════════════════
+		{
+			NS: "project:alpha", Key: "dormant-old-deploy-process", Kind: "procedural", Tier: "dormant", Priority: "normal", Importance: 0.5,
+			BackdateHours: 480,
+			Content: "Old deployment process: manually SSH into production server, pull latest code from git, run database migrations, restart the application service. Replaced by ArgoCD pipeline.",
+		},
+
+		// ══════════════════════════════════════════════════════════════
 		// SENSORY — ultra-short-lived buffer entries
 		// ══════════════════════════════════════════════════════════════
 		{
 			// Recent sensory input — should be promoted to STM if accessed
 			NS: "system:ops", Key: "sensory-attended", Kind: "episodic", Tier: "sensory", Priority: "normal", Importance: 0.3,
 			BackdateHours: 2, AccessCount: 3,
-			Content: "User asked about the deployment pipeline and I explained the ArgoCD sync process in detail.",
+			Content: "User asked about database backup strategy and I explained the WAL archiving approach with point-in-time recovery.",
 		},
 		{
 			// Old sensory input — should be deleted (unattended after 4h)

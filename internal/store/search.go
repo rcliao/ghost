@@ -16,11 +16,13 @@ import (
 
 // SearchParams holds parameters for searching memories.
 type SearchParams struct {
-	NS    string
-	Query string
-	Kind  string
-	Tags  []string
-	Limit int
+	NS           string
+	Query        string
+	Kind         string
+	Tags         []string
+	Limit        int
+	ExcludeTiers []string // tiers to exclude (e.g. ["dormant", "sensory"])
+	IncludeAll   bool     // if true, skip default tier exclusions
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -78,10 +80,34 @@ func rrfScore(ranks []int, k int) float64 {
 	return score
 }
 
+// temporalKeywords are words that signal the user wants recency-ranked results.
+var temporalKeywords = map[string]bool{
+	"yesterday": true, "today": true, "recent": true, "latest": true,
+	"last": true, "newest": true, "just": true, "ago": true,
+	"currently": true, "now": true, "earlier": true, "previously": true,
+}
+
+// hasTemporalIntent returns true if the query contains temporal keywords.
+func hasTemporalIntent(query string) bool {
+	for _, w := range strings.Fields(query) {
+		if temporalKeywords[strings.ToLower(w)] {
+			return true
+		}
+	}
+	return false
+}
+
 // Search finds memories whose content or chunks match the query.
 // Uses RRF (Reciprocal Rank Fusion) to merge results from FTS5, LIKE, and
 // vector search into a single ranked list.
+// By default, dormant-tier memories are excluded. Set IncludeAll=true to override.
 func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResult, error) {
+	// Default: exclude dormant and sensory tiers unless caller opts in.
+	// Dormant = archived, sensory = ephemeral observations not yet promoted.
+	if !p.IncludeAll && len(p.ExcludeTiers) == 0 {
+		p.ExcludeTiers = []string{"dormant", "sensory"}
+	}
+
 	limit := p.Limit
 	if limit <= 0 {
 		limit = 20
@@ -145,10 +171,31 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		fused = append(fused, fusedResult{result: r, rrfScore: score})
 	}
 
-	// Sort by RRF score descending
+	// Sort by RRF score descending. For temporal queries, blend in recency
+	// and prefer episodic memories (events) over procedural/semantic (facts).
+	temporal := hasTemporalIntent(p.Query)
 	sort.Slice(fused, func(i, j int) bool {
-		if fused[i].rrfScore != fused[j].rrfScore {
-			return fused[i].rrfScore > fused[j].rrfScore
+		si, sj := fused[i].rrfScore, fused[j].rrfScore
+		if temporal {
+			// Episodic memories are events — boost them for temporal queries
+			kindBoostI, kindBoostJ := 0.0, 0.0
+			if fused[i].result.Kind == "episodic" {
+				kindBoostI = 0.3
+			}
+			if fused[j].result.Kind == "episodic" {
+				kindBoostJ = 0.3
+			}
+			// Blend: 40% RRF + 30% recency + 30% kind
+			now := time.Now()
+			ageDaysI := now.Sub(fused[i].result.CreatedAt).Hours() / 24.0
+			ageDaysJ := now.Sub(fused[j].result.CreatedAt).Hours() / 24.0
+			recencyI := math.Exp(-0.1 * ageDaysI)
+			recencyJ := math.Exp(-0.1 * ageDaysJ)
+			si = si*0.4 + recencyI*0.3 + kindBoostI
+			sj = sj*0.4 + recencyJ*0.3 + kindBoostJ
+		}
+		if si != sj {
+			return si > sj
 		}
 		return fused[i].result.CreatedAt.After(fused[j].result.CreatedAt)
 	})
@@ -191,6 +238,18 @@ func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) 
 		where = append(where, "m.tags LIKE ?")
 		args = append(args, "%\""+tag+"\"%")
 	}
+	for _, tier := range p.ExcludeTiers {
+		where = append(where, "COALESCE(m.tier, 'stm') != ?")
+		args = append(args, tier)
+	}
+
+	// Boost recency weight when query has temporal intent
+	recencyWeight := 0.3
+	ftsWeight := 0.5
+	if hasTemporalIntent(p.Query) {
+		recencyWeight = 0.7
+		ftsWeight = 0.2
+	}
 
 	q := fmt.Sprintf(`
 		SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
@@ -207,11 +266,11 @@ func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) 
 		WHERE %s AND chunks_fts MATCH ?
 		GROUP BY m.id
 		ORDER BY
-			(CASE m.priority WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END) * 0.2
-			+ (1.0 / (1.0 + (julianday('now') - julianday(m.created_at)) / 7.0)) * 0.3
-			+ (MIN(fts.rank) * -0.5)
+			(CASE m.priority WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END) * 0.1
+			+ (1.0 / (1.0 + (julianday('now') - julianday(m.created_at)) / 7.0)) * %f
+			+ (MIN(fts.rank) * -%f)
 			DESC
-		LIMIT ?`, strings.Join(where, " AND "))
+		LIMIT ?`, strings.Join(where, " AND "), recencyWeight, ftsWeight)
 
 	args = append(args, ftsQuery, limit)
 
@@ -265,6 +324,10 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 	for _, tag := range p.Tags {
 		where += " AND m.tags LIKE ?"
 		args = append(args, "%\""+tag+"\"%")
+	}
+	for _, tier := range p.ExcludeTiers {
+		where += " AND COALESCE(m.tier, 'stm') != ?"
+		args = append(args, tier)
 	}
 
 	query := fmt.Sprintf(`
@@ -429,6 +492,10 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 	for _, tag := range p.Tags {
 		where = append(where, "m.tags LIKE ?")
 		args = append(args, "%\""+tag+"\"%")
+	}
+	for _, tier := range p.ExcludeTiers {
+		where = append(where, "COALESCE(m.tier, 'stm') != ?")
+		args = append(args, tier)
 	}
 	_ = baseWhere // we rebuild where clauses here
 

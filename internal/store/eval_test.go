@@ -2230,6 +2230,71 @@ func TestEvalReport(t *testing.T) {
 	}
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// DORMANT SUPPRESSION: Archived memories should not surface
+//
+// Agent scenario: user archives a memory via curate(op="archive").
+// That memory should not appear in search or context results by default.
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalDormantSuppression(t *testing.T) {
+	s, _ := seedEvalStore(t)
+	ctx := context.Background()
+
+	t.Run("dormant_excluded_from_search", func(t *testing.T) {
+		// "deployment process" should match ship-process but NOT dormant-old-deploy-process
+		results, err := s.Search(ctx, SearchParams{Query: "deployment process production", Limit: 10})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		for _, r := range results {
+			if r.Key == "dormant-old-deploy-process" {
+				t.Errorf("dormant memory appeared in search results: %s (tier=%s)", r.Key, r.Tier)
+			}
+		}
+		// ship-process should still be found
+		found := false
+		for _, r := range results {
+			if r.Key == "ship-process" {
+				found = true
+			}
+		}
+		if !found {
+			t.Logf("BENCHMARK: ship-process not in top-10 for 'deployment process production'")
+		}
+	})
+
+	t.Run("dormant_excluded_from_context", func(t *testing.T) {
+		result, err := s.Context(ctx, ContextParams{Query: "how to deploy code", Budget: 2000})
+		if err != nil {
+			t.Fatalf("context: %v", err)
+		}
+		if contextHasKey(result, "dormant-old-deploy-process") {
+			t.Errorf("dormant memory appeared in context results")
+		}
+	})
+
+	t.Run("dormant_retrievable_with_include_all", func(t *testing.T) {
+		results, err := s.Search(ctx, SearchParams{
+			Query:      "deployment process production",
+			Limit:      10,
+			IncludeAll: true,
+		})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		found := false
+		for _, r := range results {
+			if r.Key == "dormant-old-deploy-process" {
+				found = true
+			}
+		}
+		if !found {
+			t.Logf("BENCHMARK: dormant memory not found even with IncludeAll")
+		}
+	})
+}
+
 func boolToFloat(b bool) float64 {
 	if b {
 		return 1.0

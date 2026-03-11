@@ -173,8 +173,8 @@ Validates all five lifecycle rules on seeded trigger candidates:
 
 ```
 Total:     43 scenarios
-Passed:    34
-Failed:     9 (all benchmark, no hard failures)
+Passed:    37
+Failed:     6 (all benchmark, no hard failures)
 ```
 
 ### Retrieval Metrics
@@ -183,9 +183,9 @@ Failed:     9 (all benchmark, no hard failures)
 |----------|--------|-------|-------|
 | Keyword | MRR | 1.00 | Perfect — literal term overlap works |
 | Semantic | MRR | 0.51 | Weak — "ship code" can't find "releasing code, ArgoCD" |
-| Adversarial | MRR | 0.25 | Poor — can't disambiguate DB pool vs thread pool |
+| Adversarial | MRR | 0.50 | Improved — dormant/sensory tier exclusion removes noise |
 | Multi-hop | Recall | 0.29 | Very weak — only finds 1 of 3 needed pieces on average |
-| Temporal | Rank-1 accuracy | 0.00 | Fails — recency weight (0.3) can't beat irrelevant FTS matches |
+| Temporal | Rank-1 accuracy | 0.67 | Improved — temporal intent detection boosts recency for time-sensitive queries |
 | Negation | Accuracy | 1.00 | Good — absence facts contain the keywords users search for |
 | Vague | Accuracy | 1.00 | Acceptable result found 5/6 times (misses "database stuff") |
 | Correction | Accuracy | 1.00 | Perfect — versioning works correctly |
@@ -225,11 +225,11 @@ Failed:     9 (all benchmark, no hard failures)
 
 1. **Semantic gap (MRR 0.51)**: "how do we ship code?" returns nothing because content says "releasing code, merge PR, ArgoCD" with zero overlap. Classic vocabulary mismatch.
 
-2. **Temporal ranking (0% accuracy)**: "yesterday's deploy" returns `runbook` at rank 1 because FTS keyword relevance (0.5 weight) overwhelms recency (0.3 weight). Deploys are found but not ranked by time.
+2. **Temporal ranking (67% accuracy)**: Temporal intent detection boosts recency for time-sensitive queries. Remaining failure (`recent_incident`) is a semantic gap — "latency spike" doesn't FTS-match "performance degradation" without embeddings.
 
 3. **Multi-hop recall (0.29)**: Searching "what database does the gateway use" only finds `atlas-routing` — can't follow the chain to `user-service-arch` and `data-layer` because they don't share keywords with the query.
 
-4. **Adversarial disambiguation (MRR 0.25)**: "database connection pool exhaustion" can't distinguish alpha's DB pool incident from beta's thread pool incident.
+4. **Adversarial disambiguation (MRR 0.50)**: Improved by excluding dormant/sensory tier noise from default search results. Further gains expected from embeddings.
 
 5. **No-result precision**: FTS returns results for absent queries like "MongoDB replica set" (returns `search-service-arch`, `data-layer`). An agent would incorrectly believe it has relevant knowledge.
 
@@ -239,15 +239,15 @@ Failed:     9 (all benchmark, no hard failures)
 
 ### Improvement targets
 
-| Problem | Likely fix | Expected impact |
-|---------|-----------|-----------------|
-| Semantic gap | Embedding-based search (all-MiniLM-L6-v2) | Semantic MRR 0.51 → ~0.8+ |
-| Temporal ranking | Boost recency weight for episodic queries, or time-aware reranking | Temporal accuracy 0% → ~60%+ |
-| Multi-hop | Return more diverse results (MMR), or semantic linking | Multi-hop recall 0.29 → ~0.6+ |
-| Adversarial | Embeddings + namespace-aware scoring | Adversarial MRR 0.25 → ~0.7+ |
-| No-result precision | Relevance threshold — suppress results below minimum score | Reduce false positives |
-| Utility feedback | Increase utility weight in context scoring, or add dedicated utility_ratio factor | Make utility signal meaningful |
-| Context fill | Lower minimum score threshold for budget fill, or excerpt more memories | Budget util 38% → 70%+ |
+| Problem | Likely fix | Expected impact | Status |
+|---------|-----------|-----------------|--------|
+| Semantic gap | Embedding-based search (all-MiniLM-L6-v2) | Semantic MRR 0.51 → ~0.8+ | Open |
+| Temporal ranking | Boost recency weight for episodic queries, or time-aware reranking | Temporal accuracy 0% → ~60%+ | **Done** (0.67) |
+| Multi-hop | Return more diverse results (MMR), or semantic linking | Multi-hop recall 0.29 → ~0.6+ | Open |
+| Adversarial | Embeddings + namespace-aware scoring | Adversarial MRR 0.25 → ~0.7+ | **Partial** (0.50) |
+| No-result precision | Relevance threshold — suppress results below minimum score | Reduce false positives | Open |
+| Utility feedback | Increase utility weight in context scoring, or add dedicated utility_ratio factor | Make utility signal meaningful | Open |
+| Context fill | Lower minimum score threshold for budget fill, or excerpt more memories | Budget util 38% → 70%+ | Open |
 
 ## Adding New Scenarios
 

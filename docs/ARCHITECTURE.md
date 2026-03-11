@@ -153,6 +153,10 @@ Three methods fused via **Reciprocal Rank Fusion** (RRF, k=60):
 
 RRF merges ranked results: `score = Σ 1/(60 + rank_i)` across methods.
 
+**Default tier exclusion**: `dormant` and `sensory` tiers are excluded from search results by default. Use `IncludeAll: true` to search all tiers.
+
+**Temporal intent detection**: Queries containing time-related keywords (yesterday, recent, latest, etc.) trigger temporal-aware ranking — FTS weight drops from 0.5→0.2, recency weight rises from 0.3→0.7, and episodic-kind memories get a +0.3 boost in RRF fusion.
+
 ### Context Assembly
 
 Two-phase greedy packing within a token budget:
