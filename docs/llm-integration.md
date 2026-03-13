@@ -391,7 +391,9 @@ CLAUDE.md instructions tell the agent _when_ to use ghost, but agents tend to fo
 
 ### How Hooks Work
 
-Hooks are shell commands that fire on specific Claude Code lifecycle events. Relevant events for memory automation:
+Hooks are shell commands that fire on specific Claude Code lifecycle events. They fall into two categories for memory automation: **capture** hooks (extract learnings from sessions) and **retrieval** hooks (inject context before the agent works).
+
+#### Capture Hooks (already implemented)
 
 | Hook Event | When It Fires | Use For |
 |------------|--------------|---------|
@@ -399,6 +401,114 @@ Hooks are shell commands that fire on specific Claude Code lifecycle events. Rel
 | `PreCompact` | Before context window compression | Capture knowledge before it's lost in long sessions |
 
 Both hooks run with `async: true` so they never block the user.
+
+#### Retrieval Hooks (potential integration)
+
+| Hook Event | When It Fires | Use For |
+|------------|--------------|---------|
+| `SessionStart` | Session begins, resumes, or recovers from compaction | Load ghost context once at session start |
+| `UserPromptSubmit` | Before Claude processes each user message | Inject per-prompt relevant memories (RAG-style) |
+| `SessionEnd` | Session terminates (exit, /clear, logout) | Final sync, cleanup, or session summary |
+
+Retrieval hooks output to stdout with exit code 0 — Claude Code injects that output as `additionalContext` into the agent's context window. This means ghost memories appear alongside the user's message without the agent needing to call `ghost_context` explicitly.
+
+**`SessionStart`** is the highest-value retrieval hook. It replaces the "MUST call `ghost_context` before working" instruction in CLAUDE.md with an automatic mechanism. The agent starts every session with pinned memories and recent context already loaded:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ghost context -n agent:claude-code --budget 2000 --format plain 2>/dev/null || true",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Matcher options for `SessionStart`:** The hook supports matchers to fire only on specific session types:
+- `"startup"` — fresh session start
+- `"resume"` — resuming a previous session
+- `"compact"` — session recovering after context compaction
+- No matcher — fires on all session types
+
+The `"compact"` matcher is particularly useful: after compaction, the agent loses conversational context. A hook that re-injects ghost context at that point restores important knowledge that the compaction summary may have dropped:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ghost context -n agent:claude-code --budget 3000 --format plain 2>/dev/null || true",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**`UserPromptSubmit`** enables per-prompt memory injection — the closest thing to RAG within Claude Code. The hook receives the user's message on stdin as JSON (`{"user_prompt": "..."}`) and can use it to query ghost for relevant memories. However, this adds latency to every prompt, so it's best suited for agents working in domains with deep knowledge bases:
+
+```bash
+#!/usr/bin/env bash
+# ~/.claude/hooks/ghost-user-prompt.sh
+# Injects relevant ghost memories before each prompt.
+set -euo pipefail
+
+HOOK_INPUT=$(cat)
+QUERY=$(echo "$HOOK_INPUT" | jq -r '.user_prompt // empty' 2>/dev/null)
+
+if [ -z "$QUERY" ] || [ ${#QUERY} -lt 10 ]; then
+  exit 0  # Skip trivial prompts
+fi
+
+# Search ghost for relevant memories and output as plain text
+ghost context -n "agent:claude-code" -q "$QUERY" --budget 1000 --format plain 2>/dev/null || true
+```
+
+**`SessionEnd`** fires when the session terminates. Unlike `Stop` (which fires after each response), `SessionEnd` fires once at the very end. Use it for final session summarization or to store a session-level episodic memory:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ghost-session-end.sh",
+            "timeout": 120000,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### Choosing a Hook Strategy
+
+| Strategy | Hooks Used | Tradeoff |
+|----------|-----------|----------|
+| **Capture only** (current) | `Stop` + `PreCompact` | Agent must call `ghost_context` explicitly; relies on CLAUDE.md instructions |
+| **Capture + session retrieval** | Above + `SessionStart` | Agent starts with context loaded; no per-prompt overhead |
+| **Full RAG** | Above + `UserPromptSubmit` | Every prompt gets relevant memories; adds latency per turn |
+| **Full lifecycle** | All above + `SessionEnd` | Complete coverage; session summaries stored on exit |
+
+The recommended starting point is **capture + session retrieval** — it automates both sides without per-prompt overhead.
 
 ### Architecture: Shell Script + Headless Claude
 
