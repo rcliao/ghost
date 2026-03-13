@@ -194,9 +194,9 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 |---------------|-----------|--------|
 | `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
 | `sys-decay-sensory` | sensory, >4h old | DELETE |
-| `sys-decay-unaccessed` | STM, >72h old, <3 accesses | DECAY importance ×0.95 (min 0.1) |
-| `sys-promote-to-ltm` | STM, >24h old, >3 accesses | PROMOTE to LTM |
-| `sys-demote-stale-ltm` | LTM, >7d unaccessed, <2 accesses | DEMOTE to dormant |
+| `sys-decay-unaccessed` | STM, >48h old, <10 accesses | DECAY importance ×0.95 (min 0.1) |
+| `sys-promote-to-ltm` | STM, >24h old, >10 accesses | PROMOTE to LTM |
+| `sys-demote-stale-ltm` | LTM, >168h since last access | DEMOTE to dormant |
 | `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
 | `sys-merge-similar` | STM, embedding similarity >0.9 | MERGE (keep highest importance) |
 

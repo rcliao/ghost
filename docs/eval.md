@@ -154,11 +154,11 @@ Validates all five lifecycle rules on seeded trigger candidates:
 
 | Rule | Seed Setup | Expected |
 |------|-----------|----------|
-| DECAY | STM, 96h old, 1 access | importance * 0.95 |
-| PROMOTE | STM, 48h old, 8 accesses | tier -> ltm |
-| DEMOTE | LTM, 200h old, 1 access | tier -> dormant |
+| DECAY | STM, 96h old, 1 access (<10 threshold) | importance * 0.95 |
+| PROMOTE | STM, 48h old, 12 accesses (>10 threshold) | tier -> ltm |
+| DEMOTE | LTM, 200h old, never accessed (>168h unaccessed) | tier -> dormant |
 | PRUNE | STM, 10 accesses, 1 utility | soft-deleted |
-| IDENTITY | identity tier, 200h old, 0 access | unchanged |
+| PINNED | pinned LTM, 200h old, 0 access | unchanged |
 
 ### TestEvalScale (4 subtests)
 

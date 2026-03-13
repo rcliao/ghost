@@ -926,8 +926,8 @@ func TestEvalAccessPromotion(t *testing.T) {
 		t.Fatalf("expected initial access_count=0, got %d", accessCount)
 	}
 
-	// Simulate agent accessing this memory 5 times via Get
-	for i := 0; i < 5; i++ {
+	// Simulate agent accessing this memory 12 times via Get (promote threshold is >10)
+	for i := 0; i < 12; i++ {
 		_, err := s.Get(ctx, GetParams{NS: "project:test", Key: "useful-pattern"})
 		if err != nil {
 			t.Fatalf("get #%d: %v", i, err)
@@ -936,10 +936,10 @@ func TestEvalAccessPromotion(t *testing.T) {
 
 	// Verify access count incremented
 	s.db.QueryRow(`SELECT access_count FROM memories WHERE id = ?`, mem.ID).Scan(&accessCount)
-	if accessCount < 4 {
-		t.Errorf("expected access_count >= 4 after 5 gets, got %d", accessCount)
+	if accessCount < 11 {
+		t.Errorf("expected access_count >= 11 after 12 gets, got %d", accessCount)
 	}
-	t.Logf("after 5 gets: access_count=%d", accessCount)
+	t.Logf("after 12 gets: access_count=%d", accessCount)
 
 	// Backdate to >24h old (promote rule requires AgeGTHours: 24)
 	backdated := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
@@ -964,6 +964,120 @@ func TestEvalAccessPromotion(t *testing.T) {
 	if tier != "ltm" {
 		t.Errorf("expected tier=ltm to persist, got %q (double-reflect changed it)", tier)
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// REFLECT RULE THRESHOLDS: Verify updated thresholds work correctly
+//
+// Tests the three rule changes:
+// 1. Promotion threshold raised from >3 to >10 (5 accesses should NOT promote)
+// 2. Decay rule fires on moderate-access STM (access_count < 10, age > 48h)
+// 3. Demote uses last_accessed_at, not created_at (high access but stale)
+// ═══════════════════════════════════════════════════════════════════════
+
+func TestEvalReflectRuleThresholds(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	t.Run("promotion_below_threshold", func(t *testing.T) {
+		// STM memory with 5 accesses (old threshold was >3, new is >10)
+		// Should NOT be promoted to LTM
+		mem, err := s.Put(ctx, PutParams{
+			NS: "project:test", Key: "should-not-promote",
+			Content: "Memory with moderate access that should stay in STM.",
+			Kind: "semantic", Priority: "normal", Importance: 0.6,
+		})
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		// Set access_count=5, backdate >24h
+		s.db.ExecContext(ctx, `UPDATE memories SET access_count = 5, created_at = ? WHERE id = ?`,
+			time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339), mem.ID)
+
+		s.Reflect(ctx, ReflectParams{NS: "project:test"})
+
+		var tier string
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, mem.ID).Scan(&tier)
+		if tier == "ltm" {
+			t.Errorf("memory with access_count=5 should NOT be promoted to LTM (threshold is >10), got tier=%s", tier)
+		}
+	})
+
+	t.Run("decay_fires_moderate_access", func(t *testing.T) {
+		// STM memory >48h old with access_count=5 (< 10 threshold)
+		// Should have importance decayed
+		mem, err := s.Put(ctx, PutParams{
+			NS: "project:test", Key: "should-decay",
+			Content: "STM memory that should decay due to low access relative to threshold.",
+			Kind: "semantic", Priority: "normal", Importance: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		// Set access_count=5, backdate >48h
+		s.db.ExecContext(ctx, `UPDATE memories SET access_count = 5, created_at = ? WHERE id = ?`,
+			time.Now().Add(-72*time.Hour).UTC().Format(time.RFC3339), mem.ID)
+
+		var preDec float64
+		s.db.QueryRow(`SELECT importance FROM memories WHERE id = ?`, mem.ID).Scan(&preDec)
+
+		s.Reflect(ctx, ReflectParams{NS: "project:test"})
+
+		var postDec float64
+		s.db.QueryRow(`SELECT importance FROM memories WHERE id = ?`, mem.ID).Scan(&postDec)
+		if postDec >= preDec {
+			t.Errorf("expected importance to decay: before=%.3f, after=%.3f", preDec, postDec)
+		}
+		t.Logf("decay: %.3f → %.3f", preDec, postDec)
+	})
+
+	t.Run("demote_uses_last_accessed_at", func(t *testing.T) {
+		// LTM memory with high access_count but last_accessed_at > 168h ago
+		// Should be demoted to dormant (new rule uses UnaccessedGTHours, not AccessLT)
+		mem, err := s.Put(ctx, PutParams{
+			NS: "project:test", Key: "stale-ltm-high-access",
+			Content: "LTM memory accessed many times historically but not recently.",
+			Kind: "semantic", Priority: "normal", Importance: 0.7, Tier: "ltm",
+		})
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		s.db.ExecContext(ctx, `UPDATE memories SET tier = 'ltm', access_count = 50, last_accessed_at = ? WHERE id = ?`,
+			time.Now().Add(-200*time.Hour).UTC().Format(time.RFC3339), mem.ID)
+
+		s.Reflect(ctx, ReflectParams{NS: "project:test"})
+
+		var tier string
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, mem.ID).Scan(&tier)
+		if tier != "dormant" {
+			t.Errorf("LTM memory with last_accessed_at >168h ago should be demoted, got tier=%s", tier)
+		}
+	})
+
+	t.Run("demote_spares_recently_accessed", func(t *testing.T) {
+		// LTM memory with last_accessed_at recently (< 168h ago)
+		// Should NOT be demoted even if created_at is very old
+		mem, err := s.Put(ctx, PutParams{
+			NS: "project:test", Key: "active-ltm",
+			Content: "LTM memory that was accessed recently and should stay.",
+			Kind: "semantic", Priority: "normal", Importance: 0.7, Tier: "ltm",
+		})
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		s.db.ExecContext(ctx, `UPDATE memories SET tier = 'ltm', access_count = 2, created_at = ?, last_accessed_at = ? WHERE id = ?`,
+			time.Now().Add(-500*time.Hour).UTC().Format(time.RFC3339),
+			time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339),
+			mem.ID)
+
+		s.Reflect(ctx, ReflectParams{NS: "project:test"})
+
+		var tier string
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ?`, mem.ID).Scan(&tier)
+		if tier != "ltm" {
+			t.Errorf("recently accessed LTM memory should NOT be demoted, got tier=%s", tier)
+		}
+	})
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1871,12 +1985,12 @@ func TestEvalReport(t *testing.T) {
 	}
 
 	// ── Reflect ──
-	// Reset counters that earlier search/context calls may have bumped,
+	// Reset counters and last_accessed_at that earlier search/context calls may have bumped,
 	// so reflect sees the original seed state for lifecycle assertions.
 	for _, key := range []string{"reflect-decay-target", "reflect-promote-target", "reflect-demote-target", "reflect-prune-target", "reflect-identity-safe"} {
 		sm := findSeed(key)
 		if sm != nil {
-			s.db.ExecContext(ctx, `UPDATE memories SET access_count = ? WHERE id = ?`, sm.AccessCount, ids[key])
+			s.db.ExecContext(ctx, `UPDATE memories SET access_count = ?, last_accessed_at = NULL WHERE id = ?`, sm.AccessCount, ids[key])
 		}
 	}
 	var preImportance float64

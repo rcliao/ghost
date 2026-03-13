@@ -59,9 +59,9 @@ func TestReflectPromote(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Insert STM memory with high access count and old enough
+	// Insert STM memory with high access count (>10 threshold) and old enough
 	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
-		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 5, 0.7, 'stm', 30)`,
+		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 12, 0.7, 'stm', 30)`,
 		time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
 
 	result, err := s.Reflect(ctx, ReflectParams{})
@@ -144,12 +144,13 @@ func TestRuleGetAndDelete(t *testing.T) {
 
 func TestRuleMatchesConditions(t *testing.T) {
 	tests := []struct {
-		name     string
-		rule     ReflectRule
-		mem      model.Memory
-		ageH     float64
-		utilR    float64
-		expected bool
+		name        string
+		rule        ReflectRule
+		mem         model.Memory
+		ageH        float64
+		unaccessedH float64
+		utilR       float64
+		expected    bool
 	}{
 		{
 			name:     "tier match",
@@ -222,11 +223,25 @@ func TestRuleMatchesConditions(t *testing.T) {
 			utilR:    0.1,
 			expected: true, // 1/10 = 0.1 < 0.2 → match
 		},
+		{
+			name:        "unaccessed_gt_hours met",
+			rule:        ReflectRule{Cond: RuleCond{Tier: "ltm", UnaccessedGTHours: 168}},
+			mem:         model.Memory{Tier: "ltm"},
+			unaccessedH: 200,
+			expected:    true,
+		},
+		{
+			name:        "unaccessed_gt_hours not met",
+			rule:        ReflectRule{Cond: RuleCond{Tier: "ltm", UnaccessedGTHours: 168}},
+			mem:         model.Memory{Tier: "ltm"},
+			unaccessedH: 24,
+			expected:    false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ruleMatches(tt.rule, tt.mem, tt.ageH, tt.utilR)
+			got := ruleMatches(tt.rule, tt.mem, tt.ageH, tt.unaccessedH, tt.utilR)
 			if got != tt.expected {
 				t.Errorf("ruleMatches() = %v, want %v", got, tt.expected)
 			}
@@ -408,10 +423,10 @@ func TestReflectFirstMatchWins(t *testing.T) {
 func TestRuleMatchesKindCondition(t *testing.T) {
 	rule := ReflectRule{Cond: RuleCond{Kind: "procedural"}}
 
-	if !ruleMatches(rule, model.Memory{Kind: "procedural"}, 0, 0) {
+	if !ruleMatches(rule, model.Memory{Kind: "procedural"}, 0, 0, 0) {
 		t.Error("expected kind=procedural to match")
 	}
-	if ruleMatches(rule, model.Memory{Kind: "semantic"}, 0, 0) {
+	if ruleMatches(rule, model.Memory{Kind: "semantic"}, 0, 0, 0) {
 		t.Error("expected kind=semantic to NOT match procedural rule")
 	}
 }
@@ -419,10 +434,10 @@ func TestRuleMatchesKindCondition(t *testing.T) {
 func TestRuleMatchesImportanceLTCondition(t *testing.T) {
 	rule := ReflectRule{Cond: RuleCond{ImportanceLT: 0.3}}
 
-	if !ruleMatches(rule, model.Memory{Importance: 0.1}, 0, 0) {
+	if !ruleMatches(rule, model.Memory{Importance: 0.1}, 0, 0, 0) {
 		t.Error("expected importance 0.1 < 0.3 to match")
 	}
-	if ruleMatches(rule, model.Memory{Importance: 0.5}, 0, 0) {
+	if ruleMatches(rule, model.Memory{Importance: 0.5}, 0, 0, 0) {
 		t.Error("expected importance 0.5 >= 0.3 to NOT match")
 	}
 }
@@ -750,7 +765,7 @@ func TestRuleMatchesSkipsSimilarity(t *testing.T) {
 		Action: RuleAction{Op: "MERGE"},
 	}
 	mem := model.Memory{Tier: "stm"}
-	if ruleMatches(rule, mem, 100, 0) {
+	if ruleMatches(rule, mem, 100, 100, 0) {
 		t.Error("similarity rules should not match in per-memory pass")
 	}
 }

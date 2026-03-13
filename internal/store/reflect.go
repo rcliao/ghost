@@ -29,15 +29,16 @@ type ReflectRule struct {
 
 // RuleCond holds the condition fields for a reflect rule. All non-zero fields are AND-joined.
 type RuleCond struct {
-	Tier          string  `json:"tier,omitempty"`
-	AgeGTHours    float64 `json:"age_gt_hours,omitempty"`
-	ImportanceLT  float64 `json:"importance_lt,omitempty"`
-	AccessLT      int     `json:"access_lt,omitempty"`
-	AccessGT      int     `json:"access_gt,omitempty"`
-	UtilityLT     float64 `json:"utility_lt,omitempty"`
-	Kind          string  `json:"kind,omitempty"`
-	TagIncludes   string  `json:"tag_includes,omitempty"`
-	SimilarityGT  float64 `json:"similarity_gt,omitempty"`
+	Tier              string  `json:"tier,omitempty"`
+	AgeGTHours        float64 `json:"age_gt_hours,omitempty"`
+	UnaccessedGTHours float64 `json:"unaccessed_gt_hours,omitempty"` // hours since last_accessed_at (or created_at if never accessed)
+	ImportanceLT      float64 `json:"importance_lt,omitempty"`
+	AccessLT          int     `json:"access_lt,omitempty"`
+	AccessGT          int     `json:"access_gt,omitempty"`
+	UtilityLT         float64 `json:"utility_lt,omitempty"`
+	Kind              string  `json:"kind,omitempty"`
+	TagIncludes       string  `json:"tag_includes,omitempty"`
+	SimilarityGT      float64 `json:"similarity_gt,omitempty"`
 }
 
 // RuleAction holds the action to perform when a rule matches.
@@ -96,20 +97,20 @@ var builtinRules = []ReflectRule{
 	},
 	{
 		ID:        "sys-decay-unaccessed",
-		Name:      "Decay importance for unaccessed STM memories",
+		Name:      "Decay importance for infrequently accessed STM memories",
 		Scope:     "reflect",
 		Priority:  10,
 		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "stm", AgeGTHours: 72, AccessLT: 3},
+		Cond:      RuleCond{Tier: "stm", AgeGTHours: 48, AccessLT: 10},
 		Action:    RuleAction{Op: "DECAY", Params: map[string]any{"factor": 0.95, "min": 0.1}},
 	},
 	{
 		ID:        "sys-promote-to-ltm",
-		Name:      "Promote accessed STM to LTM",
+		Name:      "Promote frequently accessed STM to LTM",
 		Scope:     "reflect",
 		Priority:  50,
 		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "stm", AccessGT: 3, AgeGTHours: 24},
+		Cond:      RuleCond{Tier: "stm", AccessGT: 10, AgeGTHours: 24},
 		Action:    RuleAction{Op: "PROMOTE", Params: map[string]any{"to_tier": "ltm"}},
 	},
 	{
@@ -118,7 +119,7 @@ var builtinRules = []ReflectRule{
 		Scope:     "reflect",
 		Priority:  50,
 		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "ltm", AgeGTHours: 168, AccessLT: 2},
+		Cond:      RuleCond{Tier: "ltm", UnaccessedGTHours: 168},
 		Action:    RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
 	},
 	{
@@ -148,11 +149,12 @@ func (s *SQLiteStore) seedBuiltinRules() {
 		paramsJSON, _ := json.Marshal(r.Action.Params)
 		s.db.Exec(`INSERT OR IGNORE INTO reflect_rules
 			(id, ns, name, priority, scope, created_by,
-			 cond_tier, cond_age_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
+			 cond_tier, cond_age_gt_hours, cond_unaccessed_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
 			 cond_similarity_gt, action_op, action_params, rule_expires_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, r.NS, r.Name, r.Priority, r.Scope, r.CreatedBy,
-			nilIfEmpty(r.Cond.Tier), nilIfZeroF(r.Cond.AgeGTHours), nilIfZeroF(r.Cond.ImportanceLT),
+			nilIfEmpty(r.Cond.Tier), nilIfZeroF(r.Cond.AgeGTHours), nilIfZeroF(r.Cond.UnaccessedGTHours),
+			nilIfZeroF(r.Cond.ImportanceLT),
 			nilIfZero(r.Cond.AccessLT), nilIfZero(r.Cond.AccessGT), nilIfZeroF(r.Cond.UtilityLT),
 			nilIfEmpty(r.Cond.Kind), nilIfEmpty(r.Cond.TagIncludes),
 			nilIfZeroF(r.Cond.SimilarityGT),
@@ -227,6 +229,11 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 		}
 
 		ageHours := now.Sub(m.CreatedAt).Hours()
+		// unaccessedHours: time since last access (or since creation if never accessed)
+		unaccessedHours := ageHours
+		if m.LastAccessedAt != nil {
+			unaccessedHours = now.Sub(*m.LastAccessedAt).Hours()
+		}
 		utilityRatio := 0.0
 		if m.AccessCount > 0 {
 			utilityRatio = float64(m.UtilityCount) / float64(m.AccessCount)
@@ -238,7 +245,7 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 			if rule.Cond.SimilarityGT > 0 {
 				continue
 			}
-			if !ruleMatches(rule, m, ageHours, utilityRatio) {
+			if !ruleMatches(rule, m, ageHours, unaccessedHours, utilityRatio) {
 				continue
 			}
 			// Check for conflicts: PIN/PRESERVE beats destructive ops
@@ -334,7 +341,7 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 	return result, nil
 }
 
-func ruleMatches(rule ReflectRule, m model.Memory, ageHours, utilityRatio float64) bool {
+func ruleMatches(rule ReflectRule, m model.Memory, ageHours, unaccessedHours, utilityRatio float64) bool {
 	c := rule.Cond
 	// Similarity conditions are handled in the separate merge pass — skip here
 	if c.SimilarityGT > 0 {
@@ -344,6 +351,9 @@ func ruleMatches(rule ReflectRule, m model.Memory, ageHours, utilityRatio float6
 		return false
 	}
 	if c.AgeGTHours > 0 && ageHours <= c.AgeGTHours {
+		return false
+	}
+	if c.UnaccessedGTHours > 0 && unaccessedHours <= c.UnaccessedGTHours {
 		return false
 	}
 	if c.ImportanceLT > 0 && m.Importance >= c.ImportanceLT {
@@ -378,12 +388,15 @@ func ruleMatches(rule ReflectRule, m model.Memory, ageHours, utilityRatio float6
 
 // ruleMatchesNonSimilarity checks all rule conditions except SimilarityGT.
 // Used to filter candidates for the similarity merge pass.
-func ruleMatchesNonSimilarity(rule ReflectRule, m model.Memory, ageHours, utilityRatio float64) bool {
+func ruleMatchesNonSimilarity(rule ReflectRule, m model.Memory, ageHours, unaccessedHours, utilityRatio float64) bool {
 	c := rule.Cond
 	if c.Tier != "" && m.Tier != c.Tier {
 		return false
 	}
 	if c.AgeGTHours > 0 && ageHours <= c.AgeGTHours {
+		return false
+	}
+	if c.UnaccessedGTHours > 0 && unaccessedHours <= c.UnaccessedGTHours {
 		return false
 	}
 	if c.ImportanceLT > 0 && m.Importance >= c.ImportanceLT {
@@ -459,11 +472,15 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 			continue
 		}
 		ageHours := now.Sub(m.CreatedAt).Hours()
+		unaccessedHours := ageHours
+		if m.LastAccessedAt != nil {
+			unaccessedHours = now.Sub(*m.LastAccessedAt).Hours()
+		}
 		utilityRatio := 0.0
 		if m.AccessCount > 0 {
 			utilityRatio = float64(m.UtilityCount) / float64(m.AccessCount)
 		}
-		if ruleMatchesNonSimilarity(rule, m, ageHours, utilityRatio) {
+		if ruleMatchesNonSimilarity(rule, m, ageHours, unaccessedHours, utilityRatio) {
 			candidates = append(candidates, m)
 		}
 	}
@@ -750,11 +767,12 @@ func (s *SQLiteStore) RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRu
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO reflect_rules
 		(id, ns, name, priority, scope, created_by,
-		 cond_tier, cond_age_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
+		 cond_tier, cond_age_gt_hours, cond_unaccessed_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
 		 cond_similarity_gt, action_op, action_params, rule_expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rule.ID, rule.NS, rule.Name, rule.Priority, rule.Scope, rule.CreatedBy,
-		nilIfEmpty(rule.Cond.Tier), nilIfZeroF(rule.Cond.AgeGTHours), nilIfZeroF(rule.Cond.ImportanceLT),
+		nilIfEmpty(rule.Cond.Tier), nilIfZeroF(rule.Cond.AgeGTHours), nilIfZeroF(rule.Cond.UnaccessedGTHours),
+		nilIfZeroF(rule.Cond.ImportanceLT),
 		nilIfZero(rule.Cond.AccessLT), nilIfZero(rule.Cond.AccessGT), nilIfZeroF(rule.Cond.UtilityLT),
 		nilIfEmpty(rule.Cond.Kind), nilIfEmpty(rule.Cond.TagIncludes),
 		nilIfZeroF(rule.Cond.SimilarityGT),
@@ -771,7 +789,7 @@ func (s *SQLiteStore) RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRu
 func (s *SQLiteStore) RuleGet(ctx context.Context, id string) (*ReflectRule, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, ns, name, priority, scope, created_by,
-		        cond_tier, cond_age_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
+		        cond_tier, cond_age_gt_hours, cond_unaccessed_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
 		        cond_similarity_gt, action_op, action_params, rule_expires_at, created_at
 		 FROM reflect_rules WHERE id = ?`, id)
 	return scanRule(row)
@@ -789,7 +807,7 @@ func (s *SQLiteStore) RuleList(ctx context.Context, ns string) ([]ReflectRule, e
 	}
 
 	query := fmt.Sprintf(`SELECT id, ns, name, priority, scope, created_by,
-		cond_tier, cond_age_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
+		cond_tier, cond_age_gt_hours, cond_unaccessed_gt_hours, cond_importance_lt, cond_access_lt, cond_access_gt, cond_utility_lt, cond_kind, cond_tag_includes,
 		cond_similarity_gt, action_op, action_params, rule_expires_at, created_at
 		FROM reflect_rules WHERE %s ORDER BY priority DESC`, strings.Join(where, " AND "))
 
@@ -831,19 +849,19 @@ func scanRule(row *sql.Row) (*ReflectRule, error) {
 	var r ReflectRule
 	var ns, scope, createdBy sql.NullString
 	var condTier, condKind, condTag sql.NullString
-	var condAgeGT, condImpLT, condUtilLT, condSimGT sql.NullFloat64
+	var condAgeGT, condUnaccessedGT, condImpLT, condUtilLT, condSimGT sql.NullFloat64
 	var condAccessLT, condAccessGT sql.NullInt64
 	var actionParams, expiresAt sql.NullString
 
 	err := row.Scan(
 		&r.ID, &ns, &r.Name, &r.Priority, &scope, &createdBy,
-		&condTier, &condAgeGT, &condImpLT, &condAccessLT, &condAccessGT, &condUtilLT, &condKind, &condTag,
+		&condTier, &condAgeGT, &condUnaccessedGT, &condImpLT, &condAccessLT, &condAccessGT, &condUtilLT, &condKind, &condTag,
 		&condSimGT, &r.Action.Op, &actionParams, &expiresAt, &r.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	fillRule(&r, ns, scope, createdBy, condTier, condAgeGT, condImpLT, condAccessLT, condAccessGT, condUtilLT, condKind, condTag, condSimGT, actionParams, expiresAt)
+	fillRule(&r, ns, scope, createdBy, condTier, condAgeGT, condUnaccessedGT, condImpLT, condAccessLT, condAccessGT, condUtilLT, condKind, condTag, condSimGT, actionParams, expiresAt)
 	return &r, nil
 }
 
@@ -851,23 +869,23 @@ func scanRuleRow(row ruleScanner) (*ReflectRule, error) {
 	var r ReflectRule
 	var ns, scope, createdBy sql.NullString
 	var condTier, condKind, condTag sql.NullString
-	var condAgeGT, condImpLT, condUtilLT, condSimGT sql.NullFloat64
+	var condAgeGT, condUnaccessedGT, condImpLT, condUtilLT, condSimGT sql.NullFloat64
 	var condAccessLT, condAccessGT sql.NullInt64
 	var actionParams, expiresAt sql.NullString
 
 	err := row.Scan(
 		&r.ID, &ns, &r.Name, &r.Priority, &scope, &createdBy,
-		&condTier, &condAgeGT, &condImpLT, &condAccessLT, &condAccessGT, &condUtilLT, &condKind, &condTag,
+		&condTier, &condAgeGT, &condUnaccessedGT, &condImpLT, &condAccessLT, &condAccessGT, &condUtilLT, &condKind, &condTag,
 		&condSimGT, &r.Action.Op, &actionParams, &expiresAt, &r.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	fillRule(&r, ns, scope, createdBy, condTier, condAgeGT, condImpLT, condAccessLT, condAccessGT, condUtilLT, condKind, condTag, condSimGT, actionParams, expiresAt)
+	fillRule(&r, ns, scope, createdBy, condTier, condAgeGT, condUnaccessedGT, condImpLT, condAccessLT, condAccessGT, condUtilLT, condKind, condTag, condSimGT, actionParams, expiresAt)
 	return &r, nil
 }
 
-func fillRule(r *ReflectRule, ns, scope, createdBy, condTier sql.NullString, condAgeGT, condImpLT sql.NullFloat64, condAccessLT, condAccessGT sql.NullInt64, condUtilLT sql.NullFloat64, condKind, condTag sql.NullString, condSimGT sql.NullFloat64, actionParams, expiresAt sql.NullString) {
+func fillRule(r *ReflectRule, ns, scope, createdBy, condTier sql.NullString, condAgeGT, condUnaccessedGT, condImpLT sql.NullFloat64, condAccessLT, condAccessGT sql.NullInt64, condUtilLT sql.NullFloat64, condKind, condTag sql.NullString, condSimGT sql.NullFloat64, actionParams, expiresAt sql.NullString) {
 	if ns.Valid {
 		r.NS = ns.String
 	}
@@ -882,6 +900,9 @@ func fillRule(r *ReflectRule, ns, scope, createdBy, condTier sql.NullString, con
 	}
 	if condAgeGT.Valid {
 		r.Cond.AgeGTHours = condAgeGT.Float64
+	}
+	if condUnaccessedGT.Valid {
+		r.Cond.UnaccessedGTHours = condUnaccessedGT.Float64
 	}
 	if condImpLT.Valid {
 		r.Cond.ImportanceLT = condImpLT.Float64

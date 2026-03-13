@@ -198,6 +198,9 @@ func (s *SQLiteStore) migrate() error {
 	// Phase 5: similarity condition for reflect rules
 	s.db.Exec(`ALTER TABLE reflect_rules ADD COLUMN cond_similarity_gt REAL`)
 
+	// Phase 6: unaccessed_gt_hours condition for reflect rules (time since last access)
+	s.db.Exec(`ALTER TABLE reflect_rules ADD COLUMN cond_unaccessed_gt_hours REAL`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 
