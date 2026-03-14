@@ -5,7 +5,7 @@ Persistent memory system for AI agents. Single binary, SQLite-backed, zero serve
 ## Architecture
 
 - `cmd/ghost/main.go` — Entrypoint, delegates to `cli.RootCmd`
-- `internal/cli/` — Cobra commands (put, get, list, search, context, edge, clusters, consolidate, rm, gc, export/import, etc.)
+- `internal/cli/` — Cobra commands (put, get, list, search, context, edge, clusters, consolidate, curate, rm, gc, export/import, etc.)
 - `internal/store/` — `Store` interface + `SQLiteStore` implementation (SQLite with FTS5)
 - `internal/model/` — Data types: `Memory`, `Chunk`, `FileRef`
 - `internal/chunker/` — Text chunking for search indexing (400 char target)

@@ -36,6 +36,28 @@ ghost context "how does auth work" -n agent:mybot --budget 2000
 # Run lifecycle maintenance (promote, decay, link similar, prune)
 ghost reflect --dry-run
 ghost reflect
+
+# Discover clusters of related memories
+ghost clusters -n agent:mybot
+
+# Consolidate a cluster into a summary
+ghost consolidate -n agent:mybot --summary-key auth-overview \
+  --keys "auth-jwt,auth-expiry,auth-cookies" \
+  --content "Auth: JWT+RSA256, 24h expiry, refresh via httpOnly cookies"
+
+# Curate individual memories
+ghost curate -n agent:mybot -k "auth-design" --op promote   # stm → ltm
+ghost curate -n agent:mybot -k "auth-design" --op pin       # always in context
+ghost curate -n agent:mybot -k "old-pattern" --op archive   # move to dormant
+
+# Manage edges between memories
+ghost edge -n agent:mybot --from-key auth-jwt --to-key auth-overview -r depends_on
+ghost edge -n agent:mybot --from-key auth-jwt --list
+
+# Manage reflect rules
+ghost rule list
+ghost rule set --name "fast-promote" --cond-tier stm --cond-age-gt 12 \
+  --cond-access-gt 5 --action PROMOTE
 ```
 
 ## Key Features
@@ -60,26 +82,56 @@ Tags provide categorization within a namespace: `identity`, `lore`, `project:<na
 
 ## Commands
 
+### Core
+
 | Command | Description |
 |---------|-------------|
 | `put` | Store or update a memory (auto-links similar via edges) |
 | `get` | Retrieve by namespace + key |
 | `list` | List memories (filterable by ns, kind, tags) |
+| `rm` | Soft-delete a memory (or hard-delete with `--hard`) |
 | `search` | Full-text + semantic search |
 | `context` | Assemble relevant memories within token budget |
+
+### Edges & DAG
+
+| Command | Description |
+|---------|-------------|
 | `edge` | Create, remove, or list weighted edges between memories |
+| `clusters` | Discover groups of similar memories connected by edges |
 | `consolidate` | Create a summary memory with `contains` edges to sources |
-| `clusters` | Discover groups of similar memories for consolidation |
-| `reflect` | Run lifecycle rules (promote, decay, link similar, prune) |
-| `curate` | Single-memory lifecycle actions (promote, demote, boost, pin, etc.) |
+
+### Lifecycle
+
+| Command | Description |
+|---------|-------------|
+| `curate` | Single-memory lifecycle actions (promote, demote, boost, diminish, archive, delete, pin, unpin) |
+| `reflect` | Run lifecycle rules (promote, decay, link similar, prune edges) |
+| `rule` | Manage reflect rules (set, get, list, delete) |
+| `gc` | Garbage collect expired/stale memories |
+
+### Inspection
+
+| Command | Description |
+|---------|-------------|
 | `peek` | Lightweight index of memory state |
 | `history` | Full version history of a key |
-| `link` | Create/remove relationships (legacy, use `edge` instead) |
-| `files` | Manage file references |
+| `stats` | Database statistics |
+
+### Organization
+
+| Command | Description |
+|---------|-------------|
 | `tags` | List, rename, or remove tags |
 | `ns` | Namespace operations (list, rm) |
-| `gc` | Garbage collect expired/stale memories |
-| `stats` | Database statistics |
+| `files` | Find memories linked to a file path |
+| `embed` | Manage vector embeddings (backfill, stats) |
+| `link` | Create/remove relationships (legacy — use `edge` instead) |
+
+### Data
+
+| Command | Description |
+|---------|-------------|
 | `export` / `import` | JSON export/import |
 | `ingest` | Parse markdown files into memories |
 | `mcp-serve` | Start MCP server on stdio |
