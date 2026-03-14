@@ -1209,6 +1209,43 @@ func (m *MockStore) Close() error {
 	return nil
 }
 
+func (m *MockStore) CreateEdge(_ context.Context, p EdgeParams) (*Edge, error) {
+	if !validEdgeRels[p.Rel] {
+		return nil, fmt.Errorf("invalid relation %q", p.Rel)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fromID := m.latestID(p.FromNS, p.FromKey)
+	if fromID == "" {
+		return nil, fmt.Errorf("resolve from: memory not found: %s:%s", p.FromNS, p.FromKey)
+	}
+	toID := m.latestID(p.ToNS, p.ToKey)
+	if toID == "" {
+		return nil, fmt.Errorf("resolve to: memory not found: %s:%s", p.ToNS, p.ToKey)
+	}
+
+	weight := p.Weight
+	if weight <= 0 {
+		weight = defaultEdgeWeight(p.Rel)
+	}
+	now := time.Now().UTC()
+	edge := Edge{FromID: fromID, ToID: toID, Rel: p.Rel, Weight: weight, CreatedAt: now}
+	return &edge, nil
+}
+
+func (m *MockStore) DeleteEdge(_ context.Context, p EdgeParams) error {
+	return nil
+}
+
+func (m *MockStore) GetEdges(_ context.Context, memoryID string) ([]Edge, error) {
+	return nil, nil
+}
+
+func (m *MockStore) GetEdgesByNSKey(_ context.Context, ns, key string) ([]Edge, error) {
+	return nil, nil
+}
+
 // hasAllTags returns true if memTags contains all of the required tags.
 func hasAllTags(memTags, required []string) bool {
 	set := map[string]bool{}

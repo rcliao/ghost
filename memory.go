@@ -67,6 +67,10 @@ type Store interface {
 	GC(ctx context.Context) (GCResult, error)
 	GCStale(ctx context.Context, staleThreshold time.Duration) (GCStaleResult, error)
 	UtilityInc(ctx context.Context, id string) error
+	CreateEdge(ctx context.Context, p EdgeParams) (*Edge, error)
+	DeleteEdge(ctx context.Context, p EdgeParams) error
+	GetEdges(ctx context.Context, memoryID string) ([]Edge, error)
+	GetEdgesByNSKey(ctx context.Context, ns, key string) ([]Edge, error)
 	Reflect(ctx context.Context, p ReflectParams) (*ReflectResult, error)
 	RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRule, error)
 	RuleGet(ctx context.Context, id string) (*ReflectRule, error)
@@ -101,6 +105,15 @@ type RuleCond = store.RuleCond
 
 // RuleAction holds rule actions.
 type RuleAction = store.RuleAction
+
+// Edge represents a weighted, typed relation between two memories.
+type Edge = store.Edge
+
+// EdgeParams holds parameters for creating or removing an edge.
+type EdgeParams = store.EdgeParams
+
+// EdgeExpansionConfig controls edge expansion in context assembly.
+type EdgeExpansionConfig = store.EdgeExpansionConfig
 
 // NewSQLiteStore opens or creates a SQLite-backed memory store at the given path.
 func NewSQLiteStore(dbPath string) (Store, error) {

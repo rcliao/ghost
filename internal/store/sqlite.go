@@ -201,6 +201,34 @@ func (s *SQLiteStore) migrate() error {
 	// Phase 6: unaccessed_gt_hours condition for reflect rules (time since last access)
 	s.db.Exec(`ALTER TABLE reflect_rules ADD COLUMN cond_unaccessed_gt_hours REAL`)
 
+	// Phase 7: memory_edges table (DAG-based retrieval)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS memory_edges (
+		from_id          TEXT NOT NULL REFERENCES memories(id),
+		to_id            TEXT NOT NULL REFERENCES memories(id),
+		rel              TEXT NOT NULL,
+		weight           REAL NOT NULL DEFAULT 0.5,
+		access_count     INTEGER NOT NULL DEFAULT 0,
+		last_accessed_at TEXT,
+		created_at       TEXT NOT NULL,
+		PRIMARY KEY (from_id, to_id, rel)
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_edges_weight ON memory_edges(weight DESC)`)
+
+	// Migrate existing memory_links data into memory_edges
+	s.db.Exec(`INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, last_accessed_at, created_at)
+		SELECT from_id, to_id, rel,
+		       CASE rel
+		           WHEN 'contradicts' THEN 0.9
+		           WHEN 'refines' THEN 0.8
+		           WHEN 'depends_on' THEN 0.7
+		           WHEN 'relates_to' THEN 0.5
+		           WHEN 'merged_into' THEN 0.0
+		           ELSE 0.5
+		       END,
+		       0, NULL, created_at
+		FROM memory_links`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 
@@ -311,8 +339,9 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		return nil, fmt.Errorf("insert memory: %w", err)
 	}
 
-	// Chunk the content
+	// Chunk the content and capture first chunk embedding for auto-linking
 	chunks := chunker.Chunk(p.Content, chunker.DefaultOptions())
+	var firstChunkVec embedding.Vector
 	for i, c := range chunks {
 		chunkID := s.newID()
 
@@ -324,6 +353,9 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 				b, _ := json.Marshal(vec)
 				str := string(b)
 				embeddingJSON = &str
+				if i == 0 {
+					firstChunkVec = vec
+				}
 			}
 			// Silently skip embedding errors — FTS5 still works
 		}
@@ -353,9 +385,20 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		fileRefs = append(fileRefs, model.FileRef{Path: f.Path, Rel: rel})
 	}
 
+	// Re-link edges from old version to new version
+	if supersedes != nil {
+		if err := relinkEdges(ctx, tx, *supersedes, id); err != nil {
+			return nil, fmt.Errorf("relink edges: %w", err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
+	// Auto-link edges to similar memories (after commit, non-transactional)
+	// Errors are silently ignored — auto-linking is best-effort.
+	s.autoLinkEdges(ctx, id, p.NS, firstChunkVec)
 
 	mem := &model.Memory{
 		ID:         id,
@@ -553,7 +596,11 @@ func (s *SQLiteStore) List(ctx context.Context, p ListParams) ([]model.Memory, e
 func (s *SQLiteStore) Rm(ctx context.Context, p RmParams) error {
 	if p.Hard {
 		if p.AllVersions {
-			// Delete chunks first
+			// Delete edges first
+			s.db.ExecContext(ctx,
+				`DELETE FROM memory_edges WHERE from_id IN (SELECT id FROM memories WHERE ns = ? AND key = ?) OR to_id IN (SELECT id FROM memories WHERE ns = ? AND key = ?)`,
+				p.NS, p.Key, p.NS, p.Key)
+			// Delete chunks
 			_, err := s.db.ExecContext(ctx,
 				`DELETE FROM chunks WHERE memory_id IN (SELECT id FROM memories WHERE ns = ? AND key = ?)`,
 				p.NS, p.Key)
@@ -571,6 +618,7 @@ func (s *SQLiteStore) Rm(ctx context.Context, p RmParams) error {
 		if err != nil {
 			return fmt.Errorf("memory not found: %s/%s", p.NS, p.Key)
 		}
+		s.db.ExecContext(ctx, `DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?`, id, id)
 		s.db.ExecContext(ctx, `DELETE FROM chunks WHERE memory_id = ?`, id)
 		_, err = s.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id)
 		return err
@@ -624,6 +672,13 @@ func (s *SQLiteStore) RmNamespace(ctx context.Context, ns string, hard bool) (in
 			append(args, args...)...)
 		if err != nil {
 			return 0, fmt.Errorf("delete links: %w", err)
+		}
+		// Delete edges
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM memory_edges WHERE from_id IN (SELECT id FROM memories WHERE `+clause+`) OR to_id IN (SELECT id FROM memories WHERE `+clause+`)`,
+			append(args, args...)...)
+		if err != nil {
+			return 0, fmt.Errorf("delete edges: %w", err)
 		}
 		// Delete memories
 		res, err := s.db.ExecContext(ctx,
@@ -771,6 +826,17 @@ func (s *SQLiteStore) GC(ctx context.Context) (GCResult, error) {
 		)`, now).Scan(&result.ChunksFreed)
 	if err != nil {
 		return result, err
+	}
+
+	// Delete edges referencing expired memories
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM memory_edges WHERE from_id IN (
+			SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+		) OR to_id IN (
+			SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+		)`, now, now)
+	if err != nil {
+		return result, fmt.Errorf("delete expired edges: %w", err)
 	}
 
 	// Delete chunks belonging to expired memories

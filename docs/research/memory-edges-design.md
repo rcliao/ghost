@@ -1,6 +1,6 @@
 # Memory Edges: DAG-Based Retrieval for Ghost
 
-**Status:** Design proposal
+**Status:** Fully implemented (Slices 1-3: schema, auto-link, edge expansion, CLI, MCP tool, co-retrieval strengthening, edge decay/pruning, contradicts force-include, consolidate with containment suppression)
 **Date:** 2026-03-13
 
 ## Motivation
@@ -351,12 +351,12 @@ Ghost's edge model is more flexible than LCM's rigid tree — it supports arbitr
 
 ---
 
-## Open Questions
+## Open Questions (Resolved and Remaining)
 
-1. **Should `contradicts` edges force-include the contradicting memory even if it exceeds budget?** Or should it just get a very high propagated score and compete normally?
+1. **~~Should `contradicts` edges force-include the contradicting memory even if it exceeds budget?~~** RESOLVED: Contradicts edges get a minimum propagated score of 80% of the seed's score, bypassing the normal damping cap. They compete in normal packing but rank near the top. Eval confirmed: contradicts score 0.31 vs seed 0.39 (80%).
 
-2. **Should edge weight have a floor?** If co-retrieval strengthening always adds 0.05, a heavily-used edge could hit 1.0 and dominate. Should we use diminishing returns (e.g., `weight += 0.05 × (1 - weight)`) so it asymptotically approaches 1.0?
+2. **~~Should edge weight have a floor?~~** RESOLVED: Co-retrieval strengthening uses diminishing returns: `weight += 0.05 × (1 - weight)`, asymptotically approaching 1.0. A weight at 0.9 gets +0.005 per co-retrieval, while a weight at 0.1 gets +0.045.
 
-3. **Multi-hop traversal** — This design is single-hop only. Should we ever traverse 2 hops (seed → neighbor → neighbor's neighbor)? Cognitive science supports it (activation can spread multiple hops with decay), but the practical value vs complexity tradeoff is unclear.
+3. **Multi-hop traversal** — Still single-hop only. Cognitive science supports 2–3 hops with heavy decay. The eval showed single-hop already doubles useful context (2 → 4 memories for "how does authentication work"). Multi-hop adds complexity and performance cost — defer until single-hop proves insufficient.
 
-4. **Edge visualization** — Should `ghost peek` or a new `ghost graph` command visualize the edge structure for a namespace?
+4. **Edge visualization** — Not yet implemented. A `ghost graph` command could output DOT format for Graphviz rendering. Low priority — edges are inspectable via `ghost edge --list`.

@@ -41,7 +41,7 @@ Ghost's tier system is a direct adaptation:
 | Sensory register | `sensory` | Ultra-short-lived buffer. Promoted to STM if attended (accessed >1 time), deleted after 4h otherwise |
 | Short-term memory | `stm` | Default tier. Subject to importance decay |
 | Long-term memory | `ltm` | Promoted from STM after repeated access (the "rehearsal" analog) |
-| — | `identity` | No direct analog. Functions like _self-schema_ — permanently accessible core knowledge |
+| — | `pinned` | No direct analog. Functions like _self-schema_ — chronically accessible core knowledge. Replaces the old `identity` tier. Exempt from all lifecycle rules |
 | — | `dormant` | Closest to "forgotten but recoverable" — Ebbinghaus showed even forgotten material has "savings" on relearning |
 
 **What we adapted:** The original model has no "identity" tier. We added it because agents need permanently pinned knowledge (role, core instructions) that should never decay. Cognitively, this resembles _autobiographical self-knowledge_ — the facts about yourself you never forget.
@@ -127,6 +127,41 @@ Ghost approximates this with the `importance` field (0.0–1.0), set at write ti
 
 ---
 
+## Spreading Activation → Edge Expansion
+
+Collins & Loftus (1975) proposed that semantic memory is organized as a network where concepts are linked by associations. Recalling one concept spreads _activation_ along its links to related concepts, making them easier to retrieve. Key properties:
+
+- **Strength-weighted** — stronger associations spread more activation
+- **Decay with distance** — activation diminishes as it spreads further from the source
+- **Accumulation** — a concept receiving activation from multiple sources is even more accessible
+
+Ghost implements this through **edge expansion** in context assembly (Phase 3). When search finds seed memories, activation spreads along `memory_edges` to their neighbors:
+
+```
+propagated_score = seed_score × edge_weight × damping (0.3)
+```
+
+Properties mapped to ghost:
+
+| Cognitive property | Ghost implementation |
+|-------------------|---------------------|
+| Association strength | Edge `weight` (0.0–1.0), strengthened by co-retrieval |
+| Decay with distance | `damping` factor (0.3), single-hop only |
+| Accumulation | Additive boost when memory appears as both direct hit and neighbor |
+| Association types | Typed edges: `relates_to`, `contradicts`, `depends_on`, `refines`, `contains` |
+
+**Hebbian learning** ("neurons that fire together wire together") is also implemented: when two connected memories appear together in a `ghost_context` response, their edge weight increases via `weight += 0.05 × (1 - weight)` — diminishing returns asymptotically approaching 1.0.
+
+**Contradicts edges** implement a cognitive safety mechanism: conflicting information is force-surfaced (80% of seed score) because agents, like humans, need to see contradictions to make informed decisions.
+
+**Containment suppression** mirrors hierarchical memory organization: when a summary (parent) is present, its constituent details (children) are suppressed — similar to how accessing a schema or gist inhibits recall of specific instances (schema-consistent memory suppression, Anderson & Neely, 1996).
+
+**Where we diverge:** Human spreading activation is multi-hop — activation can propagate through several links with decreasing strength. Ghost currently limits expansion to single-hop for performance and simplicity. Cognitive science supports multi-hop (2–3 hops with heavy decay), which could be a future enhancement.
+
+**Where we simplify:** Real semantic networks have graded, continuous activation over time. Ghost computes activation in a single pass during context assembly — there's no persistent activation state between queries.
+
+---
+
 ## Influences from Recent Agent Memory Research
 
 ### Park et al. — Generative Agents (2023)
@@ -160,8 +195,9 @@ ReMe's utility-based evaluation inspired ghost's `utility_count` / `access_count
 | Atkinson-Shiffrin | 5 tiers: sensory → stm → ltm → identity → dormant | Added identity tier (no cognitive analog); sensory tier added for raw observations |
 | Ebbinghaus decay | Exponential recency scoring, importance decay with minimum floor | Fixed decay rate — doesn't lengthen intervals after rehearsal |
 | Spaced repetition | Access-count-based promotion to LTM | Reactive only — no proactive review scheduling |
-| Consolidation | Reflect system with rule-based tier transitions | No content transformation — only metadata changes |
+| Consolidation | Reflect system with rule-based tier transitions; `consolidate` command for hierarchical summaries | No automatic content transformation — summary text provided by caller |
 | Levels of processing | Explicit importance at write time | Caller-declared, not encoding-depth-inferred |
+| Spreading activation | Edge expansion in Phase 3, Hebbian co-retrieval strengthening | Single-hop only, no persistent activation state |
 | Park et al. | 4-factor retrieval scoring | Higher relevance weight, added access frequency |
 | MemGPT | Pinned tiers + search-based overflow | No self-editing — agent must explicitly store/update |
 | ReMe | Utility ratio for pruning | Explicit utility-inc, not automatically inferred |

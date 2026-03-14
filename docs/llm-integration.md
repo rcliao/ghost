@@ -16,7 +16,13 @@ Ghost provides persistent memory for AI agents. This guide covers how to integra
 
 ### Setup
 
-Add ghost to your Claude Code MCP config (`~/.claude.json`):
+Add ghost as a user-scoped MCP server (available in all projects):
+
+```bash
+claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
+```
+
+Or for project-scoped (add to `.mcp.json` in repo root):
 
 ```json
 {
@@ -30,15 +36,16 @@ Add ghost to your Claude Code MCP config (`~/.claude.json`):
 }
 ```
 
-This exposes 5 tools to the agent:
+This exposes 6 tools to the agent:
 
 | Tool | Purpose |
 |------|---------|
-| `ghost_put` | Store or update a memory |
+| `ghost_put` | Store or update a memory (auto-links similar memories via edges) |
 | `ghost_search` | Full-text search with ranking |
-| `ghost_context` | Budget-aware context assembly |
+| `ghost_context` | Budget-aware context assembly with edge expansion |
+| `ghost_edge` | Create, remove, or list weighted edges between memories |
 | `ghost_curate` | Instance-level lifecycle actions on a single memory |
-| `ghost_reflect` | Run lifecycle rules across all memories (promote, decay, prune) |
+| `ghost_reflect` | Run lifecycle rules across all memories (promote, decay, prune, edge decay) |
 
 ### Teaching the Agent to Use Ghost
 
@@ -84,9 +91,28 @@ Operations: promote (tier up), demote (tier down), boost (importance +0.2),
 diminish (importance -0.2), archive (dormant), delete (soft-delete),
 pin (always in context), unpin (remove from always-on).
 
+### When to link (ghost_edge)
+Use ghost_edge to create associations between related memories:
+  ghost_edge(ns="agent:claude-code", from_key="jwt-config", to_key="auth-overview", rel="depends_on")
+
+Relation types: relates_to, contradicts, depends_on, refines, contains, merged_into.
+Edges are auto-created on put when embedding similarity is high, but manual edges
+for contradicts/depends_on/refines capture relationships embeddings can't.
+
+### When to consolidate
+When many memories exist about the same topic, create a summary:
+  ghost consolidate -n agent:claude-code --summary-key auth-overview \
+    --keys "auth-jwt,auth-expiry,auth-cookies" \
+    --content "Auth overview: JWT+RSA256, 24h expiry, refresh via cookies"
+
+This creates a summary memory with `contains` edges to each source memory.
+In context assembly, when the summary is present, its children are automatically
+suppressed — reducing redundancy and saving token budget.
+
 ### When to reflect (ghost_reflect)
 Run ghost_reflect when ghost_context returns compaction_suggested: true,
 or after a long session with many stored learnings.
+Reflect also decays unused edges and prunes very weak ones.
 ```
 
 **Why the strong language matters:** LLM agents respond to directive framing. "MUST" and "Do NOT" create behavioral anchors that generic suggestions don't. The `ghost_context` call before work is the single highest-value habit — it prevents the agent from re-discovering things it already learned in prior sessions.
@@ -385,6 +411,111 @@ augmented += "[End memories]\n\n" + userMessage
 
 ---
 
+## Complete User-Level Setup
+
+This is the recommended setup for using ghost globally across all Claude Code projects. It combines the MCP server (for agent-initiated memory operations) with hooks (for automated capture and retrieval).
+
+### 1. Install ghost and add MCP server
+
+```bash
+# Install ghost binary
+go install github.com/rcliao/ghost/cmd/ghost@latest
+
+# Add as user-scoped MCP server (available in all projects)
+claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
+```
+
+### 2. Add hooks to `~/.claude/settings.json`
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/.claude/hooks/ghost-session-start.sh",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/.claude/hooks/ghost-precompact.sh",
+            "timeout": 120000,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/.claude/hooks/ghost-stop.sh",
+            "timeout": 120000,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 3. SessionStart hook (safe, no recursion)
+
+The SessionStart hook outputs raw ghost context as `additionalContext`. **It does NOT call `claude -p`** — this eliminates the infinite loop risk where SessionStart spawns a claude subprocess which triggers another SessionStart.
+
+```bash
+#!/usr/bin/env bash
+# ~/.claude/hooks/ghost-session-start.sh
+set -euo pipefail
+
+# Guard against recursive invocation
+if [ "${GHOST_SESSION_HOOK:-}" = "1" ]; then
+  exit 0
+fi
+export GHOST_SESSION_HOOK=1
+
+MEMORIES=""
+
+# Agent-level memories
+AGENT_RAW=$(ghost context "general session context" -n "agent:claude-code" --budget 1500 2>/dev/null || echo "{}")
+AGENT_MEM=$(echo "$AGENT_RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
+if [ -n "$AGENT_MEM" ]; then
+  MEMORIES="## Agent Knowledge\n$AGENT_MEM"
+fi
+
+if [ -z "$MEMORIES" ]; then
+  exit 0
+fi
+
+echo -e "[Ghost Memory — Session Start]\n$MEMORIES\n[End Ghost Memory]"
+```
+
+**Why no `claude -p` for summarization?** Previous attempts used `claude -p` to summarize raw memories before injection. This caused two problems:
+1. **Infinite loop** — `claude -p` can trigger SessionStart hooks in the subprocess, causing recursion even with env guards.
+2. **Phantom sessions** — `claude -p` creates visible sessions even with `--no-session-persistence`.
+
+The raw output is slightly more verbose but reliable. The agent can summarize it in-context if needed.
+
+### 4. Add CLAUDE.md instructions
+
+Add to `~/.claude/CLAUDE.md` (or project CLAUDE.md) to teach the agent when to use ghost proactively. See the [Teaching the Agent to Use Ghost](#teaching-the-agent-to-use-ghost) section below.
+
+### 5. Verify
+
+Start a new Claude Code session — you should see ghost memories injected at startup. The MCP tools (`ghost_put`, `ghost_edge`, etc.) should be available.
+
+---
+
 ## Automated Memory via Claude Code Hooks
 
 CLAUDE.md instructions tell the agent _when_ to use ghost, but agents tend to forget — especially during long debugging sessions where the focus is on solving the problem, not recording learnings. Claude Code **hooks** can automate memory capture as a safety net.
@@ -402,7 +533,7 @@ Hooks are shell commands that fire on specific Claude Code lifecycle events. The
 
 Both hooks run with `async: true` so they never block the user.
 
-#### Retrieval Hooks (potential integration)
+#### Retrieval Hooks
 
 | Hook Event | When It Fires | Use For |
 |------------|--------------|---------|

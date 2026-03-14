@@ -63,6 +63,8 @@ type ReflectResult struct {
 	Archived          int      `json:"archived"`
 	Deleted           int      `json:"deleted"`
 	Merged            int      `json:"merged"`
+	EdgesDecayed      int      `json:"edges_decayed,omitempty"`
+	EdgesPruned       int      `json:"edges_pruned,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
 }
 
@@ -336,6 +338,12 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 				deletedIDs[id] = true
 			}
 		}
+	}
+
+	// Edge decay pass: weaken unused edges, prune very weak ones.
+	// Edges not accessed in 30+ days with <3 accesses decay; weight <0.05 → deleted.
+	if !p.DryRun {
+		s.decayEdges(ctx, result)
 	}
 
 	return result, nil

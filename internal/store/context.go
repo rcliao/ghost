@@ -12,14 +12,15 @@ import (
 
 // ContextParams holds parameters for context assembly.
 type ContextParams struct {
-	NS           string
-	Query        string
-	Kind         string
-	Tags         []string
-	Budget       int      // max tokens in output
-	PinTiers     []string // tiers always injected first (e.g. ["identity", "ltm"])
-	PinBudget    int      // token budget reserved for pinned tiers (default: Budget/3)
-	SearchBudget int      // remaining budget for query-relevant search (default: Budget - PinBudget)
+	NS             string
+	Query          string
+	Kind           string
+	Tags           []string
+	Budget         int              // max tokens in output
+	PinTiers       []string         // tiers always injected first (e.g. ["identity", "ltm"])
+	PinBudget      int              // token budget reserved for pinned tiers (default: Budget/3)
+	SearchBudget   int              // remaining budget for query-relevant search (default: Budget - PinBudget)
+	EdgeExpansion  *EdgeExpansionConfig // edge expansion config; nil means use defaults
 }
 
 // ContextMemory is a scored memory for context output.
@@ -39,6 +40,12 @@ type ContextResult struct {
 	Memories            []ContextMemory `json:"memories"`
 	Skipped             int             `json:"skipped,omitempty"`
 	CompactionSuggested bool            `json:"compaction_suggested,omitempty"`
+}
+
+// contextCandidate is a memory with its computed score for context ranking.
+type contextCandidate struct {
+	memory model.Memory
+	score  float64
 }
 
 // Context assembles relevant memories within a token budget.
@@ -117,48 +124,33 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	//   Semantic (facts): relevance + importance — timeless knowledge
 	//   Procedural (skills): access frequency — strengthened by practice (testing effect)
 	now := time.Now()
-	type scored struct {
-		memory model.Memory
-		score  float64
-	}
-	var candidates []scored
+
+	// scoreMap tracks scores by memory ID for edge boost merging
+	scoreMap := map[string]*contextCandidate{}
 
 	for _, r := range results {
 		if seen[r.ID] {
 			continue // already included from pinned tiers
 		}
 		m := r.Memory
-		// Relevance: use vector similarity when available, otherwise base from search rank
-		relevance := 0.5 // base relevance for FTS/LIKE matches
-		if r.Similarity > 0 {
-			relevance = r.Similarity // use actual cosine similarity
-		}
+		score := computeContextScore(m, r.Similarity, now)
+		scoreMap[m.ID] = &contextCandidate{memory: m, score: score}
+	}
 
-		// Recency: exponential decay, half-life of 7 days
-		age := now.Sub(m.CreatedAt).Hours() / 24.0 // days
-		recency := math.Exp(-0.1 * age)
+	// Phase 3: Edge expansion — spreading activation
+	edgeCfg := DefaultEdgeExpansion()
+	if p.EdgeExpansion != nil {
+		edgeCfg = *p.EdgeExpansion
+	}
 
-		// Importance: use continuous importance field, fall back to priority-based
-		importance := m.Importance
-		if importance <= 0 {
-			importance = priorityScore(m.Priority)
-		}
+	if edgeCfg.Enabled && len(scoreMap) > 0 {
+		s.expandEdges(ctx, scoreMap, seen, edgeCfg, now)
+	}
 
-		// Access frequency: log scale
-		accessFreq := 0.0
-		if m.AccessCount > 0 {
-			accessFreq = math.Log(float64(m.AccessCount)+1) / math.Log(100)
-			if accessFreq > 1 {
-				accessFreq = 1
-			}
-		}
-
-		// Kind-specific composite weights, then apply tier as multiplicative modifier
-		w := kindWeights(m.Kind)
-		base := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access
-		score := base * tierMultiplier(m.Tier)
-
-		candidates = append(candidates, scored{memory: m, score: score})
+	// Collect and sort candidates
+	var candidates []contextCandidate
+	for _, sc := range scoreMap {
+		candidates = append(candidates, *sc)
 	}
 
 	// Sort by score descending
@@ -166,9 +158,36 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		return candidates[i].score > candidates[j].score
 	})
 
-	// Greedy packing into remaining budget
+	// Build containment map before packing: for each candidate, find if it's
+	// a child of another candidate (via 'contains' edges). If a parent summary
+	// is in the candidate pool, its children should be suppressed.
+	suppressed := map[string]bool{}
+	{
+		candidateIDs := map[string]bool{}
+		for _, c := range candidates {
+			candidateIDs[c.memory.ID] = true
+		}
+		for _, c := range candidates {
+			children, err := s.getContainsChildren(ctx, c.memory.ID)
+			if err == nil && len(children) > 0 {
+				for _, childID := range children {
+					if candidateIDs[childID] {
+						suppressed[childID] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Greedy packing into remaining budget with contains-suppression.
 	pinnedCount := len(result.Memories)
+
 	for _, c := range candidates {
+		// Skip memories suppressed by a parent summary in the candidate pool
+		if suppressed[c.memory.ID] {
+			continue
+		}
+
 		memTokens := c.memory.EstTokens
 		if memTokens <= 0 {
 			memTokens = (len(c.memory.Content) / 4) + 20
@@ -226,7 +245,156 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		_ = err
 	}
 
+	// Co-retrieval strengthening: strengthen edges between memories that
+	// appear together in this context response (Hebbian: "fire together, wire together").
+	// Collect IDs of memories actually returned in the result.
+	var returnedIDs []string
+	for _, c := range candidates {
+		for _, m := range result.Memories {
+			if c.memory.NS == m.NS && c.memory.Key == m.Key {
+				returnedIDs = append(returnedIDs, c.memory.ID)
+				break
+			}
+		}
+	}
+	if len(returnedIDs) > 1 {
+		s.strengthenCoRetrievedEdges(ctx, returnedIDs)
+	}
+
 	return result, nil
+}
+
+// expandEdges performs single-hop edge expansion from seed candidates.
+// For each seed, it follows top-K edges and adds neighbor memories to the
+// candidate pool with propagated scores. If a neighbor is already in the pool
+// (direct hit), it gets an additive boost capped by MaxBoostFactor.
+func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*contextCandidate, seen map[string]bool, cfg EdgeExpansionConfig, now time.Time) {
+	// Snapshot seed IDs + scores (don't iterate map while mutating)
+	type seedInfo struct {
+		id    string
+		score float64
+	}
+	var seeds []seedInfo
+	for id, sc := range scoreMap {
+		seeds = append(seeds, seedInfo{id: id, score: sc.score})
+	}
+
+	// Sort seeds by score descending so highest-scored seeds expand first
+	sort.Slice(seeds, func(i, j int) bool {
+		return seeds[i].score > seeds[j].score
+	})
+
+	// Track original direct scores for boost capping
+	originalScores := map[string]float64{}
+	for id, sc := range scoreMap {
+		originalScores[id] = sc.score
+	}
+
+	totalExpanded := 0
+	for _, seed := range seeds {
+		if totalExpanded >= cfg.MaxExpansionTotal {
+			break
+		}
+
+		edges, err := s.getEdgesForExpansion(ctx, seed.id, cfg.MinEdgeWeight, cfg.MaxEdgesPerSeed)
+		if err != nil {
+			continue
+		}
+
+		for _, edge := range edges {
+			if totalExpanded >= cfg.MaxExpansionTotal {
+				break
+			}
+
+			neighborID := edge.ToID
+			if neighborID == seed.id {
+				continue // self-loop guard
+			}
+
+			// Skip if this neighbor is a pinned memory already in context
+			if seen[neighborID] {
+				continue
+			}
+
+			propagated := seed.score * edge.Weight * cfg.Damping
+
+			// contradicts edges get special treatment: the agent must see conflicts.
+			// Give contradicting memories a high minimum score so they rank near the top.
+			isContradiction := edge.Rel == "contradicts"
+			if isContradiction {
+				minContradictScore := seed.score * 0.8 // 80% of the seed's score
+				if propagated < minContradictScore {
+					propagated = minContradictScore
+				}
+			}
+
+			if existing, ok := scoreMap[neighborID]; ok {
+				// Memory already in pool — additive boost, capped
+				origScore := originalScores[neighborID]
+				maxBoost := origScore * cfg.MaxBoostFactor
+				if maxBoost < 0.15 {
+					maxBoost = 0.15
+				}
+				// contradicts edges bypass the cap
+				if isContradiction {
+					existing.score = math.Max(existing.score, propagated)
+				} else {
+					alreadyBoosted := existing.score - origScore
+					remaining := maxBoost - alreadyBoosted
+					if remaining > 0 {
+						boost := math.Min(propagated, remaining)
+						existing.score += boost
+					}
+				}
+			} else {
+				// New neighbor — load from DB
+				m, err := s.loadMemoryByID(ctx, neighborID)
+				if err != nil {
+					continue
+				}
+				// Cap propagated score for edge-only candidates (except contradicts)
+				if !isContradiction && propagated > 0.3 {
+					propagated = 0.3
+				}
+				scoreMap[neighborID] = &contextCandidate{memory: *m, score: propagated}
+				originalScores[neighborID] = 0 // no direct score
+				totalExpanded++
+			}
+		}
+	}
+}
+
+// computeContextScore calculates the composite context score for a memory.
+func computeContextScore(m model.Memory, similarity float64, now time.Time) float64 {
+	// Relevance: use vector similarity when available, otherwise base from search rank
+	relevance := 0.5 // base relevance for FTS/LIKE matches
+	if similarity > 0 {
+		relevance = similarity // use actual cosine similarity
+	}
+
+	// Recency: exponential decay, half-life of 7 days
+	age := now.Sub(m.CreatedAt).Hours() / 24.0 // days
+	recency := math.Exp(-0.1 * age)
+
+	// Importance: use continuous importance field, fall back to priority-based
+	importance := m.Importance
+	if importance <= 0 {
+		importance = priorityScore(m.Priority)
+	}
+
+	// Access frequency: log scale
+	accessFreq := 0.0
+	if m.AccessCount > 0 {
+		accessFreq = math.Log(float64(m.AccessCount)+1) / math.Log(100)
+		if accessFreq > 1 {
+			accessFreq = 1
+		}
+	}
+
+	// Kind-specific composite weights, then apply tier as multiplicative modifier
+	w := kindWeights(m.Kind)
+	base := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access
+	return base * tierMultiplier(m.Tier)
 }
 
 // loadPinnedMemories loads memories with pinned=1, ordered by importance.
@@ -277,7 +445,8 @@ func (s *SQLiteStore) loadPinnedMemories(ctx context.Context, ns string) ([]mode
 // tierMultiplier returns a multiplicative penalty/boost for tier.
 // Applied as a multiplier on the final composite score so that
 // tier transitions have meaningful impact on ranking:
-//   ltm=1.0 (no penalty), stm=0.8, dormant=0.15, sensory=0.1
+//
+//	ltm=1.0 (no penalty), stm=0.8, dormant=0.15, sensory=0.1
 func tierMultiplier(tier string) float64 {
 	switch tier {
 	case "ltm":

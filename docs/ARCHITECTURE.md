@@ -42,7 +42,7 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 | `internal/chunker` | Markdown-aware text splitting (~400 char targets) | 193 LOC |
 | `internal/embedding` | Pluggable vector embeddings (local/Ollama/OpenAI) | ~320 LOC |
 | `internal/ingest` | Markdown file parser (H2 → sections → memories) | 154 LOC |
-| `internal/mcpserver` | MCP server over stdio (5 tools: put, search, context, curate, reflect) | ~260 LOC |
+| `internal/mcpserver` | MCP server over stdio (6 tools: put, search, context, curate, reflect, edge) | ~260 LOC |
 | `memory.go` | Public library API — re-exports from internal packages | 102 LOC |
 
 ## Data Model
@@ -80,9 +80,30 @@ Text segments (~400 chars) for search indexing. Each memory is split into chunks
 
 Links a memory to a file path with a relationship type (modified, created, deleted, read).
 
-### Link
+### Edge (DAG)
 
-Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`.
+Weighted, typed associations between memories for graph-based retrieval (spreading activation). Edges are first-class objects with their own lifecycle metadata.
+
+```
+Edge {
+  FromID         string     // source memory ID
+  ToID           string     // target memory ID
+  Rel            string     // relates_to | contradicts | depends_on | refines | contains | merged_into
+  Weight         float64    // 0.0–1.0, strength of association
+  AccessCount    int        // incremented on co-retrieval
+  LastAccessedAt *time.Time // for future decay calculation
+}
+```
+
+Default weights by relation type: contradicts=0.9, refines=0.8, depends_on=0.7, contains=0.6, relates_to=0.5, merged_into=0.0 (audit trail only).
+
+**Auto-linking**: On `put`, Ghost computes embedding similarity against existing memories in the same namespace. Memories above the threshold (default 0.80, configurable via `GHOST_EDGE_THRESHOLD`) automatically get `relates_to` edges.
+
+**Re-linking**: When a memory is versioned (new ID), all edges referencing the old ID are updated to point to the new ID.
+
+### Link (legacy)
+
+Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`. Migrated to `memory_edges` table on startup.
 
 ## Storage Layer
 
@@ -97,7 +118,8 @@ Uses `modernc.org/sqlite` with WAL mode. Single file at `~/.ghost/memory.db` (co
 | `memories` | Core records with all metadata columns |
 | `chunks` | Text segments with optional embedding vectors |
 | `chunks_fts` | FTS5 virtual table for full-text search |
-| `memory_links` | Directed edges between memories |
+| `memory_edges` | Weighted directed edges for DAG retrieval |
+| `memory_links` | Legacy directed edges (migrated to memory_edges) |
 | `memory_files` | File path references |
 | `reflect_rules` | Condition→action rules for the reflect engine |
 
@@ -159,10 +181,22 @@ RRF merges ranked results: `score = Σ 1/(60 + rank_i)` across methods.
 
 ### Context Assembly
 
-Two-phase greedy packing within a token budget:
+Three-phase greedy packing within a token budget:
 
 1. **Phase 1 (Pinned)**: Load all `pinned = true` memories, ordered by importance. Fills up to `budget/3`.
-2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric, filterable by tags. Fills remaining budget.
+2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric, filterable by tags.
+3. **Phase 3 (Edge Expansion)**: Implements spreading activation (Collins & Loftus, 1975). For each seed from Phase 2, follow top-K outgoing edges (sorted by weight). Neighbors enter the candidate pool with propagated scores: `propagated = seed_score × edge_weight × damping`. Memories that appear as both direct hits and edge neighbors get additive boost (capped at `MaxBoostFactor × direct_score`). **`contradicts` edges** bypass the normal cap — contradicting memories get a minimum score of 80% of the seed's score, ensuring conflicts are always surfaced. **Containment suppression**: before packing, children of `contains` parents in the candidate pool are suppressed to avoid redundancy. Final pool is re-sorted and greedy-packed into remaining budget.
+
+**Edge expansion defaults** (`EdgeExpansionConfig`):
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `Enabled` | `true` | Enable/disable edge expansion |
+| `Damping` | `0.3` | Caps propagated score relative to seed |
+| `MaxEdgesPerSeed` | `5` | Limits fanout per seed memory |
+| `MinEdgeWeight` | `0.1` | Edges below this are not traversed |
+| `MaxExpansionTotal` | `50` | Total cap on new candidates from edges |
+| `MaxBoostFactor` | `0.5` | Cap on additive boost for direct+edge hits |
 
 **Composite scoring** (4 additive factors + multiplicative tier modifier):
 
@@ -206,14 +240,25 @@ Rules are evaluated in two passes:
 
 Custom rules can be added via `ghost rule set`.
 
+### Edge Lifecycle
+
+Edges have their own lifecycle managed alongside memory nodes:
+
+- **Co-retrieval strengthening** (Hebbian learning — "fire together, wire together"): When two connected memories appear together in a `ghost_context` response, their shared edge is strengthened: `weight += 0.05 × (1 - weight)` (diminishing returns approaching 1.0), `access_count++`, `last_accessed_at` updated.
+- **Auto-linking on put**: When a memory is stored, Ghost computes embedding similarity against existing memories in the same namespace. Memories above the threshold (default 0.80, configurable via `GHOST_EDGE_THRESHOLD`) automatically get `relates_to` edges with weight = similarity score.
+- **Edge re-linking**: When a memory is versioned (new ID supersedes old), all edges referencing the old ID are updated to point to the new ID within the same transaction.
+- **Edge decay**: During reflect, edges not accessed in 30+ days with <3 accesses have their weight multiplied by 0.9.
+- **Edge pruning**: Edges with weight < 0.05 are automatically deleted during reflect.
+
 ## MCP Server
 
-Exposes 5 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
+Exposes 6 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
 - `ghost_put` — Store/update a memory
 - `ghost_search` — Full-text search with ranking
-- `ghost_context` — Budget-aware context assembly (includes `compaction_suggested` signal)
+- `ghost_context` — Budget-aware context assembly with edge expansion (includes `compaction_suggested` signal)
 - `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin)
-- `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar)
+- `ghost_edge` — Create, remove, or list weighted edges between memories for DAG-based retrieval
+- `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar, edge decay)
 
 Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
 
@@ -252,7 +297,9 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | `context` | Assemble relevant memories within token budget |
 | `peek` | Lightweight index of memory state |
 | `history` | Full version history of a key |
-| `link` | Create/remove semantic relationships |
+| `edge` | Create, remove, or list weighted edges between memories |
+| `consolidate` | Create a summary memory with `contains` edges to source memories |
+| `link` | Create/remove semantic relationships (legacy) |
 | `files` | Manage file references |
 | `tags` | List, rename, or remove tags |
 | `ns` | Namespace operations (list, rm) |

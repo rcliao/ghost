@@ -145,6 +145,18 @@ type Store interface {
 	// GetLinks returns all links for a memory.
 	GetLinks(ctx context.Context, memoryID string) ([]Link, error)
 
+	// CreateEdge creates a weighted edge between two memories.
+	CreateEdge(ctx context.Context, p EdgeParams) (*Edge, error)
+
+	// DeleteEdge removes an edge between two memories.
+	DeleteEdge(ctx context.Context, p EdgeParams) error
+
+	// GetEdges returns all edges where the given memory is source or target.
+	GetEdges(ctx context.Context, memoryID string) ([]Edge, error)
+
+	// GetEdgesByNSKey returns all edges for a memory identified by namespace and key.
+	GetEdgesByNSKey(ctx context.Context, ns, key string) ([]Edge, error)
+
 	// Context assembles relevant memories within a token budget.
 	Context(ctx context.Context, p ContextParams) (*ContextResult, error)
 

@@ -29,10 +29,12 @@ make install   # Install to $GOPATH/bin
 - Tier = lifecycle stage: sensory → stm → ltm → dormant (no more `identity` tier)
 - Pinned = chronic accessibility: always loaded in context, exempt from decay (replaces old `identity` tier)
 - Search: FTS5 ranked → LIKE fallback → vector embeddings, all support tag filtering
-- Context assembly: Phase 1 loads pinned memories, Phase 2 fills remaining budget with search results
+- Context assembly: Phase 1 pinned, Phase 2 search, Phase 3 edge expansion (spreading activation)
+- Edges: weighted directed associations (`memory_edges` table) with auto-linking on put, co-retrieval strengthening, and decay in reflect
+- Edge types: `relates_to`, `contradicts` (force-include), `depends_on`, `refines`, `contains` (suppresses children), `merged_into`
+- `ghost consolidate` creates summary memories with `contains` edges for hierarchical compression
 - Soft-delete (recoverable) vs hard-delete (permanent)
 - TTL/expiration support with auto-GC on startup
-- Memory links (relates_to, contradicts, depends_on, refines) and file references
 - DB path: `--db` flag → `$GHOST_DB` env → `~/.ghost/memory.db`
 - Pure Go SQLite (modernc.org/sqlite), WAL mode, no CGo
 

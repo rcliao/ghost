@@ -229,6 +229,82 @@ func registerTools(server *mcp.Server, st store.Store) {
 	})
 
 	server.AddTool(&mcp.Tool{
+		Name:        "ghost_edge",
+		Description: "Create, remove, or list weighted edges (associations) between memories. Edges enable DAG-based retrieval — when a seed memory is found, its neighbors are pulled in via spreading activation.",
+		InputSchema: schema([]string{"ns", "from_key"}, map[string]map[string]any{
+			"ns":       prop("string", "Namespace (used for both from and to)"),
+			"from_key": prop("string", "Source memory key"),
+			"to_key":   prop("string", "Target memory key (required for create/remove)"),
+			"rel":      prop("string", "Relation type: relates_to, contradicts, depends_on, refines, contains, merged_into"),
+			"weight":   prop("number", "Edge weight 0.0-1.0 (0 = use default for rel type)"),
+			"op":       prop("string", "Operation: create (default), remove, list"),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS      string  `json:"ns"`
+			FromKey string  `json:"from_key"`
+			ToKey   string  `json:"to_key"`
+			Rel     string  `json:"rel"`
+			Weight  float64 `json:"weight"`
+			Op      string  `json:"op"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" || p.FromKey == "" {
+			return errResult("ns and from_key are required"), nil
+		}
+
+		op := p.Op
+		if op == "" {
+			op = "create"
+		}
+
+		switch op {
+		case "list":
+			edges, err := st.GetEdgesByNSKey(ctx, p.NS, p.FromKey)
+			if err != nil {
+				return errResult(err.Error()), nil
+			}
+			if edges == nil {
+				edges = []store.Edge{}
+			}
+			return jsonResult(edges)
+
+		case "remove":
+			if p.ToKey == "" || p.Rel == "" {
+				return errResult("to_key and rel are required for remove"), nil
+			}
+			err := st.DeleteEdge(ctx, store.EdgeParams{
+				FromNS: p.NS, FromKey: p.FromKey,
+				ToNS: p.NS, ToKey: p.ToKey,
+				Rel: p.Rel,
+			})
+			if err != nil {
+				return errResult(err.Error()), nil
+			}
+			return jsonResult(map[string]string{"status": "deleted", "rel": p.Rel})
+
+		case "create":
+			if p.ToKey == "" || p.Rel == "" {
+				return errResult("to_key and rel are required for create"), nil
+			}
+			edge, err := st.CreateEdge(ctx, store.EdgeParams{
+				FromNS: p.NS, FromKey: p.FromKey,
+				ToNS: p.NS, ToKey: p.ToKey,
+				Rel: p.Rel, Weight: p.Weight,
+			})
+			if err != nil {
+				return errResult(err.Error()), nil
+			}
+			return jsonResult(edge)
+
+		default:
+			return errResult("invalid op: must be create, remove, or list"), nil
+		}
+	})
+
+	server.AddTool(&mcp.Tool{
 		Name:        "ghost_reflect",
 		Description: "Run the reflect cycle to promote, decay, demote, archive, delete, or merge similar memories based on lifecycle rules. Includes automatic similarity-based deduplication using embedding vectors. Call this to maintain memory hygiene — especially when ghost_context indicates compaction is needed (compaction_suggested: true).",
 		InputSchema: schema([]string{}, map[string]map[string]any{
