@@ -63,6 +63,7 @@ type ReflectResult struct {
 	Archived          int      `json:"archived"`
 	Deleted           int      `json:"deleted"`
 	Merged            int      `json:"merged"`
+	Linked            int      `json:"linked,omitempty"`
 	EdgesDecayed      int      `json:"edges_decayed,omitempty"`
 	EdgesPruned       int      `json:"edges_pruned,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
@@ -135,12 +136,12 @@ var builtinRules = []ReflectRule{
 	},
 	{
 		ID:        "sys-merge-similar",
-		Name:      "merge similar STM memories",
+		Name:      "link similar STM memories",
 		Scope:     "reflect",
 		Priority:  40,
 		CreatedBy: "system",
 		Cond:      RuleCond{Tier: "stm", SimilarityGT: 0.9},
-		Action:    RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "keep_highest_importance"}},
+		Action:    RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "link_only"}},
 	},
 }
 
@@ -325,16 +326,17 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 		if rule.Cond.SimilarityGT <= 0 || rule.Action.Op != "MERGE" {
 			continue
 		}
-		merged, absorbedIDs, mergeErr := s.applySimilarityMerge(ctx, rule, allMemories, deletedIDs, p.DryRun)
+		smResult, mergeErr := s.applySimilarityMerge(ctx, rule, allMemories, deletedIDs, p.DryRun)
 		if mergeErr != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("similarity merge %q: %v", rule.Name, mergeErr))
 		} else {
-			result.Merged += merged
-			if merged > 0 {
+			result.Merged += smResult.absorbed
+			result.Linked += smResult.linked
+			if smResult.absorbed > 0 || smResult.linked > 0 {
 				result.RulesApplied++
 			}
 			// Track absorbed IDs so subsequent similarity rules don't re-process them
-			for _, id := range absorbedIDs {
+			for _, id := range smResult.absorbedIDs {
 				deletedIDs[id] = true
 			}
 		}
@@ -468,9 +470,16 @@ func (s *SQLiteStore) applyTierChange(ctx context.Context, id string, params map
 	return err
 }
 
+// similarityMergeResult holds the outcome of a similarity merge/link pass.
+type similarityMergeResult struct {
+	absorbed    int
+	linked      int
+	absorbedIDs []string
+}
+
 // applySimilarityMerge runs the similarity-based merge for a single rule.
-// Returns the count of absorbed memories and their IDs (for cross-rule dedup).
-func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule, allMemories []model.Memory, deletedIDs map[string]bool, dryRun bool) (int, []string, error) {
+// Returns the count of absorbed memories, linked edges, and absorbed IDs.
+func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule, allMemories []model.Memory, deletedIDs map[string]bool, dryRun bool) (*similarityMergeResult, error) {
 	now := time.Now().UTC()
 
 	// 1. Filter candidates by non-similarity conditions
@@ -494,7 +503,7 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 	}
 
 	if len(candidates) < 2 {
-		return 0, nil, nil
+		return &similarityMergeResult{}, nil
 	}
 
 	// Cap at 500 candidates
@@ -519,7 +528,7 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 		fmt.Sprintf(`SELECT memory_id, embedding FROM chunks WHERE memory_id IN (%s) AND seq = 0 AND embedding IS NOT NULL`, placeholders),
 		embArgs...)
 	if err != nil {
-		return 0, nil, fmt.Errorf("load embeddings: %w", err)
+		return &similarityMergeResult{}, fmt.Errorf("load embeddings: %w", err)
 	}
 	defer embRows.Close()
 
@@ -545,7 +554,7 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 	}
 
 	if len(withEmb) < 2 {
-		return 0, nil, nil
+		return &similarityMergeResult{}, nil
 	}
 
 	// 3. Sort by importance DESC (greedy clustering pivot order)
@@ -586,31 +595,81 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 		}
 	}
 
-	// 5. Apply merge for each cluster
+	// 5. Determine strategy: link_only (non-destructive) or keep_highest_importance (destructive merge)
+	strategy := "link_only"
+	if rule.Action.Params != nil {
+		if s, ok := rule.Action.Params["strategy"].(string); ok {
+			strategy = s
+		}
+	}
+
 	totalAbsorbed := 0
+	totalLinked := 0
 	var allAbsorbedIDs []string
 	for _, cluster := range clusters {
-		if dryRun {
-			for _, m := range cluster[1:] {
-				totalAbsorbed++
-				allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+		if strategy == "link_only" {
+			if dryRun {
+				// Count edges that would be created (n*(n-1)/2 pairs)
+				n := len(cluster)
+				totalLinked += n * (n - 1) / 2
+				continue
 			}
-			continue
-		}
-		absorbed, err := s.applyMerge(ctx, cluster)
-		if err != nil {
-			return totalAbsorbed, allAbsorbedIDs, fmt.Errorf("merge cluster: %w", err)
-		}
-		totalAbsorbed += absorbed
-		// Track absorbed IDs (all non-survivor, non-pinned members)
-		for _, m := range cluster[1:] {
-			if !m.Pinned {
-				allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+			linked, err := s.applyLinkSimilar(ctx, cluster)
+			if err != nil {
+				return &similarityMergeResult{absorbed: totalAbsorbed, absorbedIDs: allAbsorbedIDs}, fmt.Errorf("link cluster: %w", err)
+			}
+			totalLinked += linked
+		} else {
+			// Destructive merge (legacy behavior)
+			if dryRun {
+				for _, m := range cluster[1:] {
+					totalAbsorbed++
+					allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+				}
+				continue
+			}
+			absorbed, err := s.applyMerge(ctx, cluster)
+			if err != nil {
+				return &similarityMergeResult{absorbed: totalAbsorbed, absorbedIDs: allAbsorbedIDs}, fmt.Errorf("merge cluster: %w", err)
+			}
+			totalAbsorbed += absorbed
+			// Track absorbed IDs (all non-survivor, non-pinned members)
+			for _, m := range cluster[1:] {
+				if !m.Pinned {
+					allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+				}
 			}
 		}
 	}
 
-	return totalAbsorbed, allAbsorbedIDs, nil
+	return &similarityMergeResult{absorbed: totalAbsorbed, linked: totalLinked, absorbedIDs: allAbsorbedIDs}, nil
+}
+
+// applyLinkSimilar creates relates_to edges between all memories in a cluster.
+// Non-destructive: no content is deleted. Returns the number of edges created.
+func (s *SQLiteStore) applyLinkSimilar(ctx context.Context, group []model.Memory) (int, error) {
+	if len(group) < 2 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	linked := 0
+
+	for i := 0; i < len(group); i++ {
+		for j := i + 1; j < len(group); j++ {
+			// Use INSERT OR IGNORE — don't overwrite existing edges
+			_, err := s.db.ExecContext(ctx,
+				`INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, last_accessed_at, created_at)
+				 VALUES (?, ?, 'relates_to', 0.5, 0, NULL, ?)`,
+				group[i].ID, group[j].ID, now)
+			if err != nil {
+				return linked, fmt.Errorf("create edge %s→%s: %w", group[i].ID, group[j].ID, err)
+			}
+			linked++
+		}
+	}
+
+	return linked, nil
 }
 
 // applyMerge merges a group of memories into a single survivor.

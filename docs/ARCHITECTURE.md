@@ -232,11 +232,11 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 | `sys-promote-to-ltm` | STM, >24h old, >10 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >168h since last access | DEMOTE to dormant |
 | `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
-| `sys-merge-similar` | STM, embedding similarity >0.9 | MERGE (keep highest importance) |
+| `sys-merge-similar` | STM, embedding similarity >0.9 | LINK (create `relates_to` edges, non-destructive) |
 
 Rules are evaluated in two passes:
 1. **Per-memory pass** — evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones.
-2. **Similarity merge pass** — rules with `cond_similarity_gt` run pairwise embedding comparison and consolidate similar memories. Survivor keeps highest importance, inherits union of tags and summed access/utility counts. Absorbed memories are soft-deleted with `merged_into` links.
+2. **Similarity pass** — rules with `cond_similarity_gt` run pairwise embedding comparison. Default strategy is `link_only` (non-destructive): creates `relates_to` edges between similar memories without deleting any content. The agent can then use `ghost consolidate` to create a summary when ready. Legacy `keep_highest_importance` strategy (destructive merge) is still available for custom rules.
 
 Custom rules can be added via `ghost rule set`.
 

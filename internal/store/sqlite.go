@@ -229,6 +229,10 @@ func (s *SQLiteStore) migrate() error {
 		       0, NULL, created_at
 		FROM memory_links`)
 
+	// Phase 8: migrate sys-merge-similar to link_only strategy (non-destructive)
+	s.db.Exec(`UPDATE reflect_rules SET action_params = '{"strategy":"link_only"}', name = 'link similar STM memories'
+		WHERE id = 'sys-merge-similar' AND action_params = '{"strategy":"keep_highest_importance"}'`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 

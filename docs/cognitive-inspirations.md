@@ -106,7 +106,13 @@ LTM (stale, unused)         → dormant     [cortical trace weakening]
 Low utility                 → deleted     [synaptic pruning]
 ```
 
-**Narrowing the gap:** Brain consolidation _transforms_ memories — abstracting, generalizing, and integrating them with existing knowledge. Ghost's reflect primarily changes metadata (tier, importance), but the **similarity merge** feature begins to bridge this gap. The `MERGE` action uses embedding cosine similarity to find semantically overlapping memories and consolidate them — the survivor inherits the combined access history and tags from absorbed memories. This is a structural form of consolidation (deduplication), not yet semantic synthesis. Park et al.'s Generative Agents (2023) implement the full version with a "reflection" mechanism that generates higher-level insights from raw memories — ghost's `MERGE` action supports a `strategy` field that could adopt LLM-based synthesis (`llm_synthesize`) in the future.
+**Narrowing the gap:** Brain consolidation _transforms_ memories — abstracting, generalizing, and integrating them with existing knowledge. Ghost's reflect primarily changes metadata (tier, importance), but two features bridge this gap:
+
+1. **Similarity linking** — The `sys-merge-similar` rule detects semantically overlapping memories (>0.9 cosine similarity) and creates `relates_to` edges between them. This is non-destructive — no content is lost. It mirrors how the brain forms associations between related traces during consolidation.
+
+2. **Agent-initiated consolidation** — `ghost consolidate` lets the calling agent create a summary memory with `contains` edges to source memories. Children are suppressed in context assembly, similar to how the brain forms schemas that subsume specific episodes. This follows the LCM (Lossless Context Management) pattern: summaries are derived views, originals are preserved.
+
+The legacy destructive merge (`strategy: "keep_highest_importance"`) is still available for custom rules but is no longer the default — preserving content aligns with the principle that ghost is a storage layer and the intelligence (deciding what to summarize) belongs to the calling agent.
 
 **Another divergence:** Consolidation happens during sleep — a quiet period. Ghost's reflect runs on-demand, regardless of agent activity. There's no concept of "idle-time processing."
 
@@ -195,7 +201,7 @@ ReMe's utility-based evaluation inspired ghost's `utility_count` / `access_count
 | Atkinson-Shiffrin | 5 tiers: sensory → stm → ltm → identity → dormant | Added identity tier (no cognitive analog); sensory tier added for raw observations |
 | Ebbinghaus decay | Exponential recency scoring, importance decay with minimum floor | Fixed decay rate — doesn't lengthen intervals after rehearsal |
 | Spaced repetition | Access-count-based promotion to LTM | Reactive only — no proactive review scheduling |
-| Consolidation | Reflect system with rule-based tier transitions; `consolidate` command for hierarchical summaries | No automatic content transformation — summary text provided by caller |
+| Consolidation | Reflect links similar memories (non-destructive); `consolidate` creates hierarchical summaries | No automatic content transformation — summary text provided by caller (LCM-like lossless compaction) |
 | Levels of processing | Explicit importance at write time | Caller-declared, not encoding-depth-inferred |
 | Spreading activation | Edge expansion in Phase 3, Hebbian co-retrieval strengthening | Single-hop only, no persistent activation state |
 | Park et al. | 4-factor retrieval scoring | Higher relevance weight, added access frequency |
