@@ -2,8 +2,6 @@
 
 Persistent memory for AI agents. Text in, text out. SQLite-backed, single binary, no server.
 
-Part of the [Ghost in the Shell](https://github.com/rcliao?tab=repositories&q=shell-) ecosystem.
-
 ## Install
 
 ```bash
@@ -14,127 +12,146 @@ go install github.com/rcliao/ghost/cmd/ghost@latest
 
 ```bash
 # Store a memory
-ghost put -n "identity" -k "name" "Atlas — a helpful AI assistant"
+ghost put -n agent:mybot -k "auth-design" "JWT with RSA256, 24h token expiry"
 
-# Store with priority
-ghost put -n "user:alice" -k "allergies" -p critical "Allergic to peanuts"
+# Store with importance and tags
+ghost put -n agent:mybot -k "deploy-gotcha" --importance 0.8 \
+  --tags "learning,project:api" "Redis cache needs manual flush after deploy"
 
 # Store with TTL (auto-expires)
-ghost put -n "myapp:session" -k "token" --ttl 24h "abc123"
+ghost put -n agent:mybot -k "session-token" --ttl 24h "abc123"
 
 # Pipe content from stdin
-cat session-notes.md | ghost put -n "myapp:logs" -k "session-2026-02-16" --kind episodic
+cat session-notes.md | ghost put -n agent:mybot -k "session-2026-03-13" --kind episodic
 
-# Retrieve latest version
-ghost get -n "identity" -k "name"
+# Retrieve
+ghost get -n agent:mybot -k "auth-design"
 
-# Get all versions
-ghost get -n "identity" -k "name" --history
+# Search
+ghost search "JWT authentication" -n agent:mybot
 
-# Get specific version
-ghost get -n "identity" -k "name" -v 1
+# Assemble context within a token budget
+ghost context "how does auth work" -n agent:mybot --budget 2000
 
-# List all memories in a namespace
-ghost list -n "identity"
-
-# List with filters
-ghost list -n "myapp:logs" --kind episodic --tags "deploy,infra"
-
-# List keys only
-ghost list -n "myapp:logs" --keys-only
-
-# Search memories
-ghost search -n "identity" "atlas"
-ghost search "deploy"
-
-# Database stats
-ghost stats
-
-# Export memories
-ghost export -n "identity" > backup.json
-
-# Import memories
-ghost import < backup.json
-
-# Soft-delete (recoverable)
-ghost rm -n "lore" -k "old-thing"
-
-# Hard-delete all versions (permanent)
-ghost rm -n "lore" -k "old-thing" --all-versions --hard
+# Run lifecycle maintenance (promote, decay, link similar, prune)
+ghost reflect --dry-run
+ghost reflect
 ```
+
+## Key Features
+
+- **Three-phase context assembly**: pinned memories + search + edge expansion (spreading activation)
+- **DAG-based retrieval**: weighted edges between memories, auto-linked on put via embedding similarity
+- **Cognitive memory model**: Tulving's taxonomy (semantic/episodic/procedural) with kind-specific scoring
+- **Lifecycle management**: sensory → stm → ltm → dormant tiers with rule-based reflect system
+- **Hierarchical summaries**: `ghost consolidate` creates summary parents that suppress children in context
+- **Vector embeddings**: all-MiniLM-L6-v2 (pure Go, no CGo) fused with FTS5 via Reciprocal Rank Fusion
+- **MCP server**: `ghost mcp-serve` exposes 6 tools for Claude Code and other MCP clients
 
 ## Namespace Conventions
 
-Namespaces use `:` as separator. Ghost recommends these conventions:
+Namespaces represent agent identity. Each namespace is one agent's isolated memory space.
 
 | Namespace | Purpose |
 |-----------|---------|
-| `identity` | Core agent identity — name, personality, appearance |
-| `lore` | Background knowledge, relationships, trivia |
-| `user:<name>` | Per-user preferences and context |
-| `<app>:<scope>` | App-specific data (e.g. `shell:chat:123`, `coder:learnings`) |
+| `agent:<name>` | Per-agent memory space (e.g. `agent:claude-code`, `agent:mybot`) |
 
-Well-known namespaces (`identity`, `lore`, `user:*`) are app-agnostic and shared across all apps using the same ghost DB. App-scoped namespaces are isolated by prefix. See [Architecture](docs/ARCHITECTURE.md) for details.
+Tags provide categorization within a namespace: `identity`, `lore`, `project:<name>`, `chat:<id>`, `learning`, `convention`, `user:<name>`.
 
 ## Commands
 
-| Command  | Description |
-|----------|-------------|
-| `put`    | Store a memory (positional arg or stdin) |
-| `get`    | Retrieve a memory by namespace and key |
-| `list`   | List memories with filters |
-| `search` | Search memory content by keyword/substring |
-| `rm`     | Soft-delete or hard-delete a memory |
-| `stats`  | Show database statistics |
-| `export` | Export memories as JSON |
-| `import` | Import memories from JSON (stdin) |
+| Command | Description |
+|---------|-------------|
+| `put` | Store or update a memory (auto-links similar via edges) |
+| `get` | Retrieve by namespace + key |
+| `list` | List memories (filterable by ns, kind, tags) |
+| `search` | Full-text + semantic search |
+| `context` | Assemble relevant memories within token budget |
+| `edge` | Create, remove, or list weighted edges between memories |
+| `consolidate` | Create a summary memory with `contains` edges to sources |
+| `clusters` | Discover groups of similar memories for consolidation |
+| `reflect` | Run lifecycle rules (promote, decay, link similar, prune) |
+| `curate` | Single-memory lifecycle actions (promote, demote, boost, pin, etc.) |
+| `peek` | Lightweight index of memory state |
+| `history` | Full version history of a key |
+| `link` | Create/remove relationships (legacy, use `edge` instead) |
+| `files` | Manage file references |
+| `tags` | List, rename, or remove tags |
+| `ns` | Namespace operations (list, rm) |
+| `gc` | Garbage collect expired/stale memories |
+| `stats` | Database statistics |
+| `export` / `import` | JSON export/import |
+| `ingest` | Parse markdown files into memories |
+| `mcp-serve` | Start MCP server on stdio |
+
+## Edge System (DAG-Based Retrieval)
+
+Memories are connected by weighted, typed edges for associative retrieval:
+
+| Edge Type | Default Weight | Behavior |
+|-----------|---------------|----------|
+| `relates_to` | 0.5 | General association |
+| `contradicts` | 0.9 | Force-included in context (80% of seed score) |
+| `depends_on` | 0.7 | Pull in dependency |
+| `refines` | 0.8 | Newer version of another memory |
+| `contains` | 0.6 | Parent summary → child detail (children suppressed) |
+| `merged_into` | 0.0 | Audit trail only |
+
+Edges are auto-created on `put` when embedding similarity exceeds threshold (default 0.80, configurable via `GHOST_EDGE_THRESHOLD`). Edges strengthen through co-retrieval (Hebbian learning) and decay when unused.
+
+```bash
+# Manual edge creation
+ghost edge -n agent:mybot --from-key auth-jwt --to-key auth-overview -r depends_on
+
+# List edges for a memory
+ghost edge -n agent:mybot --from-key auth-jwt --list
+
+# Discover similar memory clusters
+ghost clusters -n agent:mybot
+
+# Consolidate a cluster into a summary
+ghost consolidate -n agent:mybot --summary-key auth-overview \
+  --keys "auth-jwt,auth-expiry,auth-cookies" \
+  --content "Auth: JWT+RSA256, 24h expiry, refresh via httpOnly cookies"
+```
+
+## MCP Server (Claude Code Integration)
+
+```bash
+# Add as user-scoped MCP server
+claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
+```
+
+Exposes 6 tools: `ghost_put`, `ghost_search`, `ghost_context`, `ghost_edge`, `ghost_curate`, `ghost_reflect`.
+
+See [LLM Integration Guide](docs/llm-integration.md) for full setup including hooks and CLAUDE.md instructions.
 
 ## Storage
 
 Database location (in order of precedence):
 1. `--db` flag
-2. `$GHOST_DB` environment variable (also supports legacy `$AGENT_MEMORY_DB`)
+2. `$GHOST_DB` environment variable
 3. `~/.ghost/memory.db`
 
-## Output
+Pure Go SQLite (`modernc.org/sqlite`), WAL mode, no CGo.
 
-All output is JSON by default. Pipe to `jq` for pretty-printing:
+## Documentation
 
-```bash
-ghost list -n "project:myapp" | jq .
-```
-
-## Versioning
-
-Storing to an existing key creates a new version. Old versions are preserved:
-
-```bash
-ghost put -n "ns" -k "config" "version 1"
-ghost put -n "ns" -k "config" "version 2"
-ghost get -n "ns" -k "config"           # returns v2
-ghost get -n "ns" -k "config" --history  # returns [v2, v1]
-```
-
-## TTL / Expiry
-
-Memories can have a time-to-live. Expired memories are automatically filtered from `list`, `get`, and `search` results:
-
-```bash
-ghost put -n "session" -k "cache" --ttl 7d "temporary data"
-ghost put -n "session" -k "token" --ttl 24h "short-lived"
-```
-
-Supported formats: `7d` (days), `24h` (hours), `30m` (minutes), `60s` (seconds).
-
-## Chunking
-
-Long content is automatically split into chunks for search indexing. Chunks are internal — you always get back full memory content. Search queries match across chunks too.
+| Doc | Content |
+|-----|---------|
+| [Architecture](docs/ARCHITECTURE.md) | System design, data model, retrieval pipeline |
+| [LLM Integration](docs/llm-integration.md) | Claude Code setup, hooks, CLAUDE.md patterns |
+| [Cognitive Inspirations](docs/cognitive-inspirations.md) | Science behind the design |
+| [Eval Framework](docs/eval.md) | Retrieval benchmarks |
+| [Conventions](CONVENTIONS.md) | Contribution rules |
 
 ## Dependencies
 
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — Pure Go SQLite (no CGo)
 - [github.com/oklog/ulid/v2](https://github.com/oklog/ulid) — ULID generation
 - [github.com/spf13/cobra](https://github.com/spf13/cobra) — CLI framework
+- [github.com/modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) — MCP server protocol
+- [github.com/knights-analytics/hugot](https://github.com/knights-analytics/hugot) — Local sentence embeddings (all-MiniLM-L6-v2)
 
 ## License
 
