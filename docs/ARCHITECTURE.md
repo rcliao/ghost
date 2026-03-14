@@ -185,7 +185,7 @@ Three-phase greedy packing within a token budget:
 
 1. **Phase 1 (Pinned)**: Load all `pinned = true` memories, ordered by importance. Fills up to `budget/3`.
 2. **Phase 2 (Search)**: Query-relevant memories scored by composite metric, filterable by tags.
-3. **Phase 3 (Edge Expansion)**: Implements spreading activation (Collins & Loftus, 1975). For each seed from Phase 2, follow top-K outgoing edges (sorted by weight). Neighbors enter the candidate pool with propagated scores: `propagated = seed_score × edge_weight × damping`. Memories that appear as both direct hits and edge neighbors get additive boost (capped at `MaxBoostFactor × direct_score`). **`contradicts` edges** bypass the normal cap — contradicting memories get a minimum score of 80% of the seed's score, ensuring conflicts are always surfaced. **Containment suppression**: before packing, children of `contains` parents in the candidate pool are suppressed to avoid redundancy. Final pool is re-sorted and greedy-packed into remaining budget.
+3. **Phase 3 (Edge Expansion)**: Implements spreading activation (Collins & Loftus, 1975). For each seed from Phase 2, follow top-K outgoing edges (sorted by weight). Neighbors enter the candidate pool with propagated scores: `propagated = seed_score × edge_weight × damping`. Memories that appear as both direct hits and edge neighbors get additive boost (capped at `MaxBoostFactor × direct_score`). **`contradicts` edges** bypass the normal cap — contradicting memories get a minimum score of 80% of the seed's score, ensuring conflicts are always surfaced. **Parent boosting**: when a seed is a child of a `contains` parent, the parent is pulled into the candidate pool with at least the child's score — ensuring summaries appear even when the query matches children but not the summary. **Containment suppression**: before packing, children of `contains` parents in the candidate pool are suppressed to avoid redundancy. Final pool is re-sorted and greedy-packed into remaining budget.
 
 **Edge expansion defaults** (`EdgeExpansionConfig`):
 
@@ -236,9 +236,23 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 
 Rules are evaluated in two passes:
 1. **Per-memory pass** — evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones.
-2. **Similarity pass** — rules with `cond_similarity_gt` run pairwise embedding comparison. Default strategy is `link_only` (non-destructive): creates `relates_to` edges between similar memories without deleting any content. The agent can then use `ghost consolidate` to create a summary when ready. Legacy `keep_highest_importance` strategy (destructive merge) is still available for custom rules.
+2. **Similarity pass** — rules with `cond_similarity_gt` run pairwise embedding comparison. Default strategy is `link_only` (non-destructive): creates `relates_to` edges between similar memories without deleting any content. The reflect response includes `linked_clusters` showing which groups were linked. The agent can then use `ghost clusters` to discover all clusters and `ghost consolidate` to create summaries when ready. Legacy `keep_highest_importance` strategy (destructive merge) is still available for custom rules.
 
 Custom rules can be added via `ghost rule set`.
+
+### Consolidation Workflow (LCM-like Lossless Compaction)
+
+When similar memories accumulate, the agent-driven consolidation flow is:
+
+```
+1. ghost reflect          → links similar memories, returns linked_clusters
+2. ghost clusters -n ...  → shows all connected groups of similar memories
+3. agent reviews clusters → decides which to consolidate, writes summary text
+4. ghost consolidate      → creates summary parent with contains edges
+5. ghost context          → returns summary, suppresses children (parent boosting)
+```
+
+All original memories are preserved — summaries are derived views. This follows the LCM (Lossless Context Management) pattern: compaction creates materialized summaries while originals remain searchable.
 
 ### Edge Lifecycle
 
@@ -299,6 +313,7 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | `history` | Full version history of a key |
 | `edge` | Create, remove, or list weighted edges between memories |
 | `consolidate` | Create a summary memory with `contains` edges to source memories |
+| `clusters` | Discover groups of similar memories connected by edges |
 | `link` | Create/remove semantic relationships (legacy) |
 | `files` | Manage file references |
 | `tags` | List, rename, or remove tags |

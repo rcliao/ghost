@@ -5,7 +5,7 @@ Persistent memory system for AI agents. Single binary, SQLite-backed, zero serve
 ## Architecture
 
 - `cmd/ghost/main.go` — Entrypoint, delegates to `cli.RootCmd`
-- `internal/cli/` — Cobra commands (put, get, list, search, context, rm, gc, export/import, etc.)
+- `internal/cli/` — Cobra commands (put, get, list, search, context, edge, clusters, consolidate, rm, gc, export/import, etc.)
 - `internal/store/` — `Store` interface + `SQLiteStore` implementation (SQLite with FTS5)
 - `internal/model/` — Data types: `Memory`, `Chunk`, `FileRef`
 - `internal/chunker/` — Text chunking for search indexing (400 char target)
@@ -32,7 +32,10 @@ make install   # Install to $GOPATH/bin
 - Context assembly: Phase 1 pinned, Phase 2 search, Phase 3 edge expansion (spreading activation)
 - Edges: weighted directed associations (`memory_edges` table) with auto-linking on put, co-retrieval strengthening, and decay in reflect
 - Edge types: `relates_to`, `contradicts` (force-include), `depends_on`, `refines`, `contains` (suppresses children), `merged_into`
-- `ghost consolidate` creates summary memories with `contains` edges for hierarchical compression
+- `ghost consolidate` creates summary memories with `contains` edges for hierarchical compression (LCM-like lossless compaction)
+- `ghost clusters` discovers groups of similar memories connected by `relates_to` edges for consolidation review
+- Reflect uses non-destructive `link_only` strategy by default: similar memories get edges instead of being merged (preserves content)
+- Parent boosting: when a child is a search seed, its `contains` parent is pulled into context and children are suppressed
 - Soft-delete (recoverable) vs hard-delete (permanent)
 - TTL/expiration support with auto-GC on startup
 - DB path: `--db` flag → `$GHOST_DB` env → `~/.ghost/memory.db`

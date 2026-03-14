@@ -308,31 +308,35 @@ Option 2 is cleaner — edges always point to current versions.
 
 ---
 
-## Implementation Plan
+## Implementation Plan (all phases complete)
 
-### Phase 1: Edge Storage + Creation
-- New `memory_edges` table (schema above)
-- Migrate from `memory_links`
-- `ghost edge` CLI command
-- `ghost_edge` MCP tool
-- `put` returns `related_memories` when embeddings are available
+### Phase 1: Edge Storage + Creation ✓
+- New `memory_edges` table with weight, access_count, last_accessed_at
+- Migrate from `memory_links` (on startup, idempotent)
+- `ghost edge` CLI command (create, delete, list)
+- `ghost_edge` MCP tool (create, remove, list)
+- Auto-linking on `put` via embedding similarity (threshold 0.80, configurable)
 - Re-link edges on memory version update
 
-### Phase 2: Edge-Aware Context Assembly
-- Phase 3 (edge expansion) in `context.go`
-- Unified scoring with additive boost
-- Practical bounds (damping, max edges per seed, expansion cap)
-- Co-retrieval strengthening (update edge weight + access count)
+### Phase 2: Edge-Aware Context Assembly ✓
+- Phase 3 (edge expansion) in `context.go` — spreading activation
+- Unified scoring with additive boost, capped by MaxBoostFactor
+- Practical bounds (damping=0.3, max 5 edges/seed, 50 expansion cap)
+- Co-retrieval strengthening: `weight += 0.05 × (1 - weight)` (Hebbian, diminishing returns)
+- `contradicts` force-include (80% of seed score minimum)
 
-### Phase 3: Edge Lifecycle
-- Edge decay in reflect system
-- Edge-specific reflect rules
-- Edge pruning (weak edges auto-deleted)
+### Phase 3: Edge Lifecycle ✓
+- Edge decay in reflect: unused 30+ days with <3 accesses → weight × 0.9
+- Edge pruning: weight < 0.05 → deleted
+- Non-destructive similarity linking: `sys-merge-similar` uses `link_only` strategy by default (creates edges instead of destructive merge)
 
-### Phase 4: Hierarchical Summaries (future)
-- `ghost consolidate` command creates summary memory + `contains` edges
-- Context assembly learns to prefer summaries and suppress contained children
-- This is an application of the edge system, not a structural change
+### Phase 4: Hierarchical Summaries ✓
+- `ghost consolidate` CLI creates summary memory + `contains` edges
+- Parent boosting: child seeds pull their `contains` parent into context
+- Containment suppression: children suppressed when parent summary is present
+- `ghost clusters` discovers connected components for consolidation review
+- Reflect returns `linked_clusters` for immediate agent action
+- LCM-like lossless compaction: originals preserved, summaries are derived views
 
 ---
 

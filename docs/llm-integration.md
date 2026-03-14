@@ -100,19 +100,29 @@ Edges are auto-created on put when embedding similarity is high, but manual edge
 for contradicts/depends_on/refines capture relationships embeddings can't.
 
 ### When to consolidate
-When many memories exist about the same topic, create a summary:
-  ghost consolidate -n agent:claude-code --summary-key auth-overview \
-    --keys "auth-jwt,auth-expiry,auth-cookies" \
-    --content "Auth overview: JWT+RSA256, 24h expiry, refresh via cookies"
+When many memories exist about the same topic, use the full consolidation workflow:
+
+1. Run ghost_reflect — it links similar memories and returns linked_clusters
+2. Check ghost clusters to see all groups:
+   ghost_edge(ns="agent:claude-code", from_key="some-key", op="list")
+   or via CLI: ghost clusters -n agent:claude-code
+3. Review the cluster and write a summary, then consolidate:
+   ghost consolidate -n agent:claude-code --summary-key auth-overview \
+     --keys "auth-jwt,auth-expiry,auth-cookies" \
+     --content "Auth overview: JWT+RSA256, 24h expiry, refresh via cookies"
 
 This creates a summary memory with `contains` edges to each source memory.
-In context assembly, when the summary is present, its children are automatically
-suppressed — reducing redundancy and saving token budget.
+In context assembly, the summary is preferred over its children via parent
+boosting (summaries appear even when children match the query), and children
+are automatically suppressed — reducing redundancy and saving token budget.
+All original memories are preserved (lossless, LCM-like compaction).
 
 ### When to reflect (ghost_reflect)
 Run ghost_reflect when ghost_context returns compaction_suggested: true,
 or after a long session with many stored learnings.
-Reflect also decays unused edges and prunes very weak ones.
+Reflect links similar memories (non-destructive), decays unused edges,
+and prunes very weak ones. Check linked_clusters in the response to see
+which memory groups could benefit from consolidation.
 ```
 
 **Why the strong language matters:** LLM agents respond to directive framing. "MUST" and "Do NOT" create behavioral anchors that generic suggestions don't. The `ghost_context` call before work is the single highest-value habit — it prevents the agent from re-discovering things it already learned in prior sessions.
