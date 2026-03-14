@@ -176,7 +176,7 @@ claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
 
 Exposes 6 tools: `ghost_put`, `ghost_search`, `ghost_context`, `ghost_edge`, `ghost_curate`, `ghost_reflect`.
 
-See [LLM Integration Guide](docs/llm-integration.md) for full setup including hooks and CLAUDE.md instructions.
+See [Claude Code Setup](docs/quickstart-claude-code.md) for full setup including hooks and CLAUDE.md instructions.
 
 ## Storage
 
@@ -191,11 +191,13 @@ Pure Go SQLite (`modernc.org/sqlite`), WAL mode, no CGo.
 
 | Doc | Content |
 |-----|---------|
+| [Claude Code Setup](docs/quickstart-claude-code.md) | MCP server, hooks, CLAUDE.md instructions, `/ghost-learn` skill |
+| [Integration Guide](docs/integration-guide.md) | Go library, CLI, Python — for custom agents and bots |
 | [Architecture](docs/ARCHITECTURE.md) | System design, data model, retrieval pipeline |
-| [LLM Integration](docs/llm-integration.md) | Claude Code setup, hooks, CLAUDE.md patterns |
 | [Cognitive Inspirations](docs/cognitive-inspirations.md) | Science behind the design |
 | [Eval Framework](docs/eval.md) | Retrieval benchmarks |
 | [Conventions](CONVENTIONS.md) | Contribution rules |
+| [Research](docs/research/) | LCM comparison, memory edges design |
 
 ## Dependencies
 

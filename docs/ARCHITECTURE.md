@@ -274,7 +274,7 @@ Exposes 6 tools over stdio transport using `github.com/modelcontextprotocol/go-s
 - `ghost_edge` — Create, remove, or list weighted edges between memories for DAG-based retrieval
 - `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar, edge decay)
 
-Started via `ghost mcp-serve` subcommand. See [LLM Integration Guide](llm-integration.md) for setup and usage patterns.
+Started via `ghost mcp-serve` subcommand. See [Claude Code Setup](quickstart-claude-code.md) or [Integration Guide](integration-guide.md) for usage patterns.
 
 ### Automated Memory via Hooks
 
@@ -283,7 +283,7 @@ Claude Code hooks can automate memory capture without relying on the agent remem
 - **PreCompact hook (async)** — fires before context compression on long sessions. Reads the last ~100 transcript lines, extracts learnings, stores them via `ghost` CLI. Zero latency cost.
 - **Stop hook (async)** — fires after each agent turn. Same pattern but reads more transcript (last ~200 lines) as the final chance to capture learnings. Zero latency cost.
 
-See the [Automated Memory via Claude Code Hooks](llm-integration.md#automated-memory-via-claude-code-hooks) section in the LLM Integration Guide.
+See the [hooks section](quickstart-claude-code.md#2-add-hooks) in the Claude Code Setup guide.
 
 ## Library API
 
