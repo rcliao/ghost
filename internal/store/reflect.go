@@ -63,9 +63,10 @@ type ReflectResult struct {
 	Archived          int      `json:"archived"`
 	Deleted           int      `json:"deleted"`
 	Merged            int      `json:"merged"`
-	Linked            int      `json:"linked,omitempty"`
-	EdgesDecayed      int      `json:"edges_decayed,omitempty"`
-	EdgesPruned       int      `json:"edges_pruned,omitempty"`
+	Linked            int              `json:"linked,omitempty"`
+	LinkedClusters    []MemoryCluster  `json:"linked_clusters,omitempty"`
+	EdgesDecayed      int              `json:"edges_decayed,omitempty"`
+	EdgesPruned       int              `json:"edges_pruned,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
 }
 
@@ -332,6 +333,7 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 		} else {
 			result.Merged += smResult.absorbed
 			result.Linked += smResult.linked
+			result.LinkedClusters = append(result.LinkedClusters, smResult.clusters...)
 			if smResult.absorbed > 0 || smResult.linked > 0 {
 				result.RulesApplied++
 			}
@@ -475,6 +477,7 @@ type similarityMergeResult struct {
 	absorbed    int
 	linked      int
 	absorbedIDs []string
+	clusters    []MemoryCluster
 }
 
 // applySimilarityMerge runs the similarity-based merge for a single rule.
@@ -606,8 +609,16 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 	totalAbsorbed := 0
 	totalLinked := 0
 	var allAbsorbedIDs []string
+	var linkedClusters []MemoryCluster
 	for _, cluster := range clusters {
 		if strategy == "link_only" {
+			// Collect cluster keys for the response
+			var keys []string
+			for _, m := range cluster {
+				keys = append(keys, m.Key)
+			}
+			linkedClusters = append(linkedClusters, MemoryCluster{Keys: keys, Count: len(keys)})
+
 			if dryRun {
 				// Count edges that would be created (n*(n-1)/2 pairs)
 				n := len(cluster)
@@ -642,7 +653,7 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 		}
 	}
 
-	return &similarityMergeResult{absorbed: totalAbsorbed, linked: totalLinked, absorbedIDs: allAbsorbedIDs}, nil
+	return &similarityMergeResult{absorbed: totalAbsorbed, linked: totalLinked, absorbedIDs: allAbsorbedIDs, clusters: linkedClusters}, nil
 }
 
 // applyLinkSimilar creates relates_to edges between all memories in a cluster.

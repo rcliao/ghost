@@ -323,6 +323,27 @@ func (s *SQLiteStore) autoLinkEdges(ctx context.Context, memoryID, ns string, me
 	return edges, nil
 }
 
+// getContainsParents returns the IDs of memories that are parents of the given
+// child via 'contains' edges (incoming). Used for parent boosting in context assembly.
+func (s *SQLiteStore) getContainsParents(ctx context.Context, childID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT from_id FROM memory_edges WHERE to_id = ? AND rel = 'contains'`, childID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // getContainsChildren returns the IDs of memories that are children of the given
 // parent via 'contains' edges. Used for suppression in context assembly.
 func (s *SQLiteStore) getContainsChildren(ctx context.Context, parentID string) ([]string, error) {
@@ -397,6 +418,99 @@ func (s *SQLiteStore) strengthenCoRetrievedEdges(ctx context.Context, memoryIDs 
 				now, memoryIDs[i], memoryIDs[j], memoryIDs[j], memoryIDs[i])
 		}
 	}
+}
+
+// MemoryCluster represents a group of similar memories connected by edges.
+type MemoryCluster struct {
+	Keys  []string `json:"keys"`
+	Count int      `json:"count"`
+}
+
+// GetSimilarClusters finds groups of memories connected by relates_to edges
+// within a namespace. Returns clusters of 2+ memories for consolidation review.
+func (s *SQLiteStore) GetSimilarClusters(ctx context.Context, ns string) ([]MemoryCluster, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Find all relates_to edges between active memories in the namespace
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT e.from_id, e.to_id
+		 FROM memory_edges e
+		 JOIN memories mf ON e.from_id = mf.id AND mf.deleted_at IS NULL AND (mf.expires_at IS NULL OR mf.expires_at > ?)
+		 JOIN memories mt ON e.to_id = mt.id AND mt.deleted_at IS NULL AND (mt.expires_at IS NULL OR mt.expires_at > ?)
+		 WHERE e.rel = 'relates_to' AND mf.ns = ? AND mt.ns = ?`,
+		now, now, ns, ns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Build adjacency list
+	adj := map[string]map[string]bool{}
+	allIDs := map[string]bool{}
+	for rows.Next() {
+		var fromID, toID string
+		if err := rows.Scan(&fromID, &toID); err != nil {
+			continue
+		}
+		if adj[fromID] == nil {
+			adj[fromID] = map[string]bool{}
+		}
+		if adj[toID] == nil {
+			adj[toID] = map[string]bool{}
+		}
+		adj[fromID][toID] = true
+		adj[toID][fromID] = true
+		allIDs[fromID] = true
+		allIDs[toID] = true
+	}
+
+	if len(allIDs) == 0 {
+		return nil, nil
+	}
+
+	// Find connected components via BFS
+	visited := map[string]bool{}
+	var clusters []MemoryCluster
+
+	for id := range allIDs {
+		if visited[id] {
+			continue
+		}
+		// BFS from this node
+		queue := []string{id}
+		visited[id] = true
+		var component []string
+
+		for len(queue) > 0 {
+			curr := queue[0]
+			queue = queue[1:]
+			component = append(component, curr)
+			for neighbor := range adj[curr] {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+
+		if len(component) >= 2 {
+			// Resolve IDs to ns:key
+			var keys []string
+			for _, cid := range component {
+				var key string
+				s.db.QueryRowContext(ctx,
+					`SELECT key FROM memories WHERE id = ? AND deleted_at IS NULL`, cid).Scan(&key)
+				if key != "" {
+					keys = append(keys, key)
+				}
+			}
+			if len(keys) >= 2 {
+				clusters = append(clusters, MemoryCluster{Keys: keys, Count: len(keys)})
+			}
+		}
+	}
+
+	return clusters, nil
 }
 
 // loadMemoryByID loads a single non-deleted memory by its ID.

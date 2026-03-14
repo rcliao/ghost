@@ -71,6 +71,7 @@ type Store interface {
 	DeleteEdge(ctx context.Context, p EdgeParams) error
 	GetEdges(ctx context.Context, memoryID string) ([]Edge, error)
 	GetEdgesByNSKey(ctx context.Context, ns, key string) ([]Edge, error)
+	GetSimilarClusters(ctx context.Context, ns string) ([]MemoryCluster, error)
 	Reflect(ctx context.Context, p ReflectParams) (*ReflectResult, error)
 	RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRule, error)
 	RuleGet(ctx context.Context, id string) (*ReflectRule, error)
@@ -114,6 +115,9 @@ type EdgeParams = store.EdgeParams
 
 // EdgeExpansionConfig controls edge expansion in context assembly.
 type EdgeExpansionConfig = store.EdgeExpansionConfig
+
+// MemoryCluster represents a group of similar memories connected by edges.
+type MemoryCluster = store.MemoryCluster
 
 // NewSQLiteStore opens or creates a SQLite-backed memory store at the given path.
 func NewSQLiteStore(dbPath string) (Store, error) {

@@ -362,6 +362,35 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 			}
 		}
 	}
+
+	// Parent boosting: if a seed is a child of a contains parent,
+	// pull the parent into the pool. This ensures summaries appear
+	// when their children match the query (even if the summary itself doesn't).
+	for _, seed := range seeds {
+		parents, err := s.getContainsParents(ctx, seed.id)
+		if err != nil || len(parents) == 0 {
+			continue
+		}
+		for _, parentID := range parents {
+			if seen[parentID] {
+				continue
+			}
+			if _, ok := scoreMap[parentID]; ok {
+				continue // already in pool
+			}
+			m, err := s.loadMemoryByID(ctx, parentID)
+			if err != nil {
+				continue
+			}
+			// Parent gets at least the child's score since it summarizes the child
+			parentScore := seed.score
+			if parentScore < 0.3 {
+				parentScore = 0.3
+			}
+			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore}
+			originalScores[parentID] = 0
+		}
+	}
 }
 
 // computeContextScore calculates the composite context score for a memory.

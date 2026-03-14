@@ -1246,6 +1246,10 @@ func (m *MockStore) GetEdgesByNSKey(_ context.Context, ns, key string) ([]Edge, 
 	return nil, nil
 }
 
+func (m *MockStore) GetSimilarClusters(_ context.Context, ns string) ([]MemoryCluster, error) {
+	return nil, nil
+}
+
 // hasAllTags returns true if memTags contains all of the required tags.
 func hasAllTags(memTags, required []string) bool {
 	set := map[string]bool{}
