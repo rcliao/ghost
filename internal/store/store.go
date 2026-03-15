@@ -88,6 +88,58 @@ type MemoryStub struct {
 	Summary    string  `json:"summary"`
 }
 
+// ExpandParams holds parameters for expanding a consolidation node.
+type ExpandParams struct {
+	NS  string
+	Key string // if empty, list all consolidation nodes in namespace
+}
+
+// ExpandResult contains expandable nodes or a single node's children.
+type ExpandResult struct {
+	// When Key is provided: the parent node
+	Parent *MemoryStub `json:"parent,omitempty"`
+	// When Key is provided: children of the consolidation node
+	Children []ExpandChild `json:"children,omitempty"`
+	// When Key is empty: all consolidation nodes in namespace
+	Nodes []ConsolidationNode `json:"nodes,omitempty"`
+}
+
+// ExpandChild is a memory returned from expanding a consolidation node.
+type ExpandChild struct {
+	Key        string  `json:"key"`
+	Kind       string  `json:"kind"`
+	Importance float64 `json:"importance"`
+	EstTokens  int     `json:"est_tokens"`
+	Content    string  `json:"content"`
+}
+
+// ConsolidationNode is a summary memory that contains other memories.
+type ConsolidationNode struct {
+	Key        string  `json:"key"`
+	Kind       string  `json:"kind"`
+	Importance float64 `json:"importance"`
+	EstTokens  int     `json:"est_tokens"`
+	Summary    string  `json:"summary"`   // truncated content
+	Children   int     `json:"children"`  // number of contained memories
+}
+
+// ConsolidateParams holds parameters for creating a consolidation.
+type ConsolidateParams struct {
+	NS         string
+	SummaryKey string
+	Content    string
+	SourceKeys []string
+	Kind       string  // default "semantic"
+	Importance float64 // default 0.7
+	Tags       []string
+}
+
+// ConsolidateResult wraps the result of a consolidate operation.
+type ConsolidateResult struct {
+	Summary *model.Memory `json:"summary"`
+	Edges   []Edge        `json:"edges"`
+}
+
 // Store defines the memory storage interface.
 type Store interface {
 	// Put stores or updates a memory. Returns the created memory.
@@ -184,6 +236,13 @@ type Store interface {
 
 	// Peek returns a lightweight index of memory state for lazy discovery.
 	Peek(ctx context.Context, ns string) (*PeekResult, error)
+
+	// Expand returns the children of a consolidation node (by key), or lists
+	// all consolidation nodes in a namespace (when key is empty).
+	Expand(ctx context.Context, p ExpandParams) (*ExpandResult, error)
+
+	// Consolidate creates a summary memory and contains edges to source memories.
+	Consolidate(ctx context.Context, p ConsolidateParams) (*ConsolidateResult, error)
 
 	// Curate applies a lifecycle action to a single memory identified by ns+key.
 	// Supported ops: promote, demote, boost, diminish, archive, delete.

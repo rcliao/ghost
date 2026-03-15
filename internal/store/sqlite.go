@@ -1385,6 +1385,135 @@ func scanMemory(row scanner) (model.Memory, error) {
 	return m, nil
 }
 
+// Expand returns the children of a consolidation node (by key), or lists
+// all consolidation nodes in a namespace (when key is empty).
+func (s *SQLiteStore) Expand(ctx context.Context, p ExpandParams) (*ExpandResult, error) {
+	result := &ExpandResult{}
+
+	if p.Key == "" {
+		// List all consolidation nodes in namespace
+		now := time.Now().UTC().Format(time.RFC3339)
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT m.key, m.kind, m.importance, m.est_tokens, m.content, COUNT(e.to_id) AS child_count
+			 FROM memories m
+			 INNER JOIN memory_edges e ON e.from_id = m.id AND e.rel = 'contains'
+			 WHERE m.ns = ? AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+			 GROUP BY m.id
+			 ORDER BY m.created_at DESC`, p.NS, now)
+		if err != nil {
+			return nil, fmt.Errorf("expand list: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var node ConsolidationNode
+			var content string
+			if err := rows.Scan(&node.Key, &node.Kind, &node.Importance, &node.EstTokens, &content, &node.Children); err != nil {
+				return nil, err
+			}
+			node.Summary = truncate(content, 200)
+			result.Nodes = append(result.Nodes, node)
+		}
+		return result, nil
+	}
+
+	// Expand a specific consolidation node
+	parentID, err := s.resolveMemoryID(ctx, p.NS, p.Key)
+	if err != nil {
+		return nil, fmt.Errorf("expand resolve parent: %w", err)
+	}
+
+	parentMem, err := s.loadMemoryByID(ctx, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("expand load parent: %w", err)
+	}
+	result.Parent = &MemoryStub{
+		ID:         parentMem.ID,
+		Key:        parentMem.Key,
+		Kind:       parentMem.Kind,
+		Tier:       parentMem.Tier,
+		Importance: parentMem.Importance,
+		EstTokens:  parentMem.EstTokens,
+		Summary:    truncate(parentMem.Content, 200),
+	}
+
+	childIDs, err := s.getContainsChildren(ctx, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("expand get children: %w", err)
+	}
+
+	for _, childID := range childIDs {
+		child, err := s.loadMemoryByID(ctx, childID)
+		if err != nil {
+			continue
+		}
+		result.Children = append(result.Children, ExpandChild{
+			Key:        child.Key,
+			Kind:       child.Kind,
+			Importance: child.Importance,
+			EstTokens:  child.EstTokens,
+			Content:    child.Content,
+		})
+	}
+
+	return result, nil
+}
+
+// Consolidate creates a summary memory and contains edges to source memories.
+func (s *SQLiteStore) Consolidate(ctx context.Context, p ConsolidateParams) (*ConsolidateResult, error) {
+	if len(p.SourceKeys) < 2 {
+		return nil, fmt.Errorf("consolidate requires at least 2 source keys, got %d", len(p.SourceKeys))
+	}
+
+	// Verify all source memories exist
+	for _, key := range p.SourceKeys {
+		_, err := s.Get(ctx, GetParams{NS: p.NS, Key: key})
+		if err != nil {
+			return nil, fmt.Errorf("source memory not found: %s/%s: %w", p.NS, key, err)
+		}
+	}
+
+	kind := p.Kind
+	if kind == "" {
+		kind = "semantic"
+	}
+	importance := p.Importance
+	if importance == 0 {
+		importance = 0.7
+	}
+
+	// Create summary memory
+	summary, err := s.Put(ctx, PutParams{
+		NS:         p.NS,
+		Key:        p.SummaryKey,
+		Content:    p.Content,
+		Kind:       kind,
+		Importance: importance,
+		Tags:       p.Tags,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("consolidate put summary: %w", err)
+	}
+
+	// Create contains edges from summary to each source
+	var edges []Edge
+	for _, key := range p.SourceKeys {
+		edge, err := s.CreateEdge(ctx, EdgeParams{
+			FromNS:  p.NS,
+			FromKey: p.SummaryKey,
+			ToNS:    p.NS,
+			ToKey:   key,
+			Rel:     "contains",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("consolidate create edge to %s: %w", key, err)
+		}
+		edges = append(edges, *edge)
+	}
+
+	return &ConsolidateResult{Summary: summary, Edges: edges}, nil
+}
+
 // ParseTTL parses a TTL string like "7d", "24h", "30m" into a time.Duration.
 var ttlRegex = regexp.MustCompile(`^(\d+)([dhms])$`)
 

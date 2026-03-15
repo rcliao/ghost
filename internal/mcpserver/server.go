@@ -39,6 +39,13 @@ Priority: low, normal (default), high, critical.
 Tier (Atkinson-Shiffrin model): sensory (ultra-short, aggressive decay), stm (default, subject to decay), ltm (proven useful, long-term).
 Pinned: set pinned=true for memories that should always be loaded in context (e.g. identity, core conventions). Pinned memories are exempt from lifecycle decay.
 
+Retrieval flow:
+- ghost_context: start here — assembles scored context within a token budget. Summaries replace their children automatically.
+- ghost_search: use for specific recall when you know what you're looking for.
+- ghost_expand: with no key, lists all consolidation nodes (compressed knowledge). With a key, drills into a summary to get its children.
+- ghost_get: retrieve a specific memory by key when you already know it.
+- ghost_consolidate: create a summary that groups related memories. Children are suppressed in future context calls.
+
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
 // Serve starts the MCP server on stdio, blocking until the connection closes.
@@ -302,6 +309,102 @@ func registerTools(server *mcp.Server, st store.Store) {
 		default:
 			return errResult("invalid op: must be create, remove, or list"), nil
 		}
+	})
+
+	server.AddTool(&mcp.Tool{
+		Name:        "ghost_get",
+		Description: "Retrieve a specific memory by namespace and key. Use this when you know exactly which memory you want.",
+		InputSchema: schema([]string{"ns", "key"}, map[string]map[string]any{
+			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"),
+			"key": prop("string", "Memory key"),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS  string `json:"ns"`
+			Key string `json:"key"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" || p.Key == "" {
+			return errResult("ns and key are required"), nil
+		}
+		results, err := st.Get(ctx, store.GetParams{NS: p.NS, Key: p.Key})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		if len(results) == 0 {
+			return errResult("memory not found: " + p.NS + "/" + p.Key), nil
+		}
+		return jsonResult(results[0])
+	})
+
+	server.AddTool(&mcp.Tool{
+		Name:        "ghost_expand",
+		Description: "Drill into the consolidation hierarchy. With a key: returns the summary and its children (memories linked via contains edges). Without a key: lists all consolidation nodes in the namespace — use this to see what knowledge has been compressed and what can be drilled into.",
+		InputSchema: schema([]string{"ns"}, map[string]map[string]any{
+			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"),
+			"key": prop("string", "Key of a consolidation node to expand (omit to list all consolidation nodes)"),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS  string `json:"ns"`
+			Key string `json:"key"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" {
+			return errResult("ns is required"), nil
+		}
+		result, err := st.Expand(ctx, store.ExpandParams{NS: p.NS, Key: p.Key})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(result)
+	})
+
+	server.AddTool(&mcp.Tool{
+		Name:        "ghost_consolidate",
+		Description: "Create a summary memory that consolidates multiple source memories. Creates the summary and contains edges in one operation. Children are automatically suppressed in context when the summary is present.",
+		InputSchema: schema([]string{"ns", "summary_key", "content", "source_keys"}, map[string]map[string]any{
+			"ns":          prop("string", "Namespace (e.g. agent:pikamini)"),
+			"summary_key": prop("string", "Key for the new summary memory"),
+			"content":     prop("string", "Summary content text (caller must provide — no LLM inside ghost)"),
+			"source_keys": {"type": "array", "items": map[string]any{"type": "string"}, "description": "Keys of memories to consolidate (minimum 2)"},
+			"kind":        prop("string", "Memory kind for summary (default: semantic)"),
+			"importance":  prop("number", "Importance 0.0-1.0 (default: 0.7)"),
+			"tags":        {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for the summary memory"},
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS         string   `json:"ns"`
+			SummaryKey string   `json:"summary_key"`
+			Content    string   `json:"content"`
+			SourceKeys []string `json:"source_keys"`
+			Kind       string   `json:"kind"`
+			Importance float64  `json:"importance"`
+			Tags       []string `json:"tags"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" || p.SummaryKey == "" || p.Content == "" || len(p.SourceKeys) < 2 {
+			return errResult("ns, summary_key, content, and at least 2 source_keys are required"), nil
+		}
+		result, err := st.Consolidate(ctx, store.ConsolidateParams{
+			NS:         p.NS,
+			SummaryKey: p.SummaryKey,
+			Content:    p.Content,
+			SourceKeys: p.SourceKeys,
+			Kind:       p.Kind,
+			Importance: p.Importance,
+			Tags:       p.Tags,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(result)
 	})
 
 	server.AddTool(&mcp.Tool{

@@ -1250,6 +1250,43 @@ func (m *MockStore) GetSimilarClusters(_ context.Context, ns string) ([]MemoryCl
 	return nil, nil
 }
 
+func (m *MockStore) Expand(_ context.Context, p ExpandParams) (*ExpandResult, error) {
+	return &ExpandResult{}, nil
+}
+
+func (m *MockStore) Consolidate(ctx context.Context, p ConsolidateParams) (*ConsolidateResult, error) {
+	kind := p.Kind
+	if kind == "" {
+		kind = "semantic"
+	}
+	importance := p.Importance
+	if importance == 0 {
+		importance = 0.7
+	}
+
+	mem, err := m.Put(ctx, PutParams{
+		NS: p.NS, Key: p.SummaryKey, Content: p.Content,
+		Kind: kind, Importance: importance, Tags: p.Tags,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var edges []Edge
+	for _, key := range p.SourceKeys {
+		edge, err := m.CreateEdge(ctx, EdgeParams{
+			FromNS: p.NS, FromKey: p.SummaryKey,
+			ToNS: p.NS, ToKey: key,
+			Rel: "contains",
+		})
+		if err != nil {
+			return nil, err
+		}
+		edges = append(edges, *edge)
+	}
+	return &ConsolidateResult{Summary: mem, Edges: edges}, nil
+}
+
 // hasAllTags returns true if memTags contains all of the required tags.
 func hasAllTags(memTags, required []string) bool {
 	set := map[string]bool{}
