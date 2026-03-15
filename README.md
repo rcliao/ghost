@@ -68,7 +68,7 @@ ghost rule set --name "fast-promote" --cond-tier stm --cond-age-gt 12 \
 - **Lifecycle management**: sensory → stm → ltm → dormant tiers with rule-based reflect system
 - **Hierarchical summaries**: `ghost consolidate` creates summary parents that suppress children in context
 - **Vector embeddings**: all-MiniLM-L6-v2 (pure Go, no CGo) fused with FTS5 via Reciprocal Rank Fusion
-- **MCP server**: `ghost mcp-serve` exposes 6 tools for Claude Code and other MCP clients
+- **MCP server**: `ghost mcp-serve` exposes 9 tools for Claude Code and other MCP clients
 
 ## Namespace Conventions
 
@@ -174,7 +174,7 @@ ghost consolidate -n agent:mybot --summary-key auth-overview \
 claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
 ```
 
-Exposes 6 tools: `ghost_put`, `ghost_search`, `ghost_context`, `ghost_edge`, `ghost_curate`, `ghost_reflect`.
+Exposes 9 tools: `ghost_put`, `ghost_get`, `ghost_search`, `ghost_context`, `ghost_expand`, `ghost_consolidate`, `ghost_edge`, `ghost_curate`, `ghost_reflect`.
 
 See [Claude Code Setup](docs/quickstart-claude-code.md) for full setup including hooks and CLAUDE.md instructions.
 

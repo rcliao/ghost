@@ -146,8 +146,16 @@ ghost put -n "project:myapp" -k "decision-db" \
 # Get context for a task
 ghost context -n "project:myapp" -q "database setup" --budget 2000
 
+# Retrieve a specific memory by key
+ghost get -n "project:myapp" -k "decision-db"
+
 # Search for specific knowledge
 ghost search "PostgreSQL" -n "project:myapp"
+
+# Consolidate related memories into a summary
+ghost consolidate -n "project:myapp" --summary-key db-overview \
+  --keys "decision-db,db-migration,db-indexing" \
+  --content "Database: PostgreSQL with JSONB, UUID PKs, GIN indexes"
 
 # Curate a specific memory
 ghost curate -n "project:myapp" -k "old-decision" --op archive
@@ -218,15 +226,23 @@ When `ghost_context` returns `compaction_suggested: true`:
 
 When many memories accumulate on a topic:
 
-1. Run `ghost clusters -n <ns>` to discover groups
+1. Run `ghost clusters -n <ns>` to discover groups (CLI), or `ghost_expand(ns=...)` with no key (MCP) to see existing consolidation nodes
 2. Review each cluster — do they belong together?
-3. Write a summary and consolidate:
+3. Write a summary and consolidate (creates summary + contains edges in one call):
    ```bash
+   # CLI
    ghost consolidate -n agent:mybot --summary-key auth-overview \
      --keys "auth-jwt,auth-expiry,auth-cookies" \
      --content "Auth: JWT+RSA256, 24h expiry, refresh via cookies"
    ```
-4. The summary gets `contains` edges to sources; in context assembly, the summary is preferred and children are suppressed
+   ```python
+   # MCP tool
+   ghost_consolidate(ns="agent:mybot", summary_key="auth-overview",
+     source_keys=["auth-jwt", "auth-expiry", "auth-cookies"],
+     content="Auth: JWT+RSA256, 24h expiry, refresh via cookies")
+   ```
+4. The summary gets `contains` edges to sources; in context assembly, the summary replaces its children (parent boosting + child suppression)
+5. Use `ghost_expand(ns="agent:mybot", key="auth-overview")` to drill into the summary and see its children
 
 ---
 

@@ -28,16 +28,19 @@ Or for project-scoped (add to `.mcp.json` in repo root):
 }
 ```
 
-This exposes 6 tools to the agent:
+This exposes 9 tools to the agent:
 
-| Tool | Purpose |
-|------|---------|
-| `ghost_put` | Store or update a memory (auto-links similar memories via edges) |
-| `ghost_search` | Full-text search with ranking |
-| `ghost_context` | Budget-aware context assembly with edge expansion |
-| `ghost_edge` | Create, remove, or list weighted edges between memories |
-| `ghost_curate` | Instance-level lifecycle actions on a single memory |
-| `ghost_reflect` | Run lifecycle rules across all memories (promote, decay, prune, edge decay) |
+| Tool | Category | Purpose |
+|------|----------|---------|
+| `ghost_put` | Write | Store or update a memory (auto-links similar memories via edges) |
+| `ghost_get` | Read | Retrieve a specific memory by namespace and key |
+| `ghost_search` | Read | Full-text search with ranking |
+| `ghost_context` | Read | Budget-aware context assembly with edge expansion |
+| `ghost_expand` | Read | List consolidation nodes (no key) or drill into a summary's children (with key) |
+| `ghost_consolidate` | Write | Create a summary memory with contains edges to sources in one operation |
+| `ghost_curate` | Mutate | Instance-level lifecycle actions on a single memory |
+| `ghost_edge` | Mutate | Create, remove, or list weighted edges between memories |
+| `ghost_reflect` | Maintain | Run lifecycle rules across all memories (promote, decay, prune, edge decay) |
 
 ---
 
@@ -134,10 +137,20 @@ if [ "${GHOST_SESSION_HOOK:-}" = "1" ]; then
 fi
 export GHOST_SESSION_HOOK=1
 
+# Read hook input for environment context
+HOOK_INPUT=$(cat)
+PROJECT_DIR=$(echo "$HOOK_INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+SOURCE=$(echo "$HOOK_INPUT" | jq -r '.source // "startup"' 2>/dev/null)
+PROJECT_NAME=$(basename "${PROJECT_DIR:-unknown}")
+TIMESTAMP=$(date -Iseconds)
+
+# Build environment-aware query so ghost scores relevance properly
+QUERY="working in ${PROJECT_NAME} at ${PROJECT_DIR:-unknown}, session ${SOURCE} at ${TIMESTAMP}"
+
 MEMORIES=""
 
-# Agent-level memories
-AGENT_RAW=$(ghost context "general session context" -n "agent:claude-code" --budget 1500 2>/dev/null || echo "{}")
+# Agent-level memories — 2000 tokens is ~5-8 memories, enough to orient without dominating context
+AGENT_RAW=$(ghost context "$QUERY" -n "agent:claude-code" --budget 2000 2>/dev/null || echo "{}")
 AGENT_MEM=$(echo "$AGENT_RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
 if [ -n "$AGENT_MEM" ]; then
   MEMORIES="## Agent Knowledge\n$AGENT_MEM"
@@ -298,7 +311,7 @@ echo "Done" >> "$DEBUG_LOG"
 
 ### UserPromptSubmit Hook (Per-Prompt RAG)
 
-Injects relevant memories before each prompt. Adds latency, so best for deep knowledge base domains:
+Injects relevant memories before each prompt. Uses a small budget (800 tokens, ~2-3 memories) to stay fast:
 
 ```bash
 #!/usr/bin/env bash
@@ -306,13 +319,19 @@ Injects relevant memories before each prompt. Adds latency, so best for deep kno
 set -euo pipefail
 
 HOOK_INPUT=$(cat)
-QUERY=$(echo "$HOOK_INPUT" | jq -r '.user_prompt // empty' 2>/dev/null)
+QUERY=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 
 if [ -z "$QUERY" ] || [ ${#QUERY} -lt 10 ]; then
   exit 0  # Skip trivial prompts
 fi
 
-ghost context -n "agent:claude-code" -q "$QUERY" --budget 1000 --format plain 2>/dev/null || true
+# Small budget — targeted retrieval, won't repeat what SessionStart already injected
+RAW=$(ghost context "$QUERY" -n "agent:claude-code" --budget 800 2>/dev/null || echo "{}")
+MEM=$(echo "$RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
+
+if [ -n "$MEM" ]; then
+  echo -e "[Ghost Memory — Relevant]\n$MEM\n[End Ghost Memory]"
+fi
 ```
 
 ### Design Notes
@@ -334,17 +353,30 @@ Add to `~/.claude/CLAUDE.md` (global) or project CLAUDE.md to teach the agent wh
 
 You have access to a persistent memory system via Ghost MCP tools. This is how you learn across sessions. **Use it.**
 
-### MUST: Retrieve before working (ghost_context)
-**Before starting any non-trivial task**, call ghost_context to check for relevant past learnings:
+### Retrieval flow
+
+Ghost memories are injected automatically via hooks (SessionStart loads context,
+UserPromptSubmit adds per-query relevance). The MCP tools are for **active** retrieval
+and manipulation when automatic injection isn't enough.
+
+**ghost_context** — your primary retrieval tool. Use before any non-trivial task:
   ghost_context(query="<describe the task>", ns="agent:claude-code", budget=2000)
 
-Trigger on:
-- Debugging an error — past sessions may have hit the same issue
-- Working in an unfamiliar repo/service — check for project-specific conventions
-- Making architecture or design decisions — check for prior decisions
-- Any task where you think "I might have seen this before"
-
 Do NOT skip this step. The cost is one tool call; the benefit is avoiding repeated mistakes.
+Trigger on: debugging errors, unfamiliar repos, architecture decisions, anything you might have seen before.
+
+**ghost_get** — retrieve a specific memory when you already know the key:
+  ghost_get(ns="agent:claude-code", key="auth-flow-decision")
+
+**ghost_search** — find memories by keyword when you need specific recall:
+  ghost_search(query="JWT rotation", ns="agent:claude-code")
+
+**ghost_expand** — navigate the consolidation hierarchy:
+  ghost_expand(ns="agent:claude-code")                    # list all consolidation nodes
+  ghost_expand(ns="agent:claude-code", key="auth-summary") # drill into a summary's children
+
+When ghost_context returns a summary (consolidation node) and you need the original
+details behind it, use ghost_expand to drill down.
 
 ### When to write (ghost_put)
 Store memories when you encounter:
@@ -358,6 +390,21 @@ Use namespace `agent:claude-code` for general knowledge, or `project:<name>` for
 Use descriptive keys (e.g. "auth-flow-decision", "db-migration-gotcha").
 Set importance 0.6-0.8 for most learnings, 0.9+ for critical decisions.
 Set priority "high" for important learnings, "critical" for must-never-forget.
+
+### When to consolidate (ghost_consolidate)
+When many memories exist about the same topic, consolidate them into a summary:
+
+1. Run ghost_expand(ns="agent:claude-code") to see existing consolidation nodes
+2. Run ghost_reflect — it links similar memories and returns linked_clusters
+3. Review clusters and write a summary, then consolidate in one call:
+   ghost_consolidate(ns="agent:claude-code", summary_key="auth-overview",
+     source_keys=["auth-jwt", "auth-expiry", "auth-cookies"],
+     content="Auth overview: JWT+RSA256, 24h expiry, refresh via cookies")
+
+This creates a summary memory with `contains` edges to each source.
+In context assembly, the summary replaces its children (parent boosting +
+child suppression) — reducing redundancy and saving token budget.
+All original memories are preserved (lossless compaction).
 
 ### When to curate (ghost_curate)
 Use ghost_curate to act on individual memories:
@@ -374,24 +421,6 @@ Use ghost_edge to create associations between related memories:
 Relation types: relates_to, contradicts, depends_on, refines, contains, merged_into.
 Edges are auto-created on put when embedding similarity is high, but manual edges
 for contradicts/depends_on/refines capture relationships embeddings can't.
-
-### When to consolidate
-When many memories exist about the same topic, use the full consolidation workflow:
-
-1. Run ghost_reflect — it links similar memories and returns linked_clusters
-2. Check ghost clusters to see all groups:
-   ghost_edge(ns="agent:claude-code", from_key="some-key", op="list")
-   or via CLI: ghost clusters -n agent:claude-code
-3. Review the cluster and write a summary, then consolidate:
-   ghost consolidate -n agent:claude-code --summary-key auth-overview \
-     --keys "auth-jwt,auth-expiry,auth-cookies" \
-     --content "Auth overview: JWT+RSA256, 24h expiry, refresh via cookies"
-
-This creates a summary memory with `contains` edges to each source memory.
-In context assembly, the summary is preferred over its children via parent
-boosting (summaries appear even when children match the query), and children
-are automatically suppressed — reducing redundancy and saving token budget.
-All original memories are preserved (lossless, LCM-like compaction).
 
 ### When to reflect (ghost_reflect)
 Run ghost_reflect when ghost_context returns compaction_suggested: true,
