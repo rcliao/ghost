@@ -46,8 +46,15 @@ type EdgeExpansionConfig struct {
 }
 
 // DefaultEdgeExpansion returns the default edge expansion configuration.
+// Values can be overridden via environment variables for experimentation:
+//
+//	GHOST_EDGE_DAMPING        — score propagation factor (default 0.3)
+//	GHOST_EDGE_MIN_WEIGHT     — minimum edge weight to follow (default 0.1)
+//	GHOST_EDGE_MAX_PER_SEED   — max neighbors per seed (default 5)
+//	GHOST_EDGE_MAX_EXPANSION  — max total expanded memories (default 50)
+//	GHOST_EDGE_MAX_BOOST      — max additive boost factor (default 0.5)
 func DefaultEdgeExpansion() EdgeExpansionConfig {
-	return EdgeExpansionConfig{
+	cfg := EdgeExpansionConfig{
 		Enabled:           true,
 		Damping:           0.3,
 		MaxEdgesPerSeed:   5,
@@ -55,6 +62,34 @@ func DefaultEdgeExpansion() EdgeExpansionConfig {
 		MaxExpansionTotal: 50,
 		MaxBoostFactor:    0.5,
 	}
+
+	if v := os.Getenv("GHOST_EDGE_DAMPING"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			cfg.Damping = f
+		}
+	}
+	if v := os.Getenv("GHOST_EDGE_MIN_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			cfg.MinEdgeWeight = f
+		}
+	}
+	if v := os.Getenv("GHOST_EDGE_MAX_PER_SEED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxEdgesPerSeed = n
+		}
+	}
+	if v := os.Getenv("GHOST_EDGE_MAX_EXPANSION"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxExpansionTotal = n
+		}
+	}
+	if v := os.Getenv("GHOST_EDGE_MAX_BOOST"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			cfg.MaxBoostFactor = f
+		}
+	}
+
+	return cfg
 }
 
 // PutResult wraps the result of a Put operation, including auto-linked edges.
