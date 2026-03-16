@@ -372,11 +372,12 @@ Trigger on: debugging errors, unfamiliar repos, architecture decisions, anything
   ghost_search(query="JWT rotation", ns="agent:claude-code")
 
 **ghost_expand** — navigate the consolidation hierarchy:
-  ghost_expand(ns="agent:claude-code")                    # list all consolidation nodes
+  ghost_expand(ns="agent:claude-code")                    # list consolidation nodes + emergent clusters
   ghost_expand(ns="agent:claude-code", key="auth-summary") # drill into a summary's children
 
-When ghost_context returns a summary (consolidation node) and you need the original
-details behind it, use ghost_expand to drill down.
+Without a key: shows existing consolidation nodes AND emergent clusters needing consolidation.
+With a key: returns the summary's children. Children with children>0 can be expanded further.
+Use this when ghost_context returns compaction_suggested: true to find what to consolidate.
 
 ### When to write (ghost_put)
 Store memories when you encounter:
@@ -392,11 +393,12 @@ Set importance 0.6-0.8 for most learnings, 0.9+ for critical decisions.
 Set priority "high" for important learnings, "critical" for must-never-forget.
 
 ### When to consolidate (ghost_consolidate)
-When many memories exist about the same topic, consolidate them into a summary:
+When ghost_context returns compaction_suggested: true, or when many memories
+exist about the same topic:
 
-1. Run ghost_expand(ns="agent:claude-code") to see existing consolidation nodes
-2. Run ghost_reflect — it links similar memories and returns linked_clusters
-3. Review clusters and write a summary, then consolidate in one call:
+1. Run ghost_expand(ns="agent:claude-code") — shows existing nodes + emergent clusters
+2. For each cluster: ghost_get each key to read the content
+3. Write a summary and consolidate in one call:
    ghost_consolidate(ns="agent:claude-code", summary_key="auth-overview",
      source_keys=["auth-jwt", "auth-expiry", "auth-cookies"],
      content="Auth overview: JWT+RSA256, 24h expiry, refresh via cookies")
@@ -405,6 +407,10 @@ This creates a summary memory with `contains` edges to each source.
 In context assembly, the summary replaces its children (parent boosting +
 child suppression) — reducing redundancy and saving token budget.
 All original memories are preserved (lossless compaction).
+
+Multi-level consolidation: consolidation nodes can themselves be consolidated.
+Use ghost_expand(key="auth-overview") to see children — if children>0, they
+are expandable further. This enables deep hierarchies without losing detail.
 
 ### When to curate (ghost_curate)
 Use ghost_curate to act on individual memories:

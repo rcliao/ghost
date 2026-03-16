@@ -40,11 +40,16 @@ Tier (Atkinson-Shiffrin model): sensory (ultra-short, aggressive decay), stm (de
 Pinned: set pinned=true for memories that should always be loaded in context (e.g. identity, core conventions). Pinned memories are exempt from lifecycle decay.
 
 Retrieval flow:
-- ghost_context: start here — assembles scored context within a token budget. Summaries replace their children automatically.
+- ghost_context: start here — assembles scored context within a token budget. Summaries replace their children automatically. When compaction_suggested is true, use ghost_expand to find what needs consolidation.
 - ghost_search: use for specific recall when you know what you're looking for.
-- ghost_expand: with no key, lists all consolidation nodes (compressed knowledge). With a key, drills into a summary to get its children.
+- ghost_expand: with no key, lists all consolidation nodes AND emergent clusters needing consolidation. With a key, drills into a summary to get its children (children with children>0 are expandable further).
 - ghost_get: retrieve a specific memory by key when you already know it.
 - ghost_consolidate: create a summary that groups related memories. Children are suppressed in future context calls.
+
+Consolidation workflow (when compaction_suggested is true):
+1. ghost_expand(ns) — see existing nodes + clusters needing consolidation
+2. For each cluster: ghost_get each key to read content, write a summary
+3. ghost_consolidate(ns, summary_key, content, source_keys) — create parent node
 
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
@@ -341,10 +346,10 @@ func registerTools(server *mcp.Server, st store.Store) {
 
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_expand",
-		Description: "Drill into the consolidation hierarchy. With a key: returns the summary and its children (memories linked via contains edges). Without a key: lists all consolidation nodes in the namespace — use this to see what knowledge has been compressed and what can be drilled into.",
+		Description: "Drill into the consolidation hierarchy. With a key: returns the summary and its children (children with children>0 are expandable further). Without a key: lists all consolidation nodes AND emergent clusters needing consolidation — use this when compaction_suggested is true to find what to consolidate.",
 		InputSchema: schema([]string{"ns"}, map[string]map[string]any{
 			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"),
-			"key": prop("string", "Key of a consolidation node to expand (omit to list all consolidation nodes)"),
+			"key": prop("string", "Key of a consolidation node to expand (omit to list all nodes + clusters)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
