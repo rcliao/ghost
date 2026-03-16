@@ -7,12 +7,15 @@ Everything you need to use Ghost as persistent memory in Claude Code — MCP ser
 ## 1. Install Ghost and Add MCP Server
 
 ```bash
-# Install ghost binary
-go install github.com/rcliao/ghost/cmd/ghost@latest
+# Install ghost binary (pick one)
+brew install rcliao/tap/ghost          # Homebrew (macOS / Linux)
+go install github.com/rcliao/ghost/cmd/ghost@latest  # From source (requires Go)
 
 # Add as user-scoped MCP server (available in all projects)
 claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
 ```
+
+Pre-built binaries for all platforms are also available on [GitHub Releases](https://github.com/rcliao/ghost/releases).
 
 Or for project-scoped (add to `.mcp.json` in repo root):
 

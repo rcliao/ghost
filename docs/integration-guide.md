@@ -2,6 +2,18 @@
 
 How to integrate Ghost into custom agents, bots, and scripts. For Claude Code specifically, see [quickstart-claude-code.md](quickstart-claude-code.md).
 
+## Install
+
+```bash
+# Homebrew (macOS / Linux)
+brew install rcliao/tap/ghost
+
+# Or from source (requires Go)
+go install github.com/rcliao/ghost/cmd/ghost@latest
+```
+
+Pre-built binaries for all platforms are available on [GitHub Releases](https://github.com/rcliao/ghost/releases).
+
 ## Integration Methods
 
 | Method | Best For | Setup |
