@@ -46,7 +46,20 @@ This exposes 9 tools to the agent:
 
 ## 2. Add Hooks
 
-Hooks automate memory capture and retrieval at Claude Code lifecycle boundaries. Add to `~/.claude/settings.json`:
+Hooks automate memory capture and retrieval at Claude Code lifecycle boundaries. Reference hook scripts are in the `hooks/` directory — copy them to `~/.claude/hooks/` and register in `~/.claude/settings.json`:
+
+```bash
+# Copy hook scripts
+cp hooks/ghost-*.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/ghost-*.sh
+```
+
+Configure via environment variables (set in your shell profile or in the hook commands):
+- `GHOST_BIN` — path to ghost binary (default: `ghost` on PATH)
+- `GHOST_AGENT_NS` — agent namespace (default: `agent:claude-code`)
+- `GHOST_LLM_MODEL` — model for extraction (default: `claude-sonnet-4-6`)
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -56,8 +69,19 @@ Hooks automate memory capture and retrieval at Claude Code lifecycle boundaries.
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/.claude/hooks/ghost-session-start.sh",
+            "command": "~/.claude/hooks/ghost-session-start.sh",
             "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ghost-user-prompt.sh",
+            "timeout": 10000
           }
         ]
       }
@@ -67,9 +91,8 @@ Hooks automate memory capture and retrieval at Claude Code lifecycle boundaries.
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/.claude/hooks/ghost-precompact.sh",
-            "timeout": 120000,
-            "async": true
+            "command": "~/.claude/hooks/ghost-precompact.sh",
+            "timeout": 120000
           }
         ]
       }
@@ -79,9 +102,8 @@ Hooks automate memory capture and retrieval at Claude Code lifecycle boundaries.
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/.claude/hooks/ghost-stop.sh",
-            "timeout": 120000,
-            "async": true
+            "command": "~/.claude/hooks/ghost-stop.sh",
+            "timeout": 120000
           }
         ]
       }
