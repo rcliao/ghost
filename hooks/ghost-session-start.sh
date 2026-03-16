@@ -41,9 +41,17 @@ if [ -n "$TAG_ARGS" ]; then
   # First: project-scoped context (1500 tokens)
   PROJECT_RAW=$($GHOST context "$QUERY" -n "$AGENT_NS" $TAG_ARGS --budget 1500 2>/dev/null || echo "{}")
   PROJECT_MEM=$(echo "$PROJECT_RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
-  # Then: pinned/general context (500 tokens) without project filter
+  # Extract project keys for dedup
+  PROJECT_KEYS=$(echo "$PROJECT_RAW" | jq -r '.memories[]?.key // empty' 2>/dev/null)
+
+  # Then: pinned/general context (500 tokens) without project filter, dedup against project keys
   GENERAL_RAW=$($GHOST context "$QUERY" -n "$AGENT_NS" --budget 500 2>/dev/null || echo "{}")
-  GENERAL_MEM=$(echo "$GENERAL_RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
+  if [ -n "$PROJECT_KEYS" ]; then
+    GENERAL_MEM=$(echo "$GENERAL_RAW" | jq -r --argjson pkeys "$(echo "$PROJECT_KEYS" | jq -R . | jq -s .)" \
+      '.memories[]? | select(.key as $k | ($pkeys | index($k)) | not) | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
+  else
+    GENERAL_MEM=$(echo "$GENERAL_RAW" | jq -r '.memories[]? | "[\(.key)] \(.content)"' 2>/dev/null || echo "")
+  fi
 
   if [ -n "$PROJECT_MEM" ]; then
     MEMORIES="## Project: ${PROJECT_NAME}\n${PROJECT_MEM}"
