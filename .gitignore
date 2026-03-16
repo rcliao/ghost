@@ -1,2 +1,4 @@
 /ghost
 *.db
+.claude/
+dist/
