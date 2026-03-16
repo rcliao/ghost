@@ -51,6 +51,12 @@ Consolidation workflow (when compaction_suggested is true):
 2. For each cluster: ghost_get each key to read content, write a summary
 3. ghost_consolidate(ns, summary_key, content, source_keys) — create parent node
 
+Utility feedback: when a memory helps you solve a problem or answer a question, boost it:
+  ghost_curate(ns, key, op="boost")
+This increases importance by 0.2, making it rank higher in future context assembly.
+When a memory is wrong or outdated, diminish or archive it:
+  ghost_curate(ns, key, op="diminish") or ghost_curate(ns, key, op="archive")
+
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`
 
 // Serve starts the MCP server on stdio, blocking until the connection closes.

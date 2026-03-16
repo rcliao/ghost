@@ -412,13 +412,19 @@ Multi-level consolidation: consolidation nodes can themselves be consolidated.
 Use ghost_expand(key="auth-overview") to see children — if children>0, they
 are expandable further. This enables deep hierarchies without losing detail.
 
-### When to curate (ghost_curate)
-Use ghost_curate to act on individual memories:
+### Utility feedback (ghost_curate)
+When a memory helps you solve a problem, boost it so it ranks higher next time:
+  ghost_curate(ns="agent:claude-code", key="helpful-memory", op="boost")
+
+When a memory is wrong or outdated, diminish or archive it:
   ghost_curate(ns="agent:claude-code", key="old-pattern", op="archive")
 
 Operations: promote (tier up), demote (tier down), boost (importance +0.2),
 diminish (importance -0.2), archive (dormant), delete (soft-delete),
 pin (always in context), unpin (remove from always-on).
+
+This feedback loop is critical — without it, all memories have equal weight.
+Boost what works, archive what's stale.
 
 ### When to link (ghost_edge)
 Use ghost_edge to create associations between related memories:

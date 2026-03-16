@@ -65,6 +65,7 @@ type ReflectResult struct {
 	Merged            int      `json:"merged"`
 	Linked            int              `json:"linked,omitempty"`
 	LinkedClusters    []MemoryCluster  `json:"linked_clusters,omitempty"`
+	AutoConsolidated  int              `json:"auto_consolidated,omitempty"`
 	EdgesDecayed      int              `json:"edges_decayed,omitempty"`
 	EdgesPruned       int              `json:"edges_pruned,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
@@ -342,6 +343,12 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 				deletedIDs[id] = true
 			}
 		}
+	}
+
+	// Auto-consolidation pass: create skeleton parent nodes for large orphan clusters.
+	if len(result.LinkedClusters) > 0 {
+		autoConsResult := s.autoConsolidateClusters(ctx, result.LinkedClusters, allMemories, p)
+		result.AutoConsolidated += autoConsResult
 	}
 
 	// Edge decay pass: weaken unused edges, prune very weak ones.
@@ -1030,4 +1037,129 @@ func nilIfZeroF(f float64) interface{} {
 		return nil
 	}
 	return f
+}
+
+// autoConsolidateMinCluster is the minimum cluster size for auto-consolidation.
+const autoConsolidateMinCluster = 5
+
+// autoConsolidateClusters creates skeleton parent nodes for large orphan clusters.
+// Returns the number of clusters consolidated.
+func (s *SQLiteStore) autoConsolidateClusters(ctx context.Context, clusters []MemoryCluster, allMemories []model.Memory, p ReflectParams) int {
+	if p.DryRun {
+		// Count clusters that would be consolidated
+		count := 0
+		for _, cluster := range clusters {
+			if cluster.Count < autoConsolidateMinCluster {
+				continue
+			}
+			// In dry-run mode, we can't check parents without DB queries,
+			// but we do check to provide accurate counts.
+			if s.clusterHasConsolidationParent(ctx, cluster, allMemories) {
+				continue
+			}
+			count++
+		}
+		return count
+	}
+
+	// Build key→Memory map for quick lookup
+	keyToMem := make(map[string]model.Memory, len(allMemories))
+	for _, m := range allMemories {
+		keyToMem[m.Key] = m
+	}
+
+	consolidated := 0
+	for _, cluster := range clusters {
+		if cluster.Count < autoConsolidateMinCluster {
+			continue
+		}
+
+		// Check if any member already has a contains parent — skip if so
+		if s.clusterHasConsolidationParent(ctx, cluster, allMemories) {
+			continue
+		}
+
+		// Build skeleton content and collect common tags
+		var contentParts []string
+		var ns string
+		tagCounts := map[string]int{}
+		memberCount := 0
+
+		for _, key := range cluster.Keys {
+			m, ok := keyToMem[key]
+			if !ok {
+				continue
+			}
+			if ns == "" {
+				ns = m.NS
+			}
+			contentParts = append(contentParts, fmt.Sprintf("[%s]: %s", key, m.Content))
+			for _, t := range m.Tags {
+				tagCounts[t]++
+			}
+			memberCount++
+		}
+
+		if memberCount < autoConsolidateMinCluster {
+			continue
+		}
+
+		// Common tags = tags present in all members
+		var commonTags []string
+		for tag, count := range tagCounts {
+			if count == memberCount {
+				commonTags = append(commonTags, tag)
+			}
+		}
+		sort.Strings(commonTags)
+
+		// Use namespace from params if available, else from first member
+		if p.NS != "" {
+			ns = p.NS
+		}
+
+		summaryKey := fmt.Sprintf("auto-summary-%d", time.Now().UnixNano())
+		content := strings.Join(contentParts, "\n\n")
+
+		_, err := s.Consolidate(ctx, ConsolidateParams{
+			NS:         ns,
+			SummaryKey: summaryKey,
+			Content:    content,
+			SourceKeys: cluster.Keys,
+			Kind:       "semantic",
+			Importance: 0.6,
+			Tags:       commonTags,
+		})
+		if err != nil {
+			continue
+		}
+		consolidated++
+	}
+
+	return consolidated
+}
+
+// clusterHasConsolidationParent checks if any member of a cluster already has
+// a contains parent edge. Returns true if any member is already consolidated.
+func (s *SQLiteStore) clusterHasConsolidationParent(ctx context.Context, cluster MemoryCluster, allMemories []model.Memory) bool {
+	// Build key→ID map for the cluster members
+	keyToID := make(map[string]string, len(allMemories))
+	for _, m := range allMemories {
+		keyToID[m.Key] = m.ID
+	}
+
+	for _, key := range cluster.Keys {
+		id, ok := keyToID[key]
+		if !ok {
+			continue
+		}
+		parents, err := s.getContainsParents(ctx, id)
+		if err != nil {
+			continue
+		}
+		if len(parents) > 0 {
+			return true
+		}
+	}
+	return false
 }
