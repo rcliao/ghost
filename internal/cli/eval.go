@@ -87,18 +87,90 @@ var evalTestCases = []evalTestCase{
 	},
 }
 
+// evalSession simulates a coding session that produces memories over time.
+type evalSession struct {
+	Name     string
+	Memories []store.PutParams
+	// After storing, optionally consolidate these keys under a summary
+	ConsolidateKey     string
+	ConsolidateContent string
+	ConsolidateKeys    []string
+}
+
+// evalSimSessions simulate 3 multi-session coding scenarios.
+// Memories are stored across sessions, then retrieval is tested
+// to see if cross-session recall and consolidation work.
+var evalSimSessions = []evalSession{
+	{
+		Name: "session-1-api-debugging",
+		Memories: []store.PutParams{
+			{NS: evalNS, Key: "s1-redis-nil-error", Content: "Redis GET returns nil for missing keys, not empty string. The Go redis client returns redis.Nil error which must be checked separately from other errors.", Kind: "semantic", Tags: []string{"debugging", "project:api", "session:s1"}, Importance: 0.7},
+			{NS: evalNS, Key: "s1-redis-connection-pool", Content: "Redis connection pool was exhausted causing timeout errors. Increased MaxIdle from 10 to 50 and MaxActive from 100 to 500.", Kind: "episodic", Tags: []string{"debugging", "project:api", "session:s1"}, Importance: 0.6},
+			{NS: evalNS, Key: "s1-api-rate-limiter", Content: "Rate limiter uses sliding window algorithm with Redis sorted sets. Key pattern: ratelimit:{user_id}:{endpoint}", Kind: "procedural", Tags: []string{"project:api", "session:s1"}, Importance: 0.5},
+			{NS: evalNS, Key: "s1-user-complaint-timeout", Content: "User reported API timeout on /api/v2/search endpoint. Root cause was Redis connection pool exhaustion under load.", Kind: "episodic", Tags: []string{"debugging", "project:api", "session:s1"}, Importance: 0.6},
+		},
+	},
+	{
+		Name: "session-2-api-refactor",
+		Memories: []store.PutParams{
+			{NS: evalNS, Key: "s2-redis-cache-layer", Content: "Added a cache-aside pattern for /api/v2/search. Cache key includes query hash + pagination. TTL 5 minutes.", Kind: "semantic", Tags: []string{"project:api", "session:s2"}, Importance: 0.7},
+			{NS: evalNS, Key: "s2-api-search-rewrite", Content: "Rewrote search endpoint to use Elasticsearch instead of PostgreSQL full-text search. 10x faster for complex queries.", Kind: "semantic", Tags: []string{"project:api", "session:s2"}, Importance: 0.8},
+			{NS: evalNS, Key: "s2-elasticsearch-mapping", Content: "Elasticsearch index uses custom analyzer with edge_ngram tokenizer for autocomplete. Field mapping: title(text+keyword), body(text), tags(keyword array).", Kind: "procedural", Tags: []string{"project:api", "session:s2"}, Importance: 0.6},
+		},
+	},
+	{
+		Name: "session-3-unrelated-frontend",
+		Memories: []store.PutParams{
+			{NS: evalNS, Key: "s3-react-state-bug", Content: "React useState hook doesn't batch updates inside setTimeout. Use useReducer or wrap in startTransition for consistent state.", Kind: "semantic", Tags: []string{"debugging", "project:frontend", "session:s3"}, Importance: 0.6},
+			{NS: evalNS, Key: "s3-tailwind-config", Content: "Tailwind config extends theme with custom colors: primary-500=#3B82F6, accent-500=#10B981. Dark mode uses class strategy.", Kind: "procedural", Tags: []string{"project:frontend", "session:s3"}, Importance: 0.4},
+			{NS: evalNS, Key: "s3-nextjs-middleware", Content: "Next.js middleware runs at the edge. Cannot use Node.js APIs like fs or process.env directly. Use edge-compatible alternatives.", Kind: "semantic", Tags: []string{"project:frontend", "session:s3"}, Importance: 0.5},
+		},
+	},
+}
+
+// evalSimTestCases test cross-session retrieval after simulation.
+var evalSimTestCases = []evalTestCase{
+	{
+		// Should recall redis debugging from session 1 AND cache layer from session 2
+		Query:        "Redis connection issues and caching strategy",
+		ExpectedKeys: []string{"s1-redis-nil-error", "s1-redis-connection-pool", "s2-redis-cache-layer"},
+	},
+	{
+		// Should recall the full search evolution across sessions
+		Query:        "API search endpoint performance",
+		ExpectedKeys: []string{"s1-user-complaint-timeout", "s2-api-search-rewrite", "s2-elasticsearch-mapping"},
+	},
+	{
+		// Should NOT return frontend memories for an API query
+		Query:        "Redis rate limiting implementation",
+		ExpectedKeys: []string{"s1-api-rate-limiter", "s1-redis-nil-error"},
+	},
+	{
+		// Frontend-only query should not return API memories
+		Query:        "React state management and Next.js",
+		ExpectedKeys: []string{"s3-react-state-bug", "s3-nextjs-middleware"},
+	},
+	{
+		// Cross-project query — should get the debugging memories from both
+		Query:        "debugging timeout errors in production",
+		ExpectedKeys: []string{"s1-user-complaint-timeout", "s1-redis-connection-pool"},
+	},
+}
+
 func init() {
 	evalCmd := &cobra.Command{
 		Use:   "eval",
 		Short: "Run retrieval quality evaluation",
 		Long: `Seeds test memories in eval:ghost namespace, runs test queries,
 and scores retrieval precision and recall. Use with --reflect to
-run a reflect cycle and re-evaluate. Use with --clean to remove
+run a reflect cycle and re-evaluate. Use with --simulate to run
+fake multi-session coding scenarios. Use with --clean to remove
 all eval data afterward.`,
 		RunE: runEval,
 	}
 
 	evalCmd.Flags().Bool("reflect", false, "Run reflect cycle between seed and eval")
+	evalCmd.Flags().Bool("simulate", false, "Simulate multi-session coding scenarios")
 	evalCmd.Flags().Bool("clean", false, "Remove eval namespace after running")
 	evalCmd.Flags().IntP("budget", "b", 2000, "Token budget for context queries")
 
@@ -108,6 +180,7 @@ all eval data afterward.`,
 func runEval(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	doReflect, _ := cmd.Flags().GetBool("reflect")
+	doSimulate, _ := cmd.Flags().GetBool("simulate")
 	doClean, _ := cmd.Flags().GetBool("clean")
 	budget, _ := cmd.Flags().GetInt("budget")
 
@@ -115,6 +188,13 @@ func runEval(cmd *cobra.Command, args []string) error {
 	for _, p := range evalSeedMemories {
 		if _, err := st.Put(ctx, p); err != nil {
 			return fmt.Errorf("seed %s: %w", p.Key, err)
+		}
+	}
+
+	// Step 1b: Optionally simulate multi-session coding scenarios
+	if doSimulate {
+		if err := runSimulation(ctx); err != nil {
+			return fmt.Errorf("simulate: %w", err)
 		}
 	}
 
@@ -129,6 +209,13 @@ func runEval(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Run test queries and score
+	// Use both base test cases and simulation test cases
+	testCases := make([]evalTestCase, 0, len(evalTestCases)+len(evalSimTestCases))
+	testCases = append(testCases, evalTestCases...)
+	if doSimulate {
+		testCases = append(testCases, evalSimTestCases...)
+	}
+
 	report := evalReport{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		NS:        evalNS,
@@ -140,14 +227,14 @@ func runEval(cmd *cobra.Command, args []string) error {
 
 	var totalPrecision, totalRecall float64
 
-	for _, tc := range evalTestCases {
+	for _, tc := range testCases {
 		result := runEvalCase(ctx, tc, budget)
 		report.Results = append(report.Results, result)
 		totalPrecision += result.Precision
 		totalRecall += result.Recall
 	}
 
-	report.TotalCases = len(evalTestCases)
+	report.TotalCases = len(testCases)
 	if report.TotalCases > 0 {
 		report.AvgPrecision = totalPrecision / float64(report.TotalCases)
 		report.AvgRecall = totalRecall / float64(report.TotalCases)
@@ -237,4 +324,32 @@ func runEvalCase(ctx context.Context, tc evalTestCase, budget int) evalResult {
 	}
 
 	return result
+}
+
+// runSimulation seeds fake multi-session coding memories and optionally
+// consolidates them to test the full lifecycle.
+func runSimulation(ctx context.Context) error {
+	for _, session := range evalSimSessions {
+		for _, p := range session.Memories {
+			if _, err := st.Put(ctx, p); err != nil {
+				return fmt.Errorf("simulate %s/%s: %w", session.Name, p.Key, err)
+			}
+		}
+
+		// If session defines a consolidation, create it
+		if session.ConsolidateKey != "" && len(session.ConsolidateKeys) >= 2 {
+			_, err := st.Consolidate(ctx, store.ConsolidateParams{
+				NS:         evalNS,
+				SummaryKey: session.ConsolidateKey,
+				Content:    session.ConsolidateContent,
+				SourceKeys: session.ConsolidateKeys,
+				Kind:       "semantic",
+				Importance: 0.7,
+			})
+			if err != nil {
+				return fmt.Errorf("consolidate %s: %w", session.ConsolidateKey, err)
+			}
+		}
+	}
+	return nil
 }
