@@ -1414,6 +1414,31 @@ func (s *SQLiteStore) Expand(ctx context.Context, p ExpandParams) (*ExpandResult
 			node.Summary = truncate(content, 200)
 			result.Nodes = append(result.Nodes, node)
 		}
+
+		// Add emergent clusters (relates_to groups without a consolidation parent)
+		clusters, err := s.GetSimilarClusters(ctx, p.NS)
+		if err == nil && len(clusters) > 0 {
+			// Filter out clusters where all members already have a contains parent
+			for _, c := range clusters {
+				hasOrphan := false
+				for _, key := range c.Keys {
+					id, err := s.resolveMemoryID(ctx, p.NS, key)
+					if err != nil {
+						hasOrphan = true
+						break
+					}
+					parents, err := s.getContainsParents(ctx, id)
+					if err != nil || len(parents) == 0 {
+						hasOrphan = true
+						break
+					}
+				}
+				if hasOrphan {
+					result.Clusters = append(result.Clusters, c)
+				}
+			}
+		}
+
 		return result, nil
 	}
 
@@ -1447,12 +1472,15 @@ func (s *SQLiteStore) Expand(ctx context.Context, p ExpandParams) (*ExpandResult
 		if err != nil {
 			continue
 		}
+		// Count grandchildren to indicate if this child is expandable
+		grandchildren, _ := s.getContainsChildren(ctx, childID)
 		result.Children = append(result.Children, ExpandChild{
 			Key:        child.Key,
 			Kind:       child.Kind,
 			Importance: child.Importance,
 			EstTokens:  child.EstTokens,
 			Content:    child.Content,
+			Children:   len(grandchildren),
 		})
 	}
 

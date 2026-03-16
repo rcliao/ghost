@@ -72,6 +72,8 @@ type Store interface {
 	GetEdges(ctx context.Context, memoryID string) ([]Edge, error)
 	GetEdgesByNSKey(ctx context.Context, ns, key string) ([]Edge, error)
 	GetSimilarClusters(ctx context.Context, ns string) ([]MemoryCluster, error)
+	Consolidate(ctx context.Context, p ConsolidateParams) (*ConsolidateResult, error)
+	Expand(ctx context.Context, p ExpandParams) (*ExpandResult, error)
 	Reflect(ctx context.Context, p ReflectParams) (*ReflectResult, error)
 	RuleSet(ctx context.Context, rule ReflectRule) (*ReflectRule, error)
 	RuleGet(ctx context.Context, id string) (*ReflectRule, error)
@@ -118,6 +120,18 @@ type EdgeExpansionConfig = store.EdgeExpansionConfig
 
 // MemoryCluster represents a group of similar memories connected by edges.
 type MemoryCluster = store.MemoryCluster
+
+// ConsolidateParams holds parameters for creating a consolidation.
+type ConsolidateParams = store.ConsolidateParams
+
+// ConsolidateResult wraps the result of a consolidate operation.
+type ConsolidateResult = store.ConsolidateResult
+
+// ExpandParams holds parameters for expanding a consolidation node.
+type ExpandParams = store.ExpandParams
+
+// ExpandResult contains expandable nodes or a single node's children.
+type ExpandResult = store.ExpandResult
 
 // NewSQLiteStore opens or creates a SQLite-backed memory store at the given path.
 func NewSQLiteStore(dbPath string) (Store, error) {

@@ -186,6 +186,81 @@ func TestConsolidateBasic(t *testing.T) {
 	}
 }
 
+func TestExpandMultiLevel(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create L0 leaves
+	s.Put(ctx, PutParams{NS: "test", Key: "leaf-1", Content: "leaf one"})
+	s.Put(ctx, PutParams{NS: "test", Key: "leaf-2", Content: "leaf two"})
+	s.Put(ctx, PutParams{NS: "test", Key: "leaf-3", Content: "leaf three"})
+	s.Put(ctx, PutParams{NS: "test", Key: "leaf-4", Content: "leaf four"})
+
+	// Create L1 summaries
+	s.Consolidate(ctx, ConsolidateParams{
+		NS: "test", SummaryKey: "l1-a",
+		Content: "Summary of leaves 1+2", SourceKeys: []string{"leaf-1", "leaf-2"},
+	})
+	s.Consolidate(ctx, ConsolidateParams{
+		NS: "test", SummaryKey: "l1-b",
+		Content: "Summary of leaves 3+4", SourceKeys: []string{"leaf-3", "leaf-4"},
+	})
+
+	// Create L2 summary of summaries
+	s.Consolidate(ctx, ConsolidateParams{
+		NS: "test", SummaryKey: "l2-root",
+		Content: "Top-level overview", SourceKeys: []string{"l1-a", "l1-b"},
+	})
+
+	// Expand L2 — children should show L1 nodes with their child counts
+	result, err := s.Expand(ctx, ExpandParams{NS: "test", Key: "l2-root"})
+	if err != nil {
+		t.Fatalf("expand L2: %v", err)
+	}
+	if len(result.Children) != 2 {
+		t.Fatalf("expected 2 L1 children, got %d", len(result.Children))
+	}
+	for _, c := range result.Children {
+		if c.Children != 2 {
+			t.Errorf("L1 child %s should have 2 grandchildren, got %d", c.Key, c.Children)
+		}
+	}
+
+	// Expand L1 — children should be leaves with 0 children
+	result2, err := s.Expand(ctx, ExpandParams{NS: "test", Key: "l1-a"})
+	if err != nil {
+		t.Fatalf("expand L1: %v", err)
+	}
+	if len(result2.Children) != 2 {
+		t.Fatalf("expected 2 L0 children, got %d", len(result2.Children))
+	}
+	for _, c := range result2.Children {
+		if c.Children != 0 {
+			t.Errorf("L0 leaf %s should have 0 children, got %d", c.Key, c.Children)
+		}
+	}
+}
+
+func TestExpandChildCount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Verify existing drill-down test children show 0
+	s.Put(ctx, PutParams{NS: "test", Key: "c1", Content: "child 1"})
+	s.Put(ctx, PutParams{NS: "test", Key: "c2", Content: "child 2"})
+	s.Consolidate(ctx, ConsolidateParams{
+		NS: "test", SummaryKey: "parent",
+		Content: "parent summary", SourceKeys: []string{"c1", "c2"},
+	})
+
+	result, _ := s.Expand(ctx, ExpandParams{NS: "test", Key: "parent"})
+	for _, c := range result.Children {
+		if c.Children != 0 {
+			t.Errorf("leaf child %s should have Children=0, got %d", c.Key, c.Children)
+		}
+	}
+}
+
 func TestConsolidateTooFewKeys(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

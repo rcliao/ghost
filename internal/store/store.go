@@ -102,6 +102,8 @@ type ExpandResult struct {
 	Children []ExpandChild `json:"children,omitempty"`
 	// When Key is empty: all consolidation nodes in namespace
 	Nodes []ConsolidationNode `json:"nodes,omitempty"`
+	// When Key is empty: emergent clusters needing consolidation
+	Clusters []MemoryCluster `json:"clusters,omitempty"`
 }
 
 // ExpandChild is a memory returned from expanding a consolidation node.
@@ -111,6 +113,7 @@ type ExpandChild struct {
 	Importance float64 `json:"importance"`
 	EstTokens  int     `json:"est_tokens"`
 	Content    string  `json:"content"`
+	Children   int     `json:"children"` // number of contained memories (0 = leaf)
 }
 
 // ConsolidationNode is a summary memory that contains other memories.
