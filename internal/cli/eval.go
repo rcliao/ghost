@@ -42,25 +42,89 @@ type evalReport struct {
 }
 
 // evalSeedMemories are the test memories seeded into the eval namespace.
+// ~80 memories across 10+ topics to create realistic scoring pressure.
 var evalSeedMemories = []store.PutParams{
-	// Auth cluster
+	// === Auth cluster (4) ===
 	{NS: evalNS, Key: "auth-jwt-signing", Content: "Authentication uses JWT tokens with RSA256 signing for API access", Kind: "semantic", Tags: []string{"auth", "project:api"}, Importance: 0.7},
 	{NS: evalNS, Key: "auth-token-expiry", Content: "JWT access tokens expire after 15 minutes, refresh tokens after 7 days", Kind: "semantic", Tags: []string{"auth", "project:api"}, Importance: 0.6},
 	{NS: evalNS, Key: "auth-cookie-storage", Content: "Refresh tokens are stored in httpOnly secure cookies, not localStorage", Kind: "semantic", Tags: []string{"auth", "security"}, Importance: 0.8},
 	{NS: evalNS, Key: "auth-session-bug", Content: "Session tokens were stored in plaintext cookies causing security audit failure", Kind: "episodic", Tags: []string{"auth", "debugging"}, Importance: 0.7},
 
-	// Database cluster
+	// === Database cluster (5) ===
 	{NS: evalNS, Key: "db-postgres-choice", Content: "Chose PostgreSQL over MySQL for JSONB support and better concurrent write performance", Kind: "semantic", Tags: []string{"database", "project:api"}, Importance: 0.8},
 	{NS: evalNS, Key: "db-migration-gotcha", Content: "Always run migrations in a transaction, we lost data once when a migration failed halfway", Kind: "episodic", Tags: []string{"database", "debugging"}, Importance: 0.9},
 	{NS: evalNS, Key: "db-indexing-strategy", Content: "Use GIN indexes for JSONB columns and B-tree for UUID primary keys", Kind: "procedural", Tags: []string{"database", "project:api"}, Importance: 0.6},
+	{NS: evalNS, Key: "db-connection-pooling", Content: "PostgreSQL connection pool uses pgBouncer in transaction mode, max 200 connections per pod", Kind: "procedural", Tags: []string{"database", "project:api"}, Importance: 0.5},
+	{NS: evalNS, Key: "db-vacuum-schedule", Content: "VACUUM ANALYZE runs nightly at 3am UTC via cron job, takes about 20 minutes on production", Kind: "procedural", Tags: []string{"database", "ops"}, Importance: 0.4},
 
-	// Deployment cluster
+	// === Deployment cluster (4) ===
 	{NS: evalNS, Key: "deploy-k8s-rollout", Content: "Use rolling deployment strategy with maxSurge=1 and maxUnavailable=0 for zero downtime", Kind: "procedural", Tags: []string{"deployment", "project:api"}, Importance: 0.7},
 	{NS: evalNS, Key: "deploy-health-check", Content: "Health check endpoint must return 200 within 5 seconds or pod gets killed by liveness probe", Kind: "procedural", Tags: []string{"deployment", "debugging"}, Importance: 0.8},
+	{NS: evalNS, Key: "deploy-helm-values", Content: "Helm values override for staging uses values-staging.yaml, production uses values-prod.yaml with sealed secrets", Kind: "procedural", Tags: []string{"deployment", "project:api"}, Importance: 0.5},
+	{NS: evalNS, Key: "deploy-canary-rollback", Content: "Canary deployments auto-rollback if error rate exceeds 5% over 2 minutes, monitored by Prometheus", Kind: "procedural", Tags: []string{"deployment", "monitoring"}, Importance: 0.7},
 
-	// Unrelated memories (noise)
+	// === Monitoring cluster (5) ===
+	{NS: evalNS, Key: "monitor-prometheus-setup", Content: "Prometheus scrapes /metrics endpoint every 15 seconds, retention 30 days, uses Thanos for long-term storage", Kind: "semantic", Tags: []string{"monitoring", "ops"}, Importance: 0.6},
+	{NS: evalNS, Key: "monitor-grafana-dashboard", Content: "Main API dashboard at grafana.internal/d/api-latency shows p50/p99 latency, error rate, and throughput", Kind: "procedural", Tags: []string{"monitoring", "ops"}, Importance: 0.5},
+	{NS: evalNS, Key: "monitor-alert-rules", Content: "PagerDuty alerts fire when p99 latency exceeds 2 seconds for 5 minutes or error rate exceeds 1% for 3 minutes", Kind: "procedural", Tags: []string{"monitoring", "ops"}, Importance: 0.7},
+	{NS: evalNS, Key: "monitor-log-aggregation", Content: "Logs shipped to Loki via Promtail, queryable in Grafana. Structured JSON logging with request_id correlation", Kind: "semantic", Tags: []string{"monitoring", "logging"}, Importance: 0.5},
+	{NS: evalNS, Key: "monitor-oncall-runbook", Content: "On-call runbook: check Grafana dashboard first, then Loki logs filtered by request_id, escalate to Slack #incidents", Kind: "procedural", Tags: []string{"monitoring", "ops"}, Importance: 0.6},
+
+	// === CI/CD cluster (4) ===
+	{NS: evalNS, Key: "ci-github-actions", Content: "CI runs on GitHub Actions with matrix builds for Go 1.21 and 1.22, parallel test shards", Kind: "semantic", Tags: []string{"ci", "project:api"}, Importance: 0.5},
+	{NS: evalNS, Key: "ci-test-coverage", Content: "Test coverage must stay above 80% or PR check fails, enforced by codecov bot comment", Kind: "procedural", Tags: []string{"ci", "testing"}, Importance: 0.6},
+	{NS: evalNS, Key: "ci-docker-build", Content: "Docker images built with multi-stage Dockerfile, alpine base, pushed to ghcr.io/org/api with git SHA tag", Kind: "procedural", Tags: []string{"ci", "deployment"}, Importance: 0.5},
+	{NS: evalNS, Key: "ci-lint-config", Content: "golangci-lint config enables govet, staticcheck, errcheck, gosec. Runs in CI and pre-commit hook", Kind: "procedural", Tags: []string{"ci", "project:api"}, Importance: 0.4},
+
+	// === Testing cluster (5) ===
+	{NS: evalNS, Key: "test-integration-db", Content: "Integration tests use testcontainers to spin up PostgreSQL, Redis, and Elasticsearch per test suite", Kind: "procedural", Tags: []string{"testing", "project:api"}, Importance: 0.7},
+	{NS: evalNS, Key: "test-mock-guidelines", Content: "Only mock external HTTP services and third-party APIs, never mock the database or internal packages", Kind: "semantic", Tags: []string{"testing", "convention"}, Importance: 0.8},
+	{NS: evalNS, Key: "test-fixture-pattern", Content: "Test fixtures loaded from testdata/ directory as golden files, updated with -update flag", Kind: "procedural", Tags: []string{"testing", "project:api"}, Importance: 0.5},
+	{NS: evalNS, Key: "test-flaky-retry", Content: "Flaky test detected in TestSearchRanking — intermittent failure due to Elasticsearch index refresh timing. Added 1s sleep as workaround.", Kind: "episodic", Tags: []string{"testing", "debugging"}, Importance: 0.6},
+	{NS: evalNS, Key: "test-e2e-playwright", Content: "End-to-end tests use Playwright for browser automation, run nightly against staging environment", Kind: "semantic", Tags: []string{"testing", "project:frontend"}, Importance: 0.5},
+
+	// === Go patterns cluster (5) ===
+	{NS: evalNS, Key: "go-error-wrapping", Content: "Always wrap errors with fmt.Errorf and %w verb to preserve error chain for errors.Is/As checks", Kind: "procedural", Tags: []string{"go", "convention"}, Importance: 0.6},
+	{NS: evalNS, Key: "go-context-timeout", Content: "All HTTP handlers must respect context cancellation. Use ctx.Done() in long-running loops", Kind: "procedural", Tags: []string{"go", "convention"}, Importance: 0.7},
+	{NS: evalNS, Key: "go-struct-validation", Content: "Use go-playground/validator for struct validation at API boundary, not deep in business logic", Kind: "semantic", Tags: []string{"go", "convention"}, Importance: 0.5},
+	{NS: evalNS, Key: "go-goroutine-leak", Content: "Found goroutine leak in webhook handler — started goroutines without context cancellation. Fixed by passing request context", Kind: "episodic", Tags: []string{"go", "debugging"}, Importance: 0.8},
+	{NS: evalNS, Key: "go-dependency-injection", Content: "Use constructor injection for services, not global variables. Makes testing easier and dependencies explicit", Kind: "semantic", Tags: []string{"go", "convention"}, Importance: 0.6},
+
+	// === Frontend cluster (5) ===
+	{NS: evalNS, Key: "fe-react-query", Content: "React Query handles all API data fetching with automatic caching, refetching, and optimistic updates", Kind: "semantic", Tags: []string{"frontend", "project:frontend"}, Importance: 0.6},
+	{NS: evalNS, Key: "fe-tailwind-theme", Content: "Tailwind config extends theme with brand colors: primary-500=#3B82F6, accent-500=#10B981. Dark mode uses class strategy", Kind: "procedural", Tags: []string{"frontend", "project:frontend"}, Importance: 0.4},
+	{NS: evalNS, Key: "fe-nextjs-ssr", Content: "Product pages use SSR via getServerSideProps for SEO, dashboard pages use client-side rendering only", Kind: "semantic", Tags: []string{"frontend", "project:frontend"}, Importance: 0.6},
+	{NS: evalNS, Key: "fe-form-validation", Content: "Forms use react-hook-form with zod schema validation. Error messages defined in shared validation schemas", Kind: "procedural", Tags: []string{"frontend", "project:frontend"}, Importance: 0.5},
+	{NS: evalNS, Key: "fe-bundle-size", Content: "Bundle analyzer shows lodash contributing 70KB to main chunk. Replaced full import with lodash-es tree-shakeable imports", Kind: "episodic", Tags: []string{"frontend", "debugging"}, Importance: 0.6},
+
+	// === Infrastructure cluster (5) ===
+	{NS: evalNS, Key: "infra-terraform-modules", Content: "Terraform modules in infra/ repo: vpc, eks, rds, elasticache, s3. State stored in S3 with DynamoDB locking", Kind: "semantic", Tags: []string{"infrastructure", "ops"}, Importance: 0.6},
+	{NS: evalNS, Key: "infra-aws-regions", Content: "Primary region us-east-1, disaster recovery in us-west-2. Cross-region replication for RDS and S3", Kind: "semantic", Tags: []string{"infrastructure", "ops"}, Importance: 0.7},
+	{NS: evalNS, Key: "infra-cost-optimization", Content: "Switched to Graviton instances for 20% cost savings. Reserved instances for production RDS and ElastiCache", Kind: "episodic", Tags: []string{"infrastructure", "ops"}, Importance: 0.5},
+	{NS: evalNS, Key: "infra-secrets-management", Content: "Secrets stored in AWS Secrets Manager, rotated every 90 days. Application reads via sidecar injector in k8s", Kind: "procedural", Tags: []string{"infrastructure", "security"}, Importance: 0.7},
+	{NS: evalNS, Key: "infra-dns-config", Content: "DNS managed in Route53. API at api.example.com, staging at api-staging.example.com. CloudFront for static assets", Kind: "procedural", Tags: []string{"infrastructure", "ops"}, Importance: 0.4},
+
+	// === Security cluster (4) ===
+	{NS: evalNS, Key: "sec-rate-limiting", Content: "API rate limiting: 100 requests/minute per user for standard tier, 1000 for premium. Uses Redis sliding window", Kind: "procedural", Tags: []string{"security", "project:api"}, Importance: 0.7},
+	{NS: evalNS, Key: "sec-cors-policy", Content: "CORS allows only app.example.com and localhost:3000. Credentials mode enabled for cookie-based auth", Kind: "procedural", Tags: []string{"security", "project:api"}, Importance: 0.6},
+	{NS: evalNS, Key: "sec-sql-injection", Content: "All database queries must use parameterized queries. Found and fixed raw string interpolation in search endpoint", Kind: "episodic", Tags: []string{"security", "debugging"}, Importance: 0.9},
+	{NS: evalNS, Key: "sec-dependency-audit", Content: "Dependabot enabled for all repos. Critical vulnerabilities must be patched within 48 hours per security policy", Kind: "procedural", Tags: []string{"security", "ops"}, Importance: 0.6},
+
+	// === Performance cluster (4) ===
+	{NS: evalNS, Key: "perf-api-caching", Content: "API responses cached in Redis with Cache-Control headers. GET endpoints use ETag-based conditional requests", Kind: "procedural", Tags: []string{"performance", "project:api"}, Importance: 0.6},
+	{NS: evalNS, Key: "perf-n-plus-one", Content: "Discovered N+1 query in /api/v2/users endpoint. Fixed by using dataloader pattern with batched SQL queries", Kind: "episodic", Tags: []string{"performance", "debugging"}, Importance: 0.8},
+	{NS: evalNS, Key: "perf-slow-query-log", Content: "PostgreSQL slow query log threshold set to 500ms. Weekly review meeting to address top 10 slowest queries", Kind: "procedural", Tags: []string{"performance", "database"}, Importance: 0.5},
+	{NS: evalNS, Key: "perf-cdn-static", Content: "Static assets served via CloudFront CDN with 1-year cache and content-hash filenames for cache busting", Kind: "procedural", Tags: []string{"performance", "infrastructure"}, Importance: 0.4},
+
+	// === Team/process noise (8) — diverse unrelated memories ===
 	{NS: evalNS, Key: "recipe-pasta", Content: "Best pasta sauce uses San Marzano tomatoes simmered for 45 minutes with fresh basil", Kind: "procedural", Tags: []string{"cooking"}, Importance: 0.3},
 	{NS: evalNS, Key: "meeting-notes-q4", Content: "Q4 planning: focus on API performance, defer mobile app to Q1", Kind: "episodic", Tags: []string{"planning"}, Importance: 0.4},
+	{NS: evalNS, Key: "team-standup-format", Content: "Daily standup at 9:30am PST. Format: yesterday/today/blockers. Keep under 15 minutes", Kind: "procedural", Tags: []string{"process"}, Importance: 0.3},
+	{NS: evalNS, Key: "onboarding-checklist", Content: "New hire checklist: GitHub access, AWS IAM, Slack channels, 1-on-1 with tech lead, PR review buddy", Kind: "procedural", Tags: []string{"process"}, Importance: 0.3},
+	{NS: evalNS, Key: "book-recommendation", Content: "Designing Data-Intensive Applications by Martin Kleppmann is essential reading for backend engineers", Kind: "semantic", Tags: []string{"learning"}, Importance: 0.3},
+	{NS: evalNS, Key: "conference-talk-idea", Content: "Proposed talk on event-driven architecture patterns for GopherCon 2025, abstract submitted", Kind: "episodic", Tags: []string{"career"}, Importance: 0.2},
+	{NS: evalNS, Key: "office-wifi-password", Content: "Office WiFi network: CorpNet-5G, password: Welcome2024! Guest network: Guest-Open (no password)", Kind: "procedural", Tags: []string{"office"}, Importance: 0.2},
+	{NS: evalNS, Key: "lunch-spots", Content: "Best lunch spots near office: Pho 99 (Vietnamese), Tacqueria El Rey (Mexican), Sweetgreen (salads)", Kind: "episodic", Tags: []string{"office"}, Importance: 0.1},
 }
 
 // evalTestCases define queries and which memories should be retrieved.
