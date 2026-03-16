@@ -287,27 +287,54 @@ func runEvalCase(ctx context.Context, tc evalTestCase, budget int) evalResult {
 		returnedSet[m.Key] = true
 	}
 
-	// Calculate hits and misses
+	// Build a map of parent → children for consolidation-aware scoring.
+	// If a returned key is a consolidation parent that contains expected children,
+	// those children count as hits (parent summary replaces children in context).
+	parentCovers := map[string][]string{} // returned parent key → expected child keys it covers
+	for _, returnedKey := range result.ReturnedKeys {
+		if expectedSet[returnedKey] {
+			continue // direct hit, no need to check children
+		}
+		// Check if this returned key is a parent that contains any expected keys
+		expandResult, err := st.Expand(ctx, store.ExpandParams{NS: evalNS, Key: returnedKey})
+		if err != nil || expandResult == nil || len(expandResult.Children) == 0 {
+			continue
+		}
+		for _, child := range expandResult.Children {
+			if expectedSet[child.Key] {
+				parentCovers[returnedKey] = append(parentCovers[returnedKey], child.Key)
+			}
+		}
+	}
+
+	// Calculate hits and misses (consolidation-aware)
+	coveredByParent := map[string]bool{}
+	for _, children := range parentCovers {
+		for _, k := range children {
+			coveredByParent[k] = true
+		}
+	}
+
 	for _, k := range tc.ExpectedKeys {
-		if returnedSet[k] {
+		if returnedSet[k] || coveredByParent[k] {
 			result.Hits = append(result.Hits, k)
 		} else {
 			result.Misses = append(result.Misses, k)
 		}
 	}
 
-	// Precision: of returned, how many were expected?
+	// Precision: of returned, how many were expected or cover expected?
 	if len(result.ReturnedKeys) > 0 {
 		relevant := 0
 		for _, k := range result.ReturnedKeys {
-			if expectedSet[k] {
+			if expectedSet[k] || len(parentCovers[k]) > 0 {
 				relevant++
 			}
 		}
 		result.Precision = float64(relevant) / float64(len(result.ReturnedKeys))
 	}
 
-	// Recall: of expected, how many were returned?
+	// Recall: of expected, how many were returned (directly or via parent)?
 	if len(tc.ExpectedKeys) > 0 {
 		result.Recall = float64(len(result.Hits)) / float64(len(tc.ExpectedKeys))
 	}
