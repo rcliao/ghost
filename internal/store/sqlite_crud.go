@@ -65,6 +65,21 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		expiresAt = &exp
 	}
 
+	// Dedup check: if enabled, search for semantically similar memories and skip if found
+	if p.Dedup && s.embedder != nil {
+		vec, err := s.embedder.Embed(ctx, p.Content)
+		if err == nil && len(vec) > 0 {
+			similar := s.findSimilarForDedup(ctx, p.NS, vec, 0.92)
+			if similar != "" {
+				// Return the existing memory instead of creating a duplicate
+				existing, err := s.Get(ctx, GetParams{NS: p.NS, Key: similar})
+				if err == nil && len(existing) > 0 {
+					return &existing[0], nil
+				}
+			}
+		}
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -464,4 +479,44 @@ func (s *SQLiteStore) RmNamespace(ctx context.Context, ns string, hard bool) (in
 		return 0, fmt.Errorf("soft-delete namespace: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// findSimilarForDedup checks if a semantically similar memory already exists.
+// Returns the key of the most similar memory above the threshold, or empty string.
+func (s *SQLiteStore) findSimilarForDedup(ctx context.Context, ns string, vec embedding.Vector, threshold float64) string {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Load embeddings from recent memories in the same namespace
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.key, c.embedding
+		 FROM memories m
+		 JOIN chunks c ON c.memory_id = m.id AND c.seq = 0
+		 WHERE m.ns = ? AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+		   AND c.embedding IS NOT NULL
+		 ORDER BY m.created_at DESC
+		 LIMIT 50`, ns, now)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var bestKey string
+	var bestSim float64
+
+	for rows.Next() {
+		var key, embJSON string
+		if rows.Scan(&key, &embJSON) != nil {
+			continue
+		}
+		var existingVec embedding.Vector
+		if json.Unmarshal([]byte(embJSON), &existingVec) != nil {
+			continue
+		}
+		sim := embedding.CosineSimilarity(vec, existingVec)
+		if sim > threshold && sim > bestSim {
+			bestSim = sim
+			bestKey = key
+		}
+	}
+	return bestKey
 }

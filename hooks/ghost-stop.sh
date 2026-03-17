@@ -148,7 +148,7 @@ echo "$LEARNINGS" | jq -c '.[]' | while IFS= read -r item; do
   TAGS="${TAGS},${SESSION_TAG}"
 
   echo "Storing: $KEY (tier=$TIER)" >> "$DEBUG_LOG"
-  if $GHOST put -n "$AGENT_NS" -k "$KEY" --kind "$KIND" -p "$PRIORITY" --tier "$TIER" -t "$TAGS" "$CONTENT" >> "$DEBUG_LOG" 2>&1; then
+  if $GHOST put -n "$AGENT_NS" -k "$KEY" --kind "$KIND" -p "$PRIORITY" --tier "$TIER" -t "$TAGS" --dedup "$CONTENT" >> "$DEBUG_LOG" 2>&1; then
     echo "$KEY" >> "$KEYS_FILE"
   else
     echo "Failed to store: $KEY" >> "$DEBUG_LOG"

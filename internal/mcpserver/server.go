@@ -103,6 +103,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"tier":       prop("string", "Storage tier: sensory (ultra-short), stm (default), ltm (proven useful)"),
 			"pinned":     prop("boolean", "If true, always loaded in context and exempt from lifecycle decay"),
 			"ttl":        prop("string", "Time-to-live, e.g. 7d, 24h, 30m"),
+			"dedup":      prop("boolean", "If true, skip storing when a semantically similar memory already exists (cosine > 0.92)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
@@ -116,6 +117,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Tier       string   `json:"tier"`
 			Pinned     bool     `json:"pinned"`
 			TTL        string   `json:"ttl"`
+			Dedup      bool     `json:"dedup"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -134,6 +136,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Tier:       p.Tier,
 			Pinned:     p.Pinned,
 			TTL:        p.TTL,
+			Dedup:      p.Dedup,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil

@@ -29,6 +29,7 @@ func init() {
 	cmd.Flags().String("ttl", "", "Time-to-live (e.g. 7d, 24h, 30m)")
 	cmd.Flags().String("files", "", "Comma-separated file paths to link")
 	cmd.Flags().String("file-rel", "modified", "File relationship: modified, created, deleted, read")
+	cmd.Flags().Bool("dedup", false, "Skip storing if a semantically similar memory already exists (cosine > 0.92)")
 
 	cmd.MarkFlagRequired("ns")
 	cmd.MarkFlagRequired("key")
@@ -113,6 +114,8 @@ func runPut(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	dedup, _ := cmd.Flags().GetBool("dedup")
+
 	mem, err := st.Put(cmd.Context(), store.PutParams{
 		NS:       ns,
 		Key:      key,
@@ -124,6 +127,7 @@ func runPut(cmd *cobra.Command, args []string) {
 		Meta:     meta,
 		TTL:      ttl,
 		Files:    files,
+		Dedup:    dedup,
 	})
 	if err != nil {
 		exitErr("put", err)
