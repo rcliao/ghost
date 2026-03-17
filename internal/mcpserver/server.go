@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rcliao/ghost/internal/model"
 	"github.com/rcliao/ghost/internal/store"
 )
 
@@ -140,6 +141,16 @@ func registerTools(server *mcp.Server, st store.Store) {
 		})
 		if err != nil {
 			return errResult(err.Error()), nil
+		}
+		// Signal dedup to caller: if requested key differs from returned key,
+		// a similar memory already existed and was returned instead
+		if p.Dedup && mem.Key != p.Key {
+			type putResult struct {
+				*model.Memory
+				Deduplicated    bool   `json:"deduplicated"`
+				RequestedKey    string `json:"requested_key"`
+			}
+			return jsonResult(putResult{Memory: mem, Deduplicated: true, RequestedKey: p.Key})
 		}
 		return jsonResult(mem)
 	})
