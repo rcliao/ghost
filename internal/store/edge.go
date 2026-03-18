@@ -427,6 +427,12 @@ func (s *SQLiteStore) decayEdges(ctx context.Context, result *ReflectResult) {
 		n, _ := res2.RowsAffected()
 		result.EdgesPruned = int(n)
 	}
+
+	// Clean orphaned edges pointing to soft-deleted memories
+	s.db.ExecContext(ctx,
+		`DELETE FROM memory_edges WHERE
+		 from_id IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL) OR
+		 to_id IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL)`)
 }
 
 // strengthenCoRetrievedEdges increments access_count and weight for edges
