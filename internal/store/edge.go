@@ -136,7 +136,7 @@ func edgeAutoLinkThreshold() float64 {
 			return v
 		}
 	}
-	return 0.80
+	return 0.85
 }
 
 // CreateEdge creates a weighted edge between two memories.

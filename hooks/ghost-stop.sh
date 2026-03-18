@@ -175,4 +175,9 @@ else
   echo "Skipping consolidation: $KEY_COUNT keys, summary='${SUMMARY_CONTENT:0:50}'" >> "$DEBUG_LOG"
 fi
 
+# Lightweight reflect: prune expired sensory, decay stale edges.
+# Runs after capture so new memories are included. Silent on error.
+echo "Running lightweight reflect..." >> "$DEBUG_LOG"
+$GHOST reflect -n "$AGENT_NS" >> "$DEBUG_LOG" 2>&1 || echo "Reflect failed (non-fatal)" >> "$DEBUG_LOG"
+
 echo "Done" >> "$DEBUG_LOG"

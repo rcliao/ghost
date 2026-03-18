@@ -236,6 +236,15 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		}
 	}
 
+	// Pressure-based compaction signal: if total active memories in namespace
+	// exceed threshold, suggest compaction even if budget wasn't exhausted.
+	if !result.CompactionSuggested && p.NS != "" {
+		count, err := s.countActiveMemories(ctx, p.NS)
+		if err == nil && count > 500 {
+			result.CompactionSuggested = true
+		}
+	}
+
 	// Touch access metadata for all returned memories
 	var ids []string
 	for _, r := range results {
@@ -391,6 +400,17 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 			originalScores[parentID] = 0
 		}
 	}
+}
+
+// countActiveMemories returns the number of non-deleted, non-expired memories in a namespace.
+func (s *SQLiteStore) countActiveMemories(ctx context.Context, ns string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories
+		 WHERE ns = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+		ns, now).Scan(&count)
+	return count, err
 }
 
 // computeContextScore calculates the composite context score for a memory.
