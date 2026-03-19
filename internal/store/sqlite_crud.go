@@ -65,7 +65,22 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		expiresAt = &exp
 	}
 
-	// Dedup check: if enabled, search for semantically similar memories and skip if found
+	// Exact content dedup: skip if an active memory with identical content exists in namespace.
+	// Fast check (no embeddings) that catches verbatim duplicate captures across sessions.
+	if p.Dedup {
+		var existingKey string
+		s.db.QueryRowContext(ctx,
+			`SELECT key FROM memories WHERE ns = ? AND content = ? AND deleted_at IS NULL
+			 ORDER BY version DESC LIMIT 1`, p.NS, p.Content).Scan(&existingKey)
+		if existingKey != "" {
+			existing, err := s.Get(ctx, GetParams{NS: p.NS, Key: existingKey})
+			if err == nil && len(existing) > 0 {
+				return &existing[0], nil
+			}
+		}
+	}
+
+	// Semantic dedup: if enabled, search for semantically similar memories and skip if found
 	if p.Dedup && s.embedder != nil {
 		vec, err := s.embedder.Embed(ctx, p.Content)
 		if err == nil && len(vec) > 0 {

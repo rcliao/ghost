@@ -100,8 +100,13 @@ func (s *SQLiteStore) touchMemories(ctx context.Context, ids []string) error {
 	for _, id := range ids {
 		args = append(args, id)
 	}
+	// Exclude sensory-tier memories from context-based access counting.
+	// Context assembly touches all returned memories, which artificially inflates
+	// access_count on sensory memories, preventing sys-decay-sensory from pruning them.
+	// Sensory memories should only be "attended" by explicit Get/Search retrieval.
 	_, err := s.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN (%s) AND deleted_at IS NULL`, placeholders),
+		fmt.Sprintf(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?
+			WHERE id IN (%s) AND deleted_at IS NULL AND COALESCE(tier, 'stm') != 'sensory'`, placeholders),
 		args...,
 	)
 	return err

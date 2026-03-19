@@ -134,6 +134,15 @@ var builtinRules = []ReflectRule{
 		Action:    RuleAction{Op: "DELETE"},
 	},
 	{
+		ID:        "sys-archive-old-episodic",
+		Name:      "Archive old episodic STM memories after 30 days",
+		Scope:     "reflect",
+		Priority:  45,
+		CreatedBy: "system",
+		Cond:      RuleCond{Tier: "stm", Kind: "episodic", AgeGTHours: 720, AccessLT: 5},
+		Action:    RuleAction{Op: "ARCHIVE"},
+	},
+	{
 		ID:        "sys-merge-similar",
 		Name:      "link similar STM memories",
 		Scope:     "reflect",
