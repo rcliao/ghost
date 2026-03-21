@@ -356,17 +356,17 @@ func TestReflectPruneLowUtility(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Memory accessed 10 times but only useful once (utility ratio 0.1 < 0.2) → should be deleted
+	// Memory accessed 25 times but only useful once (utility ratio 0.04 < 0.05) → should be demoted
 	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, utility_count, tier, est_tokens)
-		VALUES ('u1', 'test', 'low-util', 'unhelpful memory', 'semantic', 1, ?, 'normal', 10, 0.5, 1, 'stm', 20)`,
+		VALUES ('u1', 'test', 'low-util', 'unhelpful memory', 'semantic', 1, ?, 'normal', 25, 0.5, 1, 'stm', 20)`,
 		time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
 
 	result, err := s.Reflect(ctx, ReflectParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Deleted < 1 {
-		t.Errorf("expected low-utility memory to be deleted, got deleted=%d", result.Deleted)
+	if result.Demoted < 1 {
+		t.Errorf("expected low-utility memory to be demoted, got demoted=%d", result.Demoted)
 	}
 }
 

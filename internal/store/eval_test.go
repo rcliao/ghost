@@ -568,10 +568,11 @@ func TestEvalReflectLifecycle(t *testing.T) {
 	})
 
 	t.Run("prune_low_utility", func(t *testing.T) {
-		var deletedAt *string
-		s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["reflect-prune-target"]).Scan(&deletedAt)
-		if deletedAt == nil {
-			t.Error("expected soft-delete")
+		// With the safer rule (AccessGT:20, UtilityLT:0.05), this memory is demoted to dormant, not deleted
+		var tier string
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ? AND deleted_at IS NULL`, ids["reflect-prune-target"]).Scan(&tier)
+		if tier != "dormant" {
+			t.Errorf("expected tier 'dormant' (demoted), got %q", tier)
 		}
 	})
 
@@ -597,10 +598,11 @@ func TestEvalReflectLifecycle(t *testing.T) {
 	})
 
 	t.Run("pruned_excluded_from_search", func(t *testing.T) {
+		// Demoted to dormant — dormant is excluded from search by default
 		results, _ := s.Search(ctx, SearchParams{Query: "memory accessed useful utility", Limit: 10})
 		for _, r := range results {
 			if r.Key == "reflect-prune-target" {
-				t.Error("pruned memory in search results")
+				t.Error("dormant memory in search results")
 			}
 		}
 	})
@@ -866,24 +868,22 @@ func TestEvalUtilityFeedback(t *testing.T) {
 		}
 	})
 
-	t.Run("high_access_low_utility_gets_pruned", func(t *testing.T) {
-		// reflect-prune-target has access=10, utility=1 (ratio=0.1 < 0.2)
-		// After reflect, it should be soft-deleted
-		// This is already tested in TestEvalReflectLifecycle but we verify
-		// that the utility ratio mechanism works end-to-end
-		var deletedAt *string
+	t.Run("high_access_low_utility_gets_demoted", func(t *testing.T) {
+		// reflect-prune-target has access=25, utility=1 (ratio=0.04 < 0.05)
+		// After reflect, it should be demoted to dormant (not deleted — safer)
+		var tier string
 		// Run reflect first
 		s.Reflect(ctx, ReflectParams{})
-		s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["reflect-prune-target"]).Scan(&deletedAt)
-		if deletedAt == nil {
-			t.Error("memory with 10 accesses but 1 utility should be pruned")
+		s.db.QueryRow(`SELECT tier FROM memories WHERE id = ? AND deleted_at IS NULL`, ids["reflect-prune-target"]).Scan(&tier)
+		if tier != "dormant" {
+			t.Errorf("memory with 25 accesses but 1 utility should be demoted to dormant, got tier=%q", tier)
 		}
 
-		// Also verify it's excluded from search
+		// Dormant is excluded from search by default
 		results, _ := s.Search(ctx, SearchParams{Query: "surfaced often never useful", Limit: 10})
 		for _, r := range results {
 			if r.Key == "reflect-prune-target" {
-				t.Error("pruned memory still appears in search")
+				t.Error("dormant memory still appears in search")
 			}
 		}
 	})
@@ -2017,9 +2017,10 @@ func TestEvalReport(t *testing.T) {
 			return tier == "dormant"
 		}},
 		{"reflect/prune", func() bool {
-			var deletedAt *string
-			s.db.QueryRow(`SELECT deleted_at FROM memories WHERE id = ?`, ids["reflect-prune-target"]).Scan(&deletedAt)
-			return deletedAt != nil
+			// Now demotes to dormant instead of deleting (safer with zero utility data)
+			var tier string
+			s.db.QueryRow(`SELECT tier FROM memories WHERE id = ? AND deleted_at IS NULL`, ids["reflect-prune-target"]).Scan(&tier)
+			return tier == "dormant"
 		}},
 		{"reflect/pinned_safe", func() bool {
 			var tier string

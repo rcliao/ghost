@@ -438,6 +438,8 @@ func (s *SQLiteStore) decayEdges(ctx context.Context, result *ReflectResult) {
 // strengthenCoRetrievedEdges increments access_count and weight for edges
 // between memories that were returned together in the same context response.
 // Implements Hebbian learning: "neurons that fire together wire together."
+// Also gives a weak utility signal to co-retrieved memories — appearing together
+// in context is evidence of usefulness.
 func (s *SQLiteStore) strengthenCoRetrievedEdges(ctx context.Context, memoryIDs []string) {
 	if len(memoryIDs) < 2 {
 		return
@@ -458,6 +460,25 @@ func (s *SQLiteStore) strengthenCoRetrievedEdges(ctx context.Context, memoryIDs 
 				 WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)`,
 				now, memoryIDs[i], memoryIDs[j], memoryIDs[j], memoryIDs[i])
 		}
+	}
+
+	// Weak utility signal: co-retrieved memories are likely useful together.
+	// Increment utility_count for all co-retrieved memories (once per context call).
+	// This bootstraps the utility signal that was previously always zero.
+	if len(memoryIDs) > 0 {
+		placeholders := ""
+		args := []interface{}{}
+		for i, id := range memoryIDs {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, id)
+		}
+		s.db.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE memories SET utility_count = utility_count + 1
+				WHERE id IN (%s) AND deleted_at IS NULL`, placeholders),
+			args...)
 	}
 }
 

@@ -202,7 +202,7 @@ func DefaultSeedCorpus() []SeedMemory {
 		},
 		{
 			NS: "system:ops", Key: "reflect-prune-target", Kind: "semantic", Tier: "stm", Priority: "low", Importance: 0.3,
-			AccessCount: 10, UtilityCount: 1,
+			AccessCount: 25, UtilityCount: 1,
 			Content: "Memory that gets surfaced often but is almost never marked useful by the agent.",
 		},
 		{

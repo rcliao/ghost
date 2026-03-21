@@ -231,6 +231,17 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`UPDATE reflect_rules SET action_params = '{"strategy":"link_only"}', name = 'link similar STM memories'
 		WHERE id = 'sys-merge-similar' AND action_params = '{"strategy":"keep_highest_importance"}'`)
 
+	// Phase 9: make sys-prune-low-utility safer — demote instead of delete,
+	// require 20+ accesses instead of 5. With zero utility tracking across the DB,
+	// the old rule (AccessGT:5, UtilityLT:0.2, DELETE) would delete nearly everything.
+	s.db.Exec(`UPDATE reflect_rules
+		SET name = 'Delete heavily-accessed but never-useful memories',
+		    cond_access_gt = 20,
+		    cond_utility_lt = 0.05,
+		    action_op = 'DEMOTE',
+		    action_params = '{"to_tier":"dormant"}'
+		WHERE id = 'sys-prune-low-utility' AND cond_access_gt = 5`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
 

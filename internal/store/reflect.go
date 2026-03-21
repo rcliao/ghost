@@ -126,12 +126,15 @@ var builtinRules = []ReflectRule{
 	},
 	{
 		ID:        "sys-prune-low-utility",
-		Name:      "Delete low-utility memories",
+		Name:      "Delete heavily-accessed but never-useful memories",
 		Scope:     "reflect",
 		Priority:  90,
 		CreatedBy: "system",
-		Cond:      RuleCond{AccessGT: 5, UtilityLT: 0.2},
-		Action:    RuleAction{Op: "DELETE"},
+		// Raised threshold: requires 20+ accesses (well-tested) and utility < 0.05
+		// (nearly zero signal). Previous threshold (5 accesses, 0.2 utility) was
+		// too aggressive — with zero utility tracking, it would delete everything.
+		Cond:   RuleCond{AccessGT: 20, UtilityLT: 0.05},
+		Action: RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
 	},
 	{
 		ID:        "sys-archive-old-episodic",

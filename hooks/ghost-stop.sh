@@ -56,27 +56,28 @@ fi
 TRANSCRIPT_SAMPLE=$(head -30 "$TRANSCRIPT_PATH" 2>/dev/null; echo "---"; tail -70 "$TRANSCRIPT_PATH" 2>/dev/null)
 TRANSCRIPT_SAMPLE=$(echo "$TRANSCRIPT_SAMPLE" | head -c 60000)
 
-EXTRACT_PROMPT='You are a memory curator for an AI coding agent. Analyze the following Claude Code session transcript (JSONL format) and extract memories at two confidence levels.
+EXTRACT_PROMPT='You are a memory curator for an AI coding agent. Analyze the following Claude Code session transcript (JSONL format) and extract ONLY confirmed, valuable learnings.
 
-## Tier: stm (short-term memory)
-Confirmed learnings worth remembering. Use for:
-- Debugging insights (error -> root cause -> fix)
-- Architecture or design decisions with rationale
+## What to capture (tier: stm)
+ONLY store memories that pass this bar — would a future session benefit from knowing this?
+- Debugging insights: error -> root cause -> confirmed fix
+- Architecture or design decisions with clear rationale
 - User corrections or stated preferences
-- Non-obvious gotchas confirmed through experience
+- Non-obvious gotchas that were confirmed through testing
+- Solutions that required multiple attempts to find
 
-## Tier: sensory (raw observations)
-Unconfirmed or partial observations. Use for:
-- File paths, service names, or repo structure noticed
-- Error messages encountered (even if not yet resolved)
-- Patterns noticed but not yet confirmed
-- Context about what the session was working on
-
-sensory memories are automatically decayed if never accessed, so err on the side of capturing them.
+## What NOT to capture
+- Raw observations, file paths, or service names (these are noise, not learnings)
+- Error messages without a resolution
+- Patterns noticed but not confirmed
+- What was being worked on (session summaries cover this)
+- Anything that could be re-derived by reading the code or git log
+- Git status, branch names, PR numbers without technical insight
 
 ## Rules
-- NEVER use tier "ltm" — long-term memory is only reached through promotion.
-- If the session was trivial (just a greeting, a single file read, or a /clear), output an empty JSON array: []
+- Use tier "stm" for all learnings. Do NOT use "sensory" or "ltm".
+- If the session was trivial or produced no genuine insights, output an empty array: []
+- Be selective: 2-4 high-quality memories are better than 10 low-quality ones.
 - Include the project name in tags when inferrable from file paths or repo names.
 
 ## Output format
@@ -84,7 +85,7 @@ Output a JSON array of objects. Each object has:
   - "key": descriptive kebab-case key
   - "kind": one of "semantic", "episodic", "procedural"
   - "priority": one of "low", "normal", "high", "critical"
-  - "tier": one of "sensory", "stm"
+  - "tier": "stm"
   - "tags": comma-separated string like "learning,project:foo"
   - "content": the insight in one or two sentences (plain text)
 
