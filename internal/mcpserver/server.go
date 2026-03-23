@@ -104,7 +104,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"tier":       prop("string", "Storage tier: sensory (ultra-short), stm (default), ltm (proven useful)"),
 			"pinned":     prop("boolean", "If true, always loaded in context and exempt from lifecycle decay"),
 			"ttl":        prop("string", "Time-to-live, e.g. 7d, 24h, 30m"),
-			"dedup":      prop("boolean", "If true, skip storing when a semantically similar memory already exists (cosine > 0.92)"),
+			"dedup":      prop("boolean", "If true, skip storing when a semantically similar memory already exists (cosine > 0.82)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
@@ -196,19 +196,21 @@ func registerTools(server *mcp.Server, st store.Store) {
 		Name:        "ghost_context",
 		Description: "Assemble the most relevant memories for a task within a token budget, scored by relevance, recency, importance, and access frequency. Use this when starting a task that may benefit from past context.",
 		InputSchema: schema([]string{"query"}, map[string]map[string]any{
-			"query":  prop("string", "Natural language description of the current task"),
-			"ns":     prop("string", "Namespace filter (optional)"),
-			"kind":   prop("string", "Filter by kind: semantic, episodic, procedural"),
-			"tags":   {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tag filters"},
-			"budget": prop("integer", "Max tokens in output (default 4000)"),
+			"query":          prop("string", "Natural language description of the current task"),
+			"ns":             prop("string", "Namespace filter (optional)"),
+			"kind":           prop("string", "Filter by kind: semantic, episodic, procedural"),
+			"tags":           {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tag filters"},
+			"budget":         prop("integer", "Max tokens in output (default 4000)"),
+			"exclude_pinned": prop("boolean", "Skip pinned memories, use full budget for search-ranked results"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
-			Query  string   `json:"query"`
-			NS     string   `json:"ns"`
-			Kind   string   `json:"kind"`
-			Tags   []string `json:"tags"`
-			Budget int      `json:"budget"`
+			Query         string   `json:"query"`
+			NS            string   `json:"ns"`
+			Kind          string   `json:"kind"`
+			Tags          []string `json:"tags"`
+			Budget        int      `json:"budget"`
+			ExcludePinned bool     `json:"exclude_pinned"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -217,11 +219,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 			return errResult("query is required"), nil
 		}
 		result, err := st.Context(ctx, store.ContextParams{
-			NS:     p.NS,
-			Query:  p.Query,
-			Kind:   p.Kind,
-			Tags:   p.Tags,
-			Budget: p.Budget,
+			NS:            p.NS,
+			Query:         p.Query,
+			Kind:          p.Kind,
+			Tags:          p.Tags,
+			Budget:        p.Budget,
+			ExcludePinned: p.ExcludePinned,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil

@@ -21,6 +21,7 @@ type ContextParams struct {
 	PinBudget      int              // token budget reserved for pinned tiers (default: Budget/3)
 	SearchBudget   int              // remaining budget for query-relevant search (default: Budget - PinBudget)
 	EdgeExpansion  *EdgeExpansionConfig // edge expansion config; nil means use defaults
+	ExcludePinned  bool             // skip Phase 1 pinned memories, use full budget for search
 }
 
 // ContextMemory is a scored memory for context output.
@@ -60,7 +61,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	seen := map[string]bool{} // track memory IDs to deduplicate
 
 	// Phase 1: Load pinned memories first (chronically accessible)
-	{
+	if !p.ExcludePinned {
 		pinBudget := p.PinBudget
 		if pinBudget <= 0 {
 			pinBudget = budget / 3

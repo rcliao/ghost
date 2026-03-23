@@ -112,7 +112,7 @@ var builtinRules = []ReflectRule{
 		Scope:     "reflect",
 		Priority:  50,
 		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "stm", AccessGT: 10, AgeGTHours: 24},
+		Cond:      RuleCond{Tier: "stm", AccessGT: 50, AgeGTHours: 72},
 		Action:    RuleAction{Op: "PROMOTE", Params: map[string]any{"to_tier": "ltm"}},
 	},
 	{

@@ -22,7 +22,7 @@ type PutParams struct {
 	Meta       string
 	TTL        string // e.g. "7d", "24h", "30m"
 	Files      []FileParam
-	Dedup      bool // if true, skip storing when a similar memory already exists (cosine > 0.92)
+	Dedup      bool // if true, skip storing when a similar memory already exists (cosine > 0.82)
 }
 
 // FileParam specifies a file to link to a memory.

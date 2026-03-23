@@ -84,7 +84,7 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	if p.Dedup && s.embedder != nil {
 		vec, err := s.embedder.Embed(ctx, p.Content)
 		if err == nil && len(vec) > 0 {
-			similar := s.findSimilarForDedup(ctx, p.NS, vec, 0.92)
+			similar := s.findSimilarForDedup(ctx, p.NS, vec, 0.82)
 			if similar != "" {
 				// Return the existing memory instead of creating a duplicate
 				existing, err := s.Get(ctx, GetParams{NS: p.NS, Key: similar})

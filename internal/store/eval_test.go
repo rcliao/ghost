@@ -926,8 +926,8 @@ func TestEvalAccessPromotion(t *testing.T) {
 		t.Fatalf("expected initial access_count=0, got %d", accessCount)
 	}
 
-	// Simulate agent accessing this memory 12 times via Get (promote threshold is >10)
-	for i := 0; i < 12; i++ {
+	// Simulate agent accessing this memory 55 times via Get (promote threshold is >50)
+	for i := 0; i < 55; i++ {
 		_, err := s.Get(ctx, GetParams{NS: "project:test", Key: "useful-pattern"})
 		if err != nil {
 			t.Fatalf("get #%d: %v", i, err)
@@ -936,13 +936,13 @@ func TestEvalAccessPromotion(t *testing.T) {
 
 	// Verify access count incremented
 	s.db.QueryRow(`SELECT access_count FROM memories WHERE id = ?`, mem.ID).Scan(&accessCount)
-	if accessCount < 11 {
-		t.Errorf("expected access_count >= 11 after 12 gets, got %d", accessCount)
+	if accessCount < 51 {
+		t.Errorf("expected access_count >= 51 after 55 gets, got %d", accessCount)
 	}
-	t.Logf("after 12 gets: access_count=%d", accessCount)
+	t.Logf("after 55 gets: access_count=%d", accessCount)
 
-	// Backdate to >24h old (promote rule requires AgeGTHours: 24)
-	backdated := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	// Backdate to >72h old (promote rule requires AgeGTHours: 72)
+	backdated := time.Now().Add(-96 * time.Hour).UTC().Format(time.RFC3339)
 	s.db.ExecContext(ctx, `UPDATE memories SET created_at = ? WHERE id = ?`, backdated, mem.ID)
 
 	// Run reflect

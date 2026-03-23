@@ -192,7 +192,7 @@ func DefaultSeedCorpus() []SeedMemory {
 		},
 		{
 			NS: "system:ops", Key: "reflect-promote-target", Kind: "semantic", Tier: "stm", Priority: "normal", Importance: 0.7,
-			BackdateHours: 48, AccessCount: 12,
+			BackdateHours: 96, AccessCount: 55,
 			Content: "Frequently referenced procedure for rotating API keys across all environments.",
 		},
 		{

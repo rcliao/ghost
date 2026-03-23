@@ -59,10 +59,10 @@ func TestReflectPromote(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Insert STM memory with high access count (>10 threshold) and old enough
+	// Insert STM memory with high access count (>50 threshold) and old enough (>72h)
 	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
-		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 12, 0.7, 'stm', 30)`,
-		time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
+		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 55, 0.7, 'stm', 30)`,
+		time.Now().Add(-96*time.Hour).UTC().Format(time.RFC3339))
 
 	result, err := s.Reflect(ctx, ReflectParams{})
 	if err != nil {
