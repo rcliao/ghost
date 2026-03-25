@@ -80,22 +80,22 @@ var builtinRules = []ReflectRule{
 	// so no PIN rule is needed. The old sys-pin-identity rule is
 	// kept in existing DBs but never matches (no more identity tier).
 	{
-		ID:        "sys-promote-sensory",
-		Name:      "Promote attended sensory memories to STM",
-		Scope:     "reflect",
-		Priority:  5,
-		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "sensory", AgeGTHours: 1, AccessGT: 1},
-		Action:    RuleAction{Op: "PROMOTE", Params: map[string]any{"to_tier": "stm"}},
-	},
-	{
 		ID:        "sys-decay-sensory",
 		Name:      "Delete unattended sensory memories after 4 hours",
 		Scope:     "reflect",
-		Priority:  4,
+		Priority:  95,
 		CreatedBy: "system",
 		Cond:      RuleCond{Tier: "sensory", AgeGTHours: 4},
 		Action:    RuleAction{Op: "DELETE"},
+	},
+	{
+		ID:        "sys-promote-sensory",
+		Name:      "Promote attended sensory memories to STM",
+		Scope:     "reflect",
+		Priority:  90,
+		CreatedBy: "system",
+		Cond:      RuleCond{Tier: "sensory", AgeGTHours: 1, AccessGT: 1},
+		Action:    RuleAction{Op: "PROMOTE", Params: map[string]any{"to_tier": "stm"}},
 	},
 	{
 		ID:        "sys-decay-unaccessed",

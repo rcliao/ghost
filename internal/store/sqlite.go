@@ -231,6 +231,11 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`UPDATE reflect_rules SET action_params = '{"strategy":"link_only"}', name = 'link similar STM memories'
 		WHERE id = 'sys-merge-similar' AND action_params = '{"strategy":"keep_highest_importance"}'`)
 
+	// Phase 10: fix sensory rule priorities — decay (delete >4h) must fire before
+	// promote (>1h, >1 access). Higher priority number = fires first (DESC order).
+	s.db.Exec(`UPDATE reflect_rules SET priority = 95 WHERE id = 'sys-decay-sensory'`)
+	s.db.Exec(`UPDATE reflect_rules SET priority = 90 WHERE id = 'sys-promote-sensory'`)
+
 	// Phase 9: make sys-prune-low-utility safer — demote instead of delete,
 	// require 20+ accesses instead of 5. With zero utility tracking across the DB,
 	// the old rule (AccessGT:5, UtilityLT:0.2, DELETE) would delete nearly everything.
