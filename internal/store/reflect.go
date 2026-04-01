@@ -360,6 +360,14 @@ func (s *SQLiteStore) Reflect(ctx context.Context, p ReflectParams) (*ReflectRes
 		result.AutoConsolidated += autoConsResult
 	}
 
+	// Dedup pass: for linked clusters, find near-identical memories (>0.92 similarity)
+	// and archive duplicates, keeping the canonical (highest importance/richest content).
+	// This runs AFTER all rules so it doesn't interfere with user-defined merge rules.
+	if len(result.LinkedClusters) > 0 && !p.DryRun {
+		deduped := s.dedupLinkedClusters(ctx, result.LinkedClusters, allMemories, deletedIDs)
+		result.Merged += deduped
+	}
+
 	// Edge decay pass: weaken unused edges, prune very weak ones.
 	// Edges not accessed in 30+ days with <3 accesses decay; weight <0.05 → deleted.
 	if !p.DryRun {

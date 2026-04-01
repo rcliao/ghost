@@ -220,9 +220,9 @@ func (s *SQLiteStore) Consolidate(ctx context.Context, p ConsolidateParams) (*Co
 		return nil, fmt.Errorf("consolidate requires at least 2 source keys, got %d", len(p.SourceKeys))
 	}
 
-	// Verify all source memories exist
+	// Verify all source memories exist (use History mode to avoid incrementing access_count)
 	for _, key := range p.SourceKeys {
-		_, err := s.Get(ctx, GetParams{NS: p.NS, Key: key})
+		_, err := s.Get(ctx, GetParams{NS: p.NS, Key: key, History: true})
 		if err != nil {
 			return nil, fmt.Errorf("source memory not found: %s/%s: %w", p.NS, key, err)
 		}

@@ -151,7 +151,8 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 	var allAbsorbedIDs []string
 	var linkedClusters []MemoryCluster
 	for _, cluster := range clusters {
-		if strategy == "link_only" {
+		switch strategy {
+		case "link_only":
 			// Collect cluster keys for the response
 			var keys []string
 			for _, m := range cluster {
@@ -170,7 +171,28 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 				return &similarityMergeResult{absorbed: totalAbsorbed, absorbedIDs: allAbsorbedIDs}, fmt.Errorf("link cluster: %w", err)
 			}
 			totalLinked += linked
-		} else {
+		case "dedup":
+			// Dedup: keep the canonical member, archive the rest to dormant
+			if dryRun {
+				for _, m := range cluster[1:] {
+					if !m.Pinned {
+						totalAbsorbed++
+						allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+					}
+				}
+				continue
+			}
+			absorbed, err := s.applyDedup(ctx, cluster)
+			if err != nil {
+				return &similarityMergeResult{absorbed: totalAbsorbed, absorbedIDs: allAbsorbedIDs}, fmt.Errorf("dedup cluster: %w", err)
+			}
+			totalAbsorbed += absorbed
+			for _, m := range cluster[1:] {
+				if !m.Pinned {
+					allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
+				}
+			}
+		default:
 			// Destructive merge (legacy behavior)
 			if dryRun {
 				for _, m := range cluster[1:] {
@@ -184,7 +206,6 @@ func (s *SQLiteStore) applySimilarityMerge(ctx context.Context, rule ReflectRule
 				return &similarityMergeResult{absorbed: totalAbsorbed, absorbedIDs: allAbsorbedIDs}, fmt.Errorf("merge cluster: %w", err)
 			}
 			totalAbsorbed += absorbed
-			// Track absorbed IDs (all non-survivor, non-pinned members)
 			for _, m := range cluster[1:] {
 				if !m.Pinned {
 					allAbsorbedIDs = append(allAbsorbedIDs, m.ID)
@@ -326,8 +347,248 @@ func (s *SQLiteStore) applyMerge(ctx context.Context, group []model.Memory) (int
 	return absorbed, nil
 }
 
+// applyDedup keeps the canonical member of a cluster and archives the rest to dormant.
+// Canonical = highest importance, then most content (est_tokens), then most accessed.
+// Unlike applyMerge, this archives (dormant) instead of soft-deleting, and creates
+// contains edges so the canonical memory subsumes the duplicates in context assembly.
+func (s *SQLiteStore) applyDedup(ctx context.Context, group []model.Memory) (int, error) {
+	if len(group) < 2 {
+		return 0, nil
+	}
+
+	// Sort: highest importance → most tokens → most accessed → newest
+	sort.Slice(group, func(i, j int) bool {
+		if group[i].Importance != group[j].Importance {
+			return group[i].Importance > group[j].Importance
+		}
+		if group[i].EstTokens != group[j].EstTokens {
+			return group[i].EstTokens > group[j].EstTokens
+		}
+		if group[i].AccessCount != group[j].AccessCount {
+			return group[i].AccessCount > group[j].AccessCount
+		}
+		return group[i].CreatedAt.After(group[j].CreatedAt)
+	})
+
+	canonical := group[0]
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Transfer aggregate stats to canonical
+	totalAccess := canonical.AccessCount
+	totalUtility := canonical.UtilityCount
+	tagSet := map[string]bool{}
+	for _, t := range canonical.Tags {
+		tagSet[t] = true
+	}
+
+	archived := 0
+	for _, m := range group[1:] {
+		if m.Pinned {
+			continue
+		}
+		totalAccess += m.AccessCount
+		totalUtility += m.UtilityCount
+		for _, t := range m.Tags {
+			tagSet[t] = true
+		}
+
+		// Archive to dormant
+		_, err = tx.ExecContext(ctx,
+			`UPDATE memories SET tier = 'dormant' WHERE id = ? AND deleted_at IS NULL`, m.ID)
+		if err != nil {
+			return archived, fmt.Errorf("archive dedup %s: %w", m.ID, err)
+		}
+
+		// Create contains edge: canonical contains this duplicate
+		_, err = tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, last_accessed_at, created_at)
+			 VALUES (?, ?, 'contains', 0.6, 0, NULL, ?)`,
+			canonical.ID, m.ID, now)
+		if err != nil {
+			return archived, fmt.Errorf("create contains edge: %w", err)
+		}
+		archived++
+	}
+
+	// Update canonical with merged stats
+	var mergedTags []string
+	for t := range tagSet {
+		mergedTags = append(mergedTags, t)
+	}
+	sort.Strings(mergedTags)
+	var tagsJSON *string
+	if len(mergedTags) > 0 {
+		b, _ := json.Marshal(mergedTags)
+		s := string(b)
+		tagsJSON = &s
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE memories SET access_count = ?, utility_count = ?, tags = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		totalAccess, totalUtility, tagsJSON, canonical.ID)
+	if err != nil {
+		return archived, fmt.Errorf("update canonical: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return archived, nil
+}
+
+// dedupSimilarityThreshold is the minimum cosine similarity for dedup (higher than linking).
+const dedupSimilarityThreshold = 0.92
+
+// dedupLinkedClusters examines linked clusters and deduplicates near-identical memories.
+// It re-checks pairwise similarity at a higher threshold than the link rule to avoid
+// false-positive dedup. Returns the total number of memories archived.
+func (s *SQLiteStore) dedupLinkedClusters(ctx context.Context, clusters []MemoryCluster, allMemories []model.Memory, deletedIDs map[string]bool) int {
+	keyToMem := make(map[string]model.Memory, len(allMemories))
+	for _, m := range allMemories {
+		keyToMem[m.Key] = m
+	}
+
+	// Collect all candidate memory IDs for batch embedding load
+	var candidateIDs []string
+	idToKey := map[string]string{}
+	for _, cluster := range clusters {
+		if cluster.Count < 2 {
+			continue
+		}
+		for _, key := range cluster.Keys {
+			m, ok := keyToMem[key]
+			if !ok || deletedIDs[m.ID] || m.Pinned {
+				continue
+			}
+			candidateIDs = append(candidateIDs, m.ID)
+			idToKey[m.ID] = key
+		}
+	}
+	if len(candidateIDs) < 2 {
+		return 0
+	}
+
+	// Load embeddings in batch
+	embMap := s.loadEmbeddings(ctx, candidateIDs)
+
+	totalDeduped := 0
+	for _, cluster := range clusters {
+		if cluster.Count < 2 {
+			continue
+		}
+
+		// Filter to active, non-pinned members with embeddings
+		var members []model.Memory
+		for _, key := range cluster.Keys {
+			m, ok := keyToMem[key]
+			if !ok || deletedIDs[m.ID] || m.Pinned {
+				continue
+			}
+			if _, hasEmb := embMap[m.ID]; !hasEmb {
+				continue
+			}
+			members = append(members, m)
+		}
+		if len(members) < 2 {
+			continue
+		}
+
+		// Re-cluster at higher threshold using greedy pivot
+		sort.Slice(members, func(i, j int) bool {
+			if members[i].Importance != members[j].Importance {
+				return members[i].Importance > members[j].Importance
+			}
+			if members[i].EstTokens != members[j].EstTokens {
+				return members[i].EstTokens > members[j].EstTokens
+			}
+			return members[i].AccessCount > members[j].AccessCount
+		})
+
+		assigned := map[string]bool{}
+		for i, pivot := range members {
+			if assigned[pivot.ID] {
+				continue
+			}
+			assigned[pivot.ID] = true
+			dedupGroup := []model.Memory{pivot}
+
+			for j := i + 1; j < len(members); j++ {
+				other := members[j]
+				if assigned[other.ID] {
+					continue
+				}
+				sim := embedding.CosineSimilarity(embMap[pivot.ID], embMap[other.ID])
+				if sim >= dedupSimilarityThreshold {
+					dedupGroup = append(dedupGroup, other)
+					assigned[other.ID] = true
+				}
+			}
+
+			if len(dedupGroup) < 2 {
+				continue
+			}
+
+			n, err := s.applyDedup(ctx, dedupGroup)
+			if err != nil {
+				continue
+			}
+			totalDeduped += n
+			// Mark archived as deleted for subsequent processing
+			for _, m := range dedupGroup[1:] {
+				if !m.Pinned {
+					deletedIDs[m.ID] = true
+				}
+			}
+		}
+	}
+
+	return totalDeduped
+}
+
+// loadEmbeddings batch-loads seq=0 embeddings for the given memory IDs.
+func (s *SQLiteStore) loadEmbeddings(ctx context.Context, ids []string) map[string]embedding.Vector {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT memory_id, embedding FROM chunks WHERE memory_id IN (%s) AND seq = 0 AND embedding IS NOT NULL`, placeholders),
+		args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	embMap := map[string]embedding.Vector{}
+	for rows.Next() {
+		var memID, embJSON string
+		if err := rows.Scan(&memID, &embJSON); err != nil {
+			continue
+		}
+		var vec embedding.Vector
+		if err := json.Unmarshal([]byte(embJSON), &vec); err != nil {
+			continue
+		}
+		embMap[memID] = vec
+	}
+	return embMap
+}
+
 // autoConsolidateMinCluster is the minimum cluster size for auto-consolidation.
-const autoConsolidateMinCluster = 5
+const autoConsolidateMinCluster = 3
 
 // autoConsolidateClusters creates skeleton parent nodes for large orphan clusters.
 // Returns the number of clusters consolidated.
@@ -366,11 +627,10 @@ func (s *SQLiteStore) autoConsolidateClusters(ctx context.Context, clusters []Me
 			continue
 		}
 
-		// Build skeleton content and collect common tags
-		var contentParts []string
+		// Collect members and find the richest one for the summary content
+		var members []model.Memory
 		var ns string
 		tagCounts := map[string]int{}
-		memberCount := 0
 
 		for _, key := range cluster.Keys {
 			m, ok := keyToMem[key]
@@ -380,21 +640,29 @@ func (s *SQLiteStore) autoConsolidateClusters(ctx context.Context, clusters []Me
 			if ns == "" {
 				ns = m.NS
 			}
-			contentParts = append(contentParts, fmt.Sprintf("[%s]: %s", key, m.Content))
+			members = append(members, m)
 			for _, t := range m.Tags {
 				tagCounts[t]++
 			}
-			memberCount++
 		}
 
-		if memberCount < autoConsolidateMinCluster {
+		if len(members) < autoConsolidateMinCluster {
 			continue
 		}
+
+		// Pick the richest member (most tokens, then highest importance) as summary content
+		sort.Slice(members, func(i, j int) bool {
+			if members[i].EstTokens != members[j].EstTokens {
+				return members[i].EstTokens > members[j].EstTokens
+			}
+			return members[i].Importance > members[j].Importance
+		})
+		content := members[0].Content
 
 		// Common tags = tags present in all members
 		var commonTags []string
 		for tag, count := range tagCounts {
-			if count == memberCount {
+			if count == len(members) {
 				commonTags = append(commonTags, tag)
 			}
 		}
@@ -406,7 +674,6 @@ func (s *SQLiteStore) autoConsolidateClusters(ctx context.Context, clusters []Me
 		}
 
 		summaryKey := fmt.Sprintf("auto-summary-%d", time.Now().UnixNano())
-		content := strings.Join(contentParts, "\n\n")
 
 		_, err := s.Consolidate(ctx, ConsolidateParams{
 			NS:         ns,

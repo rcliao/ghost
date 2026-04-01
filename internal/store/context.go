@@ -64,7 +64,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	if !p.ExcludePinned {
 		pinBudget := p.PinBudget
 		if pinBudget <= 0 {
-			pinBudget = budget / 3
+			pinBudget = budget / 2
 		}
 
 		pinned, err := s.loadPinnedMemories(ctx, p.NS)
@@ -362,6 +362,10 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 				if err != nil {
 					continue
 				}
+				// Skip dormant memories — they are archived and should not surface.
+				if m.Tier == "dormant" {
+					continue
+				}
 				// Cap propagated score for edge-only candidates (except contradicts)
 				if !isContradiction && propagated > 0.3 {
 					propagated = 0.3
@@ -390,6 +394,10 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 			}
 			m, err := s.loadMemoryByID(ctx, parentID)
 			if err != nil {
+				continue
+			}
+			// Skip dormant memories — they are archived and should not surface.
+			if m.Tier == "dormant" {
 				continue
 			}
 			// Parent gets at least the child's score since it summarizes the child
