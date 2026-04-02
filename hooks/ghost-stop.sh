@@ -149,8 +149,16 @@ echo "$LEARNINGS" | jq -c '.[]' | while IFS= read -r item; do
   TAGS="${TAGS},${SESSION_TAG}"
 
   echo "Storing: $KEY (tier=$TIER)" >> "$DEBUG_LOG"
-  if $GHOST put -n "$AGENT_NS" -k "$KEY" --kind "$KIND" -p "$PRIORITY" --tier "$TIER" -t "$TAGS" --dedup "$CONTENT" >> "$DEBUG_LOG" 2>&1; then
-    echo "$KEY" >> "$KEYS_FILE"
+  PUT_OUTPUT=$($GHOST put -n "$AGENT_NS" -k "$KEY" --kind "$KIND" -p "$PRIORITY" --tier "$TIER" -t "$TAGS" --dedup "$CONTENT" 2>> "$DEBUG_LOG")
+  if [ $? -eq 0 ] && [ -n "$PUT_OUTPUT" ]; then
+    # Dedup may return a different key — use the actual stored key for consolidation
+    ACTUAL_KEY=$(echo "$PUT_OUTPUT" | jq -r '.key // empty' 2>/dev/null)
+    if [ -n "$ACTUAL_KEY" ]; then
+      echo "$ACTUAL_KEY" >> "$KEYS_FILE"
+    else
+      echo "$KEY" >> "$KEYS_FILE"
+    fi
+    echo "$PUT_OUTPUT" >> "$DEBUG_LOG"
   else
     echo "Failed to store: $KEY" >> "$DEBUG_LOG"
   fi
@@ -179,6 +187,6 @@ fi
 # Lightweight reflect: prune expired sensory, decay stale edges.
 # Runs after capture so new memories are included. Silent on error.
 echo "Running lightweight reflect..." >> "$DEBUG_LOG"
-$GHOST reflect -n "$AGENT_NS" >> "$DEBUG_LOG" 2>&1 || echo "Reflect failed (non-fatal)" >> "$DEBUG_LOG"
+$GHOST reflect --ns "$AGENT_NS" >> "$DEBUG_LOG" 2>&1 || echo "Reflect failed (non-fatal)" >> "$DEBUG_LOG"
 
 echo "Done" >> "$DEBUG_LOG"

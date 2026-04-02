@@ -21,14 +21,11 @@ if [ -z "$QUERY" ] || [ ${#QUERY} -lt 10 ]; then
   exit 0  # Skip trivial prompts
 fi
 
-# Project-scoped tag filter
-TAG_ARGS=""
-if [ -n "$PROJECT_NAME" ] && [ "$PROJECT_NAME" != "unknown" ] && [ "$PROJECT_NAME" != "/" ]; then
-  TAG_ARGS="-t project:${PROJECT_NAME}"
-fi
+# No project tag filter — let relevance scoring do the work instead of
+# hard-filtering. Cross-project knowledge is often valuable.
 
-# Small budget — targeted retrieval (800 tokens ≈ 2-3 memories)
-RAW=$($GHOST context "$QUERY" -n "$AGENT_NS" $TAG_ARGS --budget 800 2>/dev/null || echo "{}")
+# Budget 1500 tokens — with the 400-token-per-memory cap, this fits ~4-6 memories
+RAW=$($GHOST context "$QUERY" -n "$AGENT_NS" --budget 1500 2>/dev/null || echo "{}")
 
 # Deduplicate against SessionStart keys
 KEYS_FILE="/tmp/ghost-session-keys-${SESSION_ID:-default}"
