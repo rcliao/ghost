@@ -79,6 +79,79 @@ func TestContextEmpty(t *testing.T) {
 	}
 }
 
+func TestContextMaxMemoryTokensCap(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// Put a very large memory (4000+ chars ≈ 1000+ tokens)
+	bigContent := ""
+	for i := 0; i < 200; i++ {
+		bigContent += "This is a long line about programming languages. "
+	}
+	s.Put(ctx, PutParams{NS: "test", Key: "huge-mem", Content: bigContent})
+	s.Put(ctx, PutParams{NS: "test", Key: "small-mem", Content: "small memory about programming"})
+
+	// With default MaxMemoryTokens (400), the big memory should be excerpted
+	result, err := s.Context(ctx, ContextParams{
+		NS:     "test",
+		Query:  "programming",
+		Budget: 4000,
+	})
+	if err != nil {
+		t.Fatalf("context: %v", err)
+	}
+
+	if len(result.Memories) < 2 {
+		t.Fatalf("expected at least 2 memories, got %d", len(result.Memories))
+	}
+
+	// The big memory should be excerpted (capped at ~400 tokens ≈ 1600 chars)
+	for _, m := range result.Memories {
+		if m.Key == "huge-mem" {
+			if !m.Excerpt {
+				t.Error("expected huge-mem to be excerpted due to MaxMemoryTokens cap")
+			}
+			if len(m.Content) > 1700 { // 400 tokens * 4 chars + some margin
+				t.Errorf("expected huge-mem content capped around 1600 chars, got %d", len(m.Content))
+			}
+		}
+	}
+}
+
+func TestContextMaxMemoryTokensDisabled(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	bigContent := ""
+	for i := 0; i < 100; i++ {
+		bigContent += "This is about programming. "
+	}
+	s.Put(ctx, PutParams{NS: "test", Key: "big", Content: bigContent})
+
+	// MaxMemoryTokens = -1 disables the cap
+	result, err := s.Context(ctx, ContextParams{
+		NS:              "test",
+		Query:           "programming",
+		Budget:          4000,
+		MaxMemoryTokens: -1,
+	})
+	if err != nil {
+		t.Fatalf("context: %v", err)
+	}
+
+	if len(result.Memories) == 0 {
+		t.Fatal("expected at least one memory")
+	}
+	// Should NOT be excerpted when cap is disabled
+	for _, m := range result.Memories {
+		if m.Key == "big" && m.Excerpt {
+			t.Error("expected big memory NOT to be excerpted when MaxMemoryTokens disabled")
+		}
+	}
+}
+
 func TestKindWeightsSum(t *testing.T) {
 	// All kind weight vectors must sum to 1.0 (tier is now multiplicative, not additive)
 	for _, kind := range []string{"episodic", "semantic", "procedural"} {

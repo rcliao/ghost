@@ -444,7 +444,9 @@ func (s *SQLiteStore) applyDedup(ctx context.Context, group []model.Memory) (int
 }
 
 // dedupSimilarityThreshold is the minimum cosine similarity for dedup (higher than linking).
-const dedupSimilarityThreshold = 0.92
+// Lowered from 0.92 to 0.88 to catch more near-duplicate pairs that are semantically
+// equivalent but differ in minor wording.
+const dedupSimilarityThreshold = 0.88
 
 // dedupLinkedClusters examines linked clusters and deduplicates near-identical memories.
 // It re-checks pairwise similarity at a higher threshold than the link rule to avoid

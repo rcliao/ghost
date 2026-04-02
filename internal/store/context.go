@@ -22,6 +22,7 @@ type ContextParams struct {
 	SearchBudget   int              // remaining budget for query-relevant search (default: Budget - PinBudget)
 	EdgeExpansion  *EdgeExpansionConfig // edge expansion config; nil means use defaults
 	ExcludePinned  bool             // skip Phase 1 pinned memories, use full budget for search
+	MaxMemoryTokens int             // max tokens per memory; larger memories get excerpted (default: 400, 0 = no limit)
 }
 
 // ContextMemory is a scored memory for context output.
@@ -181,6 +182,14 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	}
 
 	// Greedy packing into remaining budget with contains-suppression.
+	// MaxMemoryTokens caps individual memories to prevent budget domination.
+	maxMemTok := p.MaxMemoryTokens
+	if maxMemTok == 0 {
+		maxMemTok = 400 // default: 400 tokens per memory
+	}
+	if maxMemTok < 0 {
+		maxMemTok = 0 // negative means no limit
+	}
 	pinnedCount := len(result.Memories)
 
 	for _, c := range candidates {
@@ -193,19 +202,34 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		if memTokens <= 0 {
 			memTokens = (len(c.memory.Content) / 4) + 20
 		}
+
+		content := c.memory.Content
+		isExcerpt := false
+
+		// Cap individual memory size to prevent large memories from hogging budget.
+		if maxMemTok > 0 && memTokens > maxMemTok {
+			maxChars := maxMemTok * 4
+			if len(content) > maxChars {
+				content = content[:maxChars] + "..."
+				isExcerpt = true
+			}
+			memTokens = (len(content) / 4) + 20
+		}
+
 		if usedTokens+memTokens <= budget {
 			result.Memories = append(result.Memories, ContextMemory{
 				NS:      c.memory.NS,
 				Key:     c.memory.Key,
 				Kind:    c.memory.Kind,
-				Content: c.memory.Content,
+				Content: content,
 				Score:   math.Round(c.score*100) / 100,
+				Excerpt: isExcerpt,
 			})
 			usedTokens += memTokens
 		} else if remainingTokens := budget - usedTokens; remainingTokens >= 25 {
-			// Partial fit — excerpt
+			// Partial fit — excerpt to remaining budget
 			remainingChars := remainingTokens * 4
-			excerpt := c.memory.Content
+			excerpt := content
 			if len(excerpt) > remainingChars {
 				excerpt = excerpt[:remainingChars] + "..."
 			}

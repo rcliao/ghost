@@ -214,7 +214,9 @@ have meaningful impact on ranking (not just a small additive boost):
 
 Tier multipliers: ltm=1.0, stm=0.8, dormant=0.15, sensory=0.1
 
-Memories that don't fully fit get excerpted (truncated with "...") if at least 25 tokens remain.
+**Per-memory token cap**: `MaxMemoryTokens` (default 400) limits how many tokens any single memory can contribute to the output. Memories exceeding the cap are automatically excerpted, preventing large memories from dominating the budget and leaving room for more diverse results. Set to `-1` to disable.
+
+Memories that don't fully fit the remaining budget get excerpted (truncated with "...") if at least 25 tokens remain.
 
 ## Reflect System
 
@@ -229,10 +231,11 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 | `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
 | `sys-decay-sensory` | sensory, >4h old | DELETE |
 | `sys-decay-unaccessed` | STM, >48h old, <10 accesses | DECAY importance ×0.95 (min 0.1) |
-| `sys-promote-to-ltm` | STM, >24h old, >10 accesses | PROMOTE to LTM |
+| `sys-promote-to-ltm` | STM, >72h old, >50 accesses | PROMOTE to LTM |
 | `sys-demote-stale-ltm` | LTM, >168h since last access | DEMOTE to dormant |
-| `sys-prune-low-utility` | >5 accesses, utility ratio <0.2 | DELETE |
+| `sys-prune-low-utility` | >20 accesses, utility ratio <0.05 | DEMOTE to dormant |
 | `sys-merge-similar` | STM, embedding similarity >0.9 | LINK (create `relates_to` edges, non-destructive) |
+| `sys-dedup-all` | Any tier, embedding similarity >0.92 | DEDUP (archive duplicates to dormant, keep canonical) |
 
 Rules are evaluated in two passes:
 1. **Per-memory pass** — evaluated in priority order (first-match-wins). Sensory rules run at higher priority to quickly promote attended memories or discard unattended ones.

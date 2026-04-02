@@ -154,6 +154,15 @@ var builtinRules = []ReflectRule{
 		Cond:      RuleCond{Tier: "stm", SimilarityGT: 0.9},
 		Action:    RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "link_only"}},
 	},
+	{
+		ID:        "sys-dedup-all",
+		Name:      "Dedup near-identical memories across all tiers",
+		Scope:     "reflect",
+		Priority:  35,
+		CreatedBy: "system",
+		Cond:      RuleCond{SimilarityGT: 0.92},
+		Action:    RuleAction{Op: "MERGE", Params: map[string]any{"strategy": "dedup"}},
+	},
 }
 
 // seedBuiltinRules inserts built-in rules if they don't already exist.

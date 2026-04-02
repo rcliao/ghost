@@ -105,8 +105,8 @@ func TestRuleSetAndList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) < 7 { // 6 system + 1 user
-		t.Errorf("expected at least 7 rules, got %d", len(rules))
+	if len(rules) < 8 { // 7 system + 1 user
+		t.Errorf("expected at least 8 rules, got %d", len(rules))
 	}
 
 	// First rule should be highest priority
@@ -463,8 +463,8 @@ func TestBuiltinRulesSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) < 7 {
-		t.Errorf("expected at least 7 built-in rules (including sys-merge-similar), got %d", len(rules))
+	if len(rules) < 8 {
+		t.Errorf("expected at least 8 built-in rules (including sys-merge-similar, sys-dedup-all), got %d", len(rules))
 	}
 
 	// Check specific built-in rules exist
@@ -495,6 +495,26 @@ func TestBuiltinRulesSeeded(t *testing.T) {
 	}
 	if !foundMerge {
 		t.Error("sys-merge-similar not found in rules")
+	}
+
+	// Check sys-dedup-all rule exists
+	foundDedup := false
+	for _, r := range rules {
+		if r.ID == "sys-dedup-all" {
+			foundDedup = true
+			if r.Action.Op != "MERGE" {
+				t.Errorf("expected MERGE op for sys-dedup-all, got %q", r.Action.Op)
+			}
+			if r.Cond.SimilarityGT != 0.92 {
+				t.Errorf("expected similarity_gt 0.92, got %f", r.Cond.SimilarityGT)
+			}
+			if r.Cond.Tier != "" {
+				t.Errorf("expected no tier restriction for sys-dedup-all, got %q", r.Cond.Tier)
+			}
+		}
+	}
+	if !foundDedup {
+		t.Error("sys-dedup-all not found in rules")
 	}
 }
 
@@ -699,6 +719,9 @@ func TestSimilarityMergeRespectsPreFilters(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
+	// Remove sys-dedup-all (no tier restriction) so we can test tier scoping in isolation
+	s.RuleDelete(ctx, "sys-dedup-all")
+
 	// Rule scoped to stm tier only
 	s.RuleSet(ctx, ReflectRule{
 		ID:       "test-merge",
@@ -711,7 +734,7 @@ func TestSimilarityMergeRespectsPreFilters(t *testing.T) {
 	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
 	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
 
-	// m1 in stm, m2 in ltm — different tiers, should not be compared
+	// m1 in stm, m2 in ltm — different tiers, should not be compared by the STM-only rule
 	insertMemoryWithEmbedding(t, s, "m1", "test", "stm-mem", "stm content", "stm", 0.5, false, vec1)
 	insertMemoryWithEmbedding(t, s, "m2", "test", "ltm-mem", "ltm content", "ltm", 0.5, false, vec2)
 
@@ -721,7 +744,29 @@ func TestSimilarityMergeRespectsPreFilters(t *testing.T) {
 	}
 
 	if result.Merged != 0 {
-		t.Errorf("expected 0 merged (different tiers), got %d", result.Merged)
+		t.Errorf("expected 0 merged (different tiers with STM-only rule), got %d", result.Merged)
+	}
+}
+
+func TestSysDedupAllCrossTier(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// sys-dedup-all has no tier restriction — it should dedup across tiers
+	vec1 := []float32{1.0, 0.0, 0.0, 0.0}
+	vec2 := []float32{0.99, 0.01, 0.0, 0.0}
+
+	insertMemoryWithEmbedding(t, s, "m1", "test", "stm-mem", "same content stm", "stm", 0.5, false, vec1)
+	insertMemoryWithEmbedding(t, s, "m2", "test", "ltm-mem", "same content ltm", "ltm", 0.8, false, vec2)
+
+	result, err := s.Reflect(ctx, ReflectParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// sys-dedup-all should catch this cross-tier pair
+	if result.Merged < 1 {
+		t.Errorf("expected at least 1 dedup from sys-dedup-all, got merged=%d", result.Merged)
 	}
 }
 
