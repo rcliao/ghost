@@ -349,8 +349,10 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 		) latest ON m.ns = latest.ns AND m.key = latest.key AND m.version = latest.max_ver
 		INNER JOIN chunks c ON c.memory_id = m.id
 		WHERE %s
-		ORDER BY m.created_at DESC
-		LIMIT 500`, where)
+		ORDER BY m.created_at DESC`, where)
+	// No LIMIT: scan all memories for vector similarity. With 384-dim embeddings
+	// (~1.5KB each), even 10K memories is only ~15MB and <50ms of cosine math.
+	// The previous LIMIT 500 made older memories invisible to vector search.
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
