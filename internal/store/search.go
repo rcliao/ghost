@@ -167,7 +167,13 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	for id, ranks := range methodRanks {
 		score := rrfScore(ranks, 60)
 		r := memoryByID[id]
-		r.Similarity = math.Round(score*10000) / 10000 // expose RRF score as similarity
+		// Only set Similarity to RRF score if no actual cosine similarity exists.
+		// Vector search results have real cosine similarity (0.0-1.0) that downstream
+		// context scoring depends on. Overwriting it with the RRF score (~0.016)
+		// would cripple the relevance signal in context assembly.
+		if r.Similarity == 0 {
+			r.Similarity = math.Round(score*10000) / 10000
+		}
 		fused = append(fused, fusedResult{result: r, rrfScore: score})
 	}
 

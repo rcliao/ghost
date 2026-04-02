@@ -448,10 +448,12 @@ func (s *SQLiteStore) countActiveMemories(ctx context.Context, ns string) (int, 
 
 // computeContextScore calculates the composite context score for a memory.
 func computeContextScore(m model.Memory, similarity float64, now time.Time) float64 {
-	// Relevance: use vector similarity when available, otherwise base from search rank
+	// Relevance: use vector cosine similarity when available (>= 0.3 threshold from
+	// vector search), otherwise use 0.5 base for FTS/LIKE matches. Values below 0.3
+	// are RRF fusion scores (not cosine), and would cripple relevance if used directly.
 	relevance := 0.5 // base relevance for FTS/LIKE matches
-	if similarity > 0 {
-		relevance = similarity // use actual cosine similarity
+	if similarity >= 0.3 {
+		relevance = similarity // use actual cosine similarity from vector search
 	}
 
 	// Recency: exponential decay, half-life of 7 days
