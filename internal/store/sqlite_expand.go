@@ -145,22 +145,23 @@ func (s *SQLiteStore) Expand(ctx context.Context, p ExpandParams) (*ExpandResult
 		// Add emergent clusters (relates_to groups without a consolidation parent)
 		clusters, err := s.GetSimilarClusters(ctx, p.NS)
 		if err == nil && len(clusters) > 0 {
-			// Filter out clusters where all members already have a contains parent
+			// Filter out clusters where a majority of members already have a contains parent
 			for _, c := range clusters {
-				hasOrphan := false
+				resolved := 0
+				withParent := 0
 				for _, key := range c.Keys {
 					id, err := s.resolveMemoryID(ctx, p.NS, key)
 					if err != nil {
-						hasOrphan = true
-						break
+						continue
 					}
+					resolved++
 					parents, err := s.getContainsParents(ctx, id)
-					if err != nil || len(parents) == 0 {
-						hasOrphan = true
-						break
+					if err == nil && len(parents) > 0 {
+						withParent++
 					}
 				}
-				if hasOrphan {
+				// Include cluster if fewer than half its members are consolidated
+				if resolved == 0 || withParent*2 <= resolved {
 					result.Clusters = append(result.Clusters, c)
 				}
 			}

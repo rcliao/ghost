@@ -484,8 +484,9 @@ func (s *SQLiteStore) strengthenCoRetrievedEdges(ctx context.Context, memoryIDs 
 
 // MemoryCluster represents a group of similar memories connected by edges.
 type MemoryCluster struct {
-	Keys  []string `json:"keys"`
-	Count int      `json:"count"`
+	Keys      []string `json:"keys"`
+	Count     int      `json:"count"`
+	EstTokens int      `json:"est_tokens,omitempty"`
 }
 
 // GetSimilarClusters finds groups of memories connected by relates_to edges
@@ -556,18 +557,21 @@ func (s *SQLiteStore) GetSimilarClusters(ctx context.Context, ns string) ([]Memo
 		}
 
 		if len(component) >= 2 {
-			// Resolve IDs to ns:key
+			// Resolve IDs to ns:key and sum token estimates
 			var keys []string
+			totalTokens := 0
 			for _, cid := range component {
 				var key string
+				var estTokens int
 				s.db.QueryRowContext(ctx,
-					`SELECT key FROM memories WHERE id = ? AND deleted_at IS NULL`, cid).Scan(&key)
+					`SELECT key, COALESCE(est_tokens, 0) FROM memories WHERE id = ? AND deleted_at IS NULL`, cid).Scan(&key, &estTokens)
 				if key != "" {
 					keys = append(keys, key)
+					totalTokens += estTokens
 				}
 			}
 			if len(keys) >= 2 {
-				clusters = append(clusters, MemoryCluster{Keys: keys, Count: len(keys)})
+				clusters = append(clusters, MemoryCluster{Keys: keys, Count: len(keys), EstTokens: totalTokens})
 			}
 		}
 	}

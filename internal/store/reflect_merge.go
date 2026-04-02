@@ -695,8 +695,10 @@ func (s *SQLiteStore) autoConsolidateClusters(ctx context.Context, clusters []Me
 	return consolidated
 }
 
-// clusterHasConsolidationParent checks if any member of a cluster already has
-// a contains parent edge. Returns true if any member is already consolidated.
+// clusterHasConsolidationParent checks whether a majority of cluster members
+// already have a contains parent edge. Returns true only when >50% of resolved
+// members are consolidated, so large clusters with a few consolidated stragglers
+// still get processed.
 func (s *SQLiteStore) clusterHasConsolidationParent(ctx context.Context, cluster MemoryCluster, allMemories []model.Memory) bool {
 	// Build key→ID map for the cluster members
 	keyToID := make(map[string]string, len(allMemories))
@@ -704,18 +706,24 @@ func (s *SQLiteStore) clusterHasConsolidationParent(ctx context.Context, cluster
 		keyToID[m.Key] = m.ID
 	}
 
+	resolved := 0
+	withParent := 0
 	for _, key := range cluster.Keys {
 		id, ok := keyToID[key]
 		if !ok {
 			continue
 		}
+		resolved++
 		parents, err := s.getContainsParents(ctx, id)
 		if err != nil {
 			continue
 		}
 		if len(parents) > 0 {
-			return true
+			withParent++
 		}
 	}
-	return false
+	if resolved == 0 {
+		return false
+	}
+	return withParent*2 > resolved // majority (>50%) already consolidated
 }
