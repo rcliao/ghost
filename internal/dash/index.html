@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Memory Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149; --purple: #bc8cff;
+    --orange: #d18616;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5; padding: 16px; }
+  h1 { font-size: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  h1 span { color: var(--text2); font-weight: 400; font-size: 14px; }
+  h2 { font-size: 16px; margin-bottom: 12px; color: var(--text2); }
+
+  .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; min-width: 140px; flex: 1; }
+  .stat-card .label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 24px; font-weight: 600; margin-top: 2px; }
+
+  .tier-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; margin-bottom: 20px;
+    border: 1px solid var(--border); }
+  .tier-bar div { display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; min-width: 40px; transition: width 0.3s; }
+  .tier-stm { background: var(--accent); }
+  .tier-ltm { background: var(--green); }
+  .tier-sensory { background: var(--yellow); color: #000; }
+  .tier-dormant { background: var(--border); }
+
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tab { padding: 8px 16px; cursor: pointer; color: var(--text2); border-bottom: 2px solid transparent;
+    font-size: 14px; transition: all 0.2s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  input, select { background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 6px 10px; font-size: 13px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input[type="text"] { min-width: 200px; }
+  select { cursor: pointer; }
+  button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px; color: var(--text2); font-weight: 600;
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; font-size: 12px; }
+  th:hover { color: var(--text); }
+  td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover { background: rgba(88,166,255,0.04); }
+  .key-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--accent); cursor: pointer; }
+  .key-cell:hover { text-decoration: underline; }
+  .content-cell { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); }
+  .tier-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .tier-badge.stm { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tier-badge.ltm { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tier-badge.sensory { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .tier-badge.dormant { background: rgba(48,54,61,0.4); color: var(--text2); }
+  .kind-badge { font-size: 11px; color: var(--text2); }
+  .pinned-icon { color: var(--yellow); margin-left: 4px; }
+  .importance-bar { width: 50px; height: 6px; background: var(--border); border-radius: 3px; display: inline-block; }
+  .importance-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+
+  .cluster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .cluster-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .cluster-card .cluster-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .cluster-card .cluster-count { font-weight: 600; color: var(--accent); }
+  .cluster-card .cluster-tokens { font-size: 12px; color: var(--text2); }
+  .cluster-card .cluster-keys { font-size: 12px; color: var(--text2); max-height: 120px; overflow-y: auto; }
+  .cluster-card .cluster-keys div { padding: 2px 0; border-bottom: 1px solid var(--border); }
+  .cluster-card .cluster-keys div:last-child { border-bottom: none; }
+
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    width: 90%; max-width: 700px; max-height: 80vh; overflow-y: auto; padding: 20px; }
+  .modal h3 { margin-bottom: 12px; }
+  .modal .field { margin-bottom: 8px; }
+  .modal .field-label { font-size: 12px; color: var(--text2); text-transform: uppercase; }
+  .modal .field-value { font-size: 13px; }
+  .modal .content-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; font-size: 13px; white-space: pre-wrap; max-height: 300px; overflow-y: auto;
+    margin-top: 4px; line-height: 1.6; }
+  .modal .edge-list { margin-top: 8px; }
+  .modal .edge-item { font-size: 12px; padding: 4px 0; border-bottom: 1px solid var(--border);
+    display: flex; gap: 8px; }
+  .modal .edge-rel { color: var(--purple); font-weight: 600; min-width: 80px; }
+  .modal .close-btn { position: sticky; top: 0; float: right; cursor: pointer;
+    background: var(--border); border: none; color: var(--text); border-radius: 6px;
+    padding: 4px 10px; font-size: 14px; }
+  .modal .close-btn:hover { background: var(--text2); }
+
+  .edge-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .edge-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .edge-stat .label { font-size: 12px; color: var(--text2); }
+  .edge-stat .value { font-size: 20px; font-weight: 600; }
+
+  /* Graph */
+  .graph-container { position: relative; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; background: var(--surface); margin-bottom: 16px; }
+  #graph-canvas { display: block; width: 100%; cursor: grab; }
+  #graph-canvas.dragging { cursor: grabbing; }
+  .graph-legend { position: absolute; top: 8px; right: 8px; background: rgba(13,17,23,0.85);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 11px; }
+  .graph-legend div { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .graph-legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .graph-tooltip { position: absolute; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; font-size: 12px; pointer-events: none; display: none;
+    max-width: 300px; z-index: 10; }
+  .graph-controls { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+  .graph-controls label { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 4px; }
+
+  /* Context window cards */
+  .ctx-window { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 13px; }
+  .ctx-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 8px; overflow: hidden; }
+  .ctx-card-header { display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 12px; background: rgba(48,54,61,0.4); border-bottom: 1px solid var(--border);
+    cursor: pointer; }
+  .ctx-card-header:hover { background: rgba(88,166,255,0.06); }
+  .ctx-card-key { color: var(--accent); font-weight: 600; font-size: 12px; }
+  .ctx-card-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+  .ctx-card-meta .score { font-weight: 600; }
+  .ctx-card-body { padding: 10px 12px; white-space: pre-wrap; line-height: 1.6;
+    color: var(--text); max-height: 400px; overflow-y: auto; }
+  .ctx-card-body.collapsed { max-height: 80px; overflow: hidden;
+    mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%); }
+  .ctx-card .excerpt-badge { background: rgba(210,153,34,0.2); color: var(--yellow);
+    padding: 0 6px; border-radius: 4px; font-size: 10px; }
+  .ctx-token-bar { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text2); }
+  .ctx-token-seg { height: 6px; border-radius: 3px; }
+
+  .loading { color: var(--text2); padding: 20px; text-align: center; }
+  .ns-picker { margin-bottom: 16px; }
+</style>
+</head>
+<body>
+
+<h1>Ghost Memory <span>dashboard</span></h1>
+
+<div class="ns-picker">
+  <select id="ns-select" onchange="switchNS()">
+    <option value="">Loading...</option>
+  </select>
+</div>
+
+<div class="stats" id="stats-bar">
+  <div class="stat-card"><div class="label">Memories</div><div class="value" id="stat-total">-</div></div>
+  <div class="stat-card"><div class="label">Tokens</div><div class="value" id="stat-tokens">-</div></div>
+  <div class="stat-card"><div class="label">Pinned</div><div class="value" id="stat-pinned">-</div></div>
+  <div class="stat-card"><div class="label">DB Size</div><div class="value" id="stat-db">-</div></div>
+</div>
+
+<div class="tier-bar" id="tier-bar"></div>
+
+<div class="tabs">
+  <div class="tab active" data-panel="memories-panel">Memories</div>
+  <div class="tab" data-panel="clusters-panel">Clusters</div>
+  <div class="tab" data-panel="graph-panel">Graph</div>
+  <div class="tab" data-panel="context-panel">Context</div>
+  <div class="tab" data-panel="search-panel">Search</div>
+</div>
+
+<!-- Memories Panel -->
+<div class="panel active" id="memories-panel">
+  <div class="controls">
+    <input type="text" id="search-input" placeholder="Search memories..." onkeydown="if(event.key==='Enter')loadMemories()">
+    <select id="tier-filter" onchange="loadMemories()">
+      <option value="">All tiers</option>
+      <option value="sensory">sensory</option>
+      <option value="stm">stm</option>
+      <option value="ltm">ltm</option>
+      <option value="dormant">dormant</option>
+    </select>
+    <select id="kind-filter" onchange="loadMemories()">
+      <option value="">All kinds</option>
+      <option value="semantic">semantic</option>
+      <option value="episodic">episodic</option>
+      <option value="procedural">procedural</option>
+    </select>
+  </div>
+  <div id="memories-table"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- Clusters Panel -->
+<div class="panel" id="clusters-panel">
+  <div id="clusters-content"><div class="loading">Loading clusters...</div></div>
+</div>
+
+<!-- Graph Panel -->
+<div class="panel" id="graph-panel">
+  <div class="graph-controls">
+    <select id="graph-rel-filter" onchange="applyGraphFilter()">
+      <option value="">All edge types</option>
+      <option value="relates_to">relates_to</option>
+      <option value="contains">contains</option>
+      <option value="contradicts">contradicts</option>
+      <option value="depends_on">depends_on</option>
+      <option value="refines">refines</option>
+      <option value="merged_into">merged_into</option>
+    </select>
+    <label><input type="checkbox" id="graph-hide-isolated" onchange="applyGraphFilter()"> Hide isolated nodes</label>
+    <label>Max nodes: <input type="number" id="graph-max-nodes" value="200" min="10" max="2000" style="width:60px" onchange="applyGraphFilter()"></label>
+    <button onclick="resetGraphZoom()">Reset zoom</button>
+  </div>
+  <div class="edge-stats" id="edge-stats"></div>
+  <div class="graph-container" id="graph-wrapper">
+    <canvas id="graph-canvas" width="1200" height="700"></canvas>
+    <div class="graph-legend">
+      <div><div class="dot" style="background:#58a6ff"></div> stm</div>
+      <div><div class="dot" style="background:#3fb950"></div> ltm</div>
+      <div><div class="dot" style="background:#d29922"></div> sensory</div>
+      <div><div class="dot" style="background:#30363d"></div> dormant</div>
+      <div style="margin-top:4px;border-top:1px solid #30363d;padding-top:4px">
+        <div style="color:#58a6ff">--- relates_to</div>
+        <div style="color:#3fb950">--- contains</div>
+        <div style="color:#f85149">--- contradicts</div>
+        <div style="color:#bc8cff">--- depends_on</div>
+        <div style="color:#d29922">--- refines</div>
+      </div>
+    </div>
+    <div class="graph-tooltip" id="graph-tooltip"></div>
+  </div>
+  <div id="graph-table"></div>
+</div>
+
+<!-- Context Panel -->
+<div class="panel" id="context-panel">
+  <h2>Context Assembly Tester</h2>
+  <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Simulates ghost_context — assembles the most relevant memories for a query within a token budget.</p>
+  <div class="controls" style="flex-wrap:wrap">
+    <input type="text" id="ctx-query" placeholder="Query (e.g. 'ZAM order flow')" style="flex:1;min-width:250px" onkeydown="if(event.key==='Enter')runContext()">
+    <input type="number" id="ctx-budget" value="4000" min="100" max="50000" style="width:80px" title="Token budget">
+    <label style="font-size:12px;color:var(--text2)">budget</label>
+    <input type="number" id="ctx-max-mem-tok" value="0" min="0" max="5000" style="width:70px" title="Max tokens per memory (0=unlimited)">
+    <label style="font-size:12px;color:var(--text2)">max/mem</label>
+    <select id="ctx-kind">
+      <option value="">All kinds</option>
+      <option value="semantic">semantic</option>
+      <option value="episodic">episodic</option>
+      <option value="procedural">procedural</option>
+    </select>
+    <input type="text" id="ctx-tags" placeholder="tags (comma-sep)" style="width:140px">
+    <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px">
+      <input type="checkbox" id="ctx-exclude-pinned"> exclude pinned
+    </label>
+    <button onclick="runContext()">Run</button>
+  </div>
+  <div id="ctx-result" style="margin-top:12px"></div>
+</div>
+
+<!-- Search Panel -->
+<div class="panel" id="search-panel">
+  <h2>Search Tester</h2>
+  <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Simulates ghost_search — full-text search with ranking, optional vector similarity.</p>
+  <div class="controls" style="flex-wrap:wrap">
+    <input type="text" id="srch-query" placeholder="Search query..." style="flex:1;min-width:250px" onkeydown="if(event.key==='Enter')runSearch()">
+    <input type="number" id="srch-limit" value="20" min="1" max="200" style="width:60px" title="Max results">
+    <label style="font-size:12px;color:var(--text2)">limit</label>
+    <select id="srch-kind">
+      <option value="">All kinds</option>
+      <option value="semantic">semantic</option>
+      <option value="episodic">episodic</option>
+      <option value="procedural">procedural</option>
+    </select>
+    <input type="text" id="srch-tags" placeholder="tags (comma-sep)" style="width:140px">
+    <input type="text" id="srch-exclude-tiers" placeholder="exclude tiers" style="width:120px" title="Comma-separated tiers to exclude (e.g. dormant,sensory)">
+    <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px">
+      <input type="checkbox" id="srch-include-all"> include all tiers
+    </label>
+    <button onclick="runSearch()">Run</button>
+  </div>
+  <div id="srch-result" style="margin-top:12px"></div>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<script>
+let currentNS = '';
+let statsData = null;
+
+// ---- Tabs ----
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+    if (tab.dataset.panel === 'clusters-panel') loadClusters();
+    if (tab.dataset.panel === 'graph-panel') loadGraph();
+  });
+});
+
+// ---- Init ----
+async function init() {
+  const resp = await fetch('/api/stats');
+  statsData = await resp.json();
+  const sel = document.getElementById('ns-select');
+  sel.innerHTML = '<option value="">All namespaces</option>';
+  (statsData.namespaces || []).forEach(ns => {
+    const opt = document.createElement('option');
+    opt.value = ns.ns || ns.NS;
+    opt.textContent = `${ns.ns || ns.NS} (${ns.count || ns.Count})`;
+    sel.appendChild(opt);
+  });
+  renderStats(statsData);
+  loadMemories();
+}
+
+function switchNS() {
+  currentNS = document.getElementById('ns-select').value;
+  loadMemories();
+  // Reset graph data so it reloads on tab switch
+  graphData = null;
+}
+
+function renderStats(d) {
+  document.getElementById('stat-total').textContent = fmt(d.total_memories);
+  document.getElementById('stat-tokens').textContent = fmt(d.total_tokens);
+  document.getElementById('stat-pinned').textContent = d.pinned_count;
+  document.getElementById('stat-db').textContent = fmtBytes(d.db_size_bytes);
+  const tc = d.tier_counts || {};
+  const total = Object.values(tc).reduce((a,b) => a+b, 0) || 1;
+  const bar = document.getElementById('tier-bar');
+  const tt = d.tier_tokens || {};
+  bar.innerHTML = ['sensory','stm','ltm','dormant'].map(t => {
+    const pct = ((tc[t]||0)/total*100);
+    if (pct < 1) return '';
+    return `<div class="tier-${t}" style="width:${pct}%" title="${t}: ${tc[t]||0} memories, ${fmt(tt[t]||0)} tokens">${t} ${tc[t]||0}</div>`;
+  }).join('');
+}
+
+// ---- Memories ----
+async function loadMemories() {
+  const q = document.getElementById('search-input').value;
+  const tier = document.getElementById('tier-filter').value;
+  const kind = document.getElementById('kind-filter').value;
+  let url = `/api/memories?limit=500`;
+  if (currentNS) url += `&ns=${encodeURIComponent(currentNS)}`;
+  if (tier) url += `&tier=${tier}`;
+  if (kind) url += `&kind=${kind}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  const resp = await fetch(url);
+  const data = await resp.json();
+  const mems = (data || []).map(d => d.memory || d.Memory || d);
+  const container = document.getElementById('memories-table');
+  if (!mems.length) { container.innerHTML = '<div class="loading">No memories found</div>'; return; }
+  let html = `<table><thead><tr><th>Key</th><th>Tier</th><th>Kind</th><th>Imp</th><th>Tokens</th><th>Access</th><th>Utility</th><th>Content</th></tr></thead><tbody>`;
+  for (const m of mems) {
+    const tier = m.tier || m.Tier || 'stm';
+    const kind = m.kind || m.Kind || '';
+    const imp = m.importance || m.Importance || 0;
+    const key = m.key || m.Key || '';
+    const ns = m.ns || m.NS || '';
+    const tokens = m.est_tokens || m.EstTokens || 0;
+    const access = m.access_count || m.AccessCount || 0;
+    const utility = m.utility_count || m.UtilityCount || 0;
+    const content = m.content || m.Content || '';
+    const pinned = m.pinned || m.Pinned;
+    html += `<tr>
+      <td class="key-cell" onclick="showMemory('${esc(ns)}','${esc(key)}')" title="${esc(ns)}/${esc(key)}">${esc(key)}${pinned ? '<span class="pinned-icon">*</span>' : ''}</td>
+      <td><span class="tier-badge ${tier}">${tier}</span></td>
+      <td class="kind-badge">${kind}</td>
+      <td><div class="importance-bar"><div class="importance-fill" style="width:${imp*100}%"></div></div></td>
+      <td>${tokens}</td><td>${access}</td><td>${utility}</td>
+      <td class="content-cell" title="${esc(content.substring(0,300))}">${esc(content.substring(0,100))}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ---- Clusters ----
+async function loadClusters() {
+  const ns = currentNS || 'agent:claude-code';
+  const resp = await fetch(`/api/clusters?ns=${encodeURIComponent(ns)}`);
+  const clusters = await resp.json();
+  const container = document.getElementById('clusters-content');
+  if (!clusters || !clusters.length) { container.innerHTML = '<div class="loading">No clusters found</div>'; return; }
+  clusters.sort((a,b) => (b.count||0) - (a.count||0));
+  let html = `<h2>${clusters.length} clusters, ${clusters.reduce((s,c) => s + (c.count||0), 0)} total memories</h2><div class="cluster-grid">`;
+  for (const c of clusters) {
+    const keys = c.keys || [];
+    html += `<div class="cluster-card">
+      <div class="cluster-header"><span class="cluster-count">${c.count} memories</span><span class="cluster-tokens">${fmt(c.est_tokens||0)} tokens</span></div>
+      <div class="cluster-keys">${keys.slice(0,15).map(k => `<div onclick="showMemory('${esc(currentNS||'agent:claude-code')}','${esc(k)}')" style="cursor:pointer;color:var(--accent)">${esc(k)}</div>`).join('')}
+        ${keys.length > 15 ? `<div style="color:var(--text2)">...and ${keys.length-15} more</div>` : ''}
+      </div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ---- Force-Directed Graph ----
+let graphData = null;     // raw API data
+let graphNodes = [];      // simulation nodes
+let graphEdges = [];      // simulation edges
+let graphSim = null;      // animation frame id
+let graphTransform = { x: 0, y: 0, scale: 1 };
+let graphDrag = null;     // {node, offsetX, offsetY} or {pan: true, startX, startY, startTX, startTY}
+let graphHover = null;    // hovered node index
+let graphSelected = null; // selected node index
+
+const REL_COLORS = {
+  relates_to: '#58a6ff', contains: '#3fb950', contradicts: '#f85149',
+  depends_on: '#bc8cff', refines: '#d29922', merged_into: '#8b949e'
+};
+const TIER_COLORS = { stm: '#58a6ff', ltm: '#3fb950', sensory: '#d29922', dormant: '#484f58' };
+
+async function loadGraph() {
+  if (!graphData) {
+    const ns = currentNS || 'agent:claude-code';
+    document.getElementById('edge-stats').innerHTML = '<div class="loading">Loading graph data...</div>';
+    const resp = await fetch(`/api/edges?ns=${encodeURIComponent(ns)}`);
+    graphData = await resp.json();
+  }
+  applyGraphFilter();
+}
+
+function applyGraphFilter() {
+  if (!graphData) return;
+  const relFilter = document.getElementById('graph-rel-filter').value;
+  const hideIsolated = document.getElementById('graph-hide-isolated').checked;
+  const maxNodes = parseInt(document.getElementById('graph-max-nodes').value) || 200;
+
+  const allNodes = graphData.nodes || [];
+  const allEdges = graphData.edges || [];
+
+  // Filter edges
+  let edges = relFilter ? allEdges.filter(e => e.rel === relFilter) : [...allEdges];
+
+  // Build connected set
+  const connected = new Set();
+  edges.forEach(e => { connected.add(e.from_key); connected.add(e.to_key); });
+
+  // Filter nodes
+  let nodes = hideIsolated ? allNodes.filter(n => connected.has(n.key)) : [...allNodes];
+
+  // If too many nodes, keep only the most connected
+  if (nodes.length > maxNodes) {
+    const degree = {};
+    edges.forEach(e => { degree[e.from_key] = (degree[e.from_key]||0)+1; degree[e.to_key] = (degree[e.to_key]||0)+1; });
+    nodes.sort((a,b) => (degree[b.key]||0) - (degree[a.key]||0));
+    nodes = nodes.slice(0, maxNodes);
+    const nodeSet = new Set(nodes.map(n => n.key));
+    edges = edges.filter(e => nodeSet.has(e.from_key) && nodeSet.has(e.to_key));
+  }
+
+  // Render stats
+  const relCounts = {};
+  allEdges.forEach(e => { relCounts[e.rel] = (relCounts[e.rel]||0)+1; });
+  let statsHtml = `<div class="edge-stat"><div class="label">Nodes</div><div class="value">${allNodes.length}</div></div>`;
+  statsHtml += `<div class="edge-stat"><div class="label">Edges</div><div class="value">${allEdges.length}</div></div>`;
+  for (const [rel, count] of Object.entries(relCounts).sort((a,b) => b[1]-a[1])) {
+    statsHtml += `<div class="edge-stat"><div class="label">${rel}</div><div class="value">${count}</div></div>`;
+  }
+  document.getElementById('edge-stats').innerHTML = statsHtml;
+
+  // Build simulation
+  initGraphSim(nodes, edges);
+}
+
+function renderGraph(ctx, W, H) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(graphTransform.x, graphTransform.y);
+  ctx.scale(graphTransform.scale, graphTransform.scale);
+
+  // Edges
+  for (const e of graphEdges) {
+    const s = graphNodes[e.source];
+    const t = graphNodes[e.target];
+    const highlighted = graphSelected !== null && (e.source === graphSelected || e.target === graphSelected);
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(t.x, t.y);
+    ctx.strokeStyle = highlighted ? (REL_COLORS[e.rel] || '#484f58') :
+      (graphSelected !== null ? 'rgba(48,54,61,0.2)' : (REL_COLORS[e.rel] || '#484f58'));
+    ctx.lineWidth = highlighted ? 2 : (graphSelected !== null ? 0.3 : 0.6);
+    ctx.globalAlpha = highlighted ? 1 : (graphSelected !== null ? 0.3 : 0.4);
+    ctx.stroke();
+
+    if (highlighted && (e.rel === 'contains' || e.rel === 'depends_on' || e.rel === 'refines')) {
+      const angle = Math.atan2(t.y - s.y, t.x - s.x);
+      const arrowLen = 8;
+      const mx = (s.x + t.x) / 2;
+      const my = (s.y + t.y) / 2;
+      ctx.beginPath();
+      ctx.moveTo(mx + Math.cos(angle) * arrowLen, my + Math.sin(angle) * arrowLen);
+      ctx.lineTo(mx + Math.cos(angle + 2.5) * arrowLen, my + Math.sin(angle + 2.5) * arrowLen);
+      ctx.lineTo(mx + Math.cos(angle - 2.5) * arrowLen, my + Math.sin(angle - 2.5) * arrowLen);
+      ctx.closePath();
+      ctx.fillStyle = REL_COLORS[e.rel];
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Nodes
+  for (let i = 0; i < graphNodes.length; i++) {
+    const n = graphNodes[i];
+    const isSelected = i === graphSelected;
+    const isHover = i === graphHover;
+    const isNeighbor = graphSelected !== null && graphEdges.some(
+      e => (e.source === graphSelected && e.target === i) || (e.target === graphSelected && e.source === i));
+    const dimmed = graphSelected !== null && !isSelected && !isNeighbor;
+
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.radius * (isSelected ? 1.5 : isHover ? 1.3 : 1), 0, Math.PI * 2);
+    ctx.fillStyle = dimmed ? 'rgba(48,54,61,0.3)' : (TIER_COLORS[n.tier] || '#484f58');
+    ctx.fill();
+
+    if (isSelected || isHover) {
+      ctx.strokeStyle = '#e6edf3';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    if (n.pinned) {
+      ctx.strokeStyle = '#d29922';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // Labels for selected/hovered and their neighbors
+    if (isSelected || isHover || (isNeighbor && graphTransform.scale > 0.5)) {
+      ctx.fillStyle = dimmed ? 'rgba(139,148,158,0.3)' : '#e6edf3';
+      ctx.font = `${isSelected ? 'bold ' : ''}11px -apple-system, sans-serif`;
+      const label = n.key.length > 30 ? n.key.substring(0,28) + '..' : n.key;
+      ctx.fillText(label, n.x + n.radius + 4, n.y + 4);
+    }
+  }
+
+  ctx.restore();
+}
+
+function initGraphSim(nodes, edges) {
+  const canvas = document.getElementById('graph-canvas');
+  const W = canvas.parentElement.clientWidth;
+  const H = 700;
+  canvas.width = W * (window.devicePixelRatio || 1);
+  canvas.height = H * (window.devicePixelRatio || 1);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+  // Build node index
+  const keyIdx = {};
+  const spread = Math.sqrt(nodes.length) * 60; // scale spread with node count
+  graphNodes = nodes.map((n, i) => {
+    keyIdx[n.key] = i;
+    const angle = (i / nodes.length) * Math.PI * 2;
+    const r = spread * 0.4 + Math.random() * spread * 0.3;
+    return {
+      x: Math.cos(angle) * r + (Math.random()-0.5) * 100,
+      y: Math.sin(angle) * r + (Math.random()-0.5) * 100,
+      vx: 0, vy: 0,
+      key: n.key, tier: n.tier || 'stm', importance: n.importance || 0,
+      est_tokens: n.est_tokens || 0, pinned: n.pinned,
+      radius: Math.max(3, Math.min(12, Math.sqrt(n.est_tokens || 50) * 0.5))
+    };
+  });
+
+  graphEdges = [];
+  for (const e of edges) {
+    const si = keyIdx[e.from_key];
+    const ti = keyIdx[e.to_key];
+    if (si !== undefined && ti !== undefined) {
+      graphEdges.push({ source: si, target: ti, rel: e.rel, weight: e.weight });
+    }
+  }
+
+  graphSelected = null;
+  graphHover = null;
+
+  if (graphSim) cancelAnimationFrame(graphSim);
+
+  const ITERATIONS = 300;
+  let frame = 0;
+  const repK = 2000; // stronger repulsion for better spread
+  const attK = 0.015;
+  const idealLen = 120;
+  const farCutoff = 800 * 800; // skip pairs > 800 world units apart
+
+  function tick() {
+    if (frame > ITERATIONS) { fitGraphToView(W, H); render(); return; }
+    frame++;
+    const alpha = 0.3 * (1 - frame / ITERATIONS);
+    const N = graphNodes.length;
+
+    // Gentle center gravity (toward origin)
+    for (let i = 0; i < N; i++) {
+      graphNodes[i].vx -= graphNodes[i].x * 0.0002;
+      graphNodes[i].vy -= graphNodes[i].y * 0.0002;
+    }
+
+    // Repulsion
+    for (let i = 0; i < N; i++) {
+      for (let j = i+1; j < N; j++) {
+        let dx = graphNodes[i].x - graphNodes[j].x;
+        let dy = graphNodes[i].y - graphNodes[j].y;
+        let d2 = dx*dx + dy*dy;
+        if (d2 < 1) d2 = 1;
+        if (d2 > farCutoff) continue;
+        const f = repK / d2;
+        const fx = dx * f;
+        const fy = dy * f;
+        graphNodes[i].vx += fx;
+        graphNodes[i].vy += fy;
+        graphNodes[j].vx -= fx;
+        graphNodes[j].vy -= fy;
+      }
+    }
+
+    // Attraction along edges
+    for (const e of graphEdges) {
+      const s = graphNodes[e.source];
+      const t = graphNodes[e.target];
+      let dx = t.x - s.x;
+      let dy = t.y - s.y;
+      let d = Math.sqrt(dx*dx + dy*dy) || 1;
+      const f = (d - idealLen) * attK;
+      const fx = (dx/d) * f;
+      const fy = (dy/d) * f;
+      s.vx += fx; s.vy += fy;
+      t.vx -= fx; t.vy -= fy;
+    }
+
+    // Apply velocity — NO boundary clamping, world coords are unbounded
+    for (let i = 0; i < N; i++) {
+      const n = graphNodes[i];
+      if (graphDrag && graphDrag.nodeIdx === i) continue;
+      n.vx *= 0.55;
+      n.vy *= 0.55;
+      n.x += n.vx * alpha * 10;
+      n.y += n.vy * alpha * 10;
+    }
+
+    // Intermediate fit every 50 frames so user sees progress
+    if (frame % 50 === 0) fitGraphToView(W, H);
+    render();
+    graphSim = requestAnimationFrame(tick);
+  }
+
+  // Auto-fit: compute bounding box of all nodes, set transform to fit in viewport
+  function fitGraphToView(vw, vh) {
+    if (!graphNodes.length) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of graphNodes) {
+      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    }
+    const pad = 60;
+    const bw = (maxX - minX) || 1;
+    const bh = (maxY - minY) || 1;
+    const scale = Math.min((vw - pad*2) / bw, (vh - pad*2) / bh, 2);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    graphTransform = { x: vw/2 - cx * scale, y: vh/2 - cy * scale, scale };
+  }
+
+  function render() { renderGraph(ctx, W, H); }
+
+  // ---- Interaction ----
+  function screenToWorld(sx, sy) {
+    return { x: (sx - graphTransform.x) / graphTransform.scale, y: (sy - graphTransform.y) / graphTransform.scale };
+  }
+
+  function findNodeAt(wx, wy) {
+    for (let i = graphNodes.length - 1; i >= 0; i--) {
+      const n = graphNodes[i];
+      const dx = n.x - wx, dy = n.y - wy;
+      if (dx*dx + dy*dy < (n.radius+4) * (n.radius+4)) return i;
+    }
+    return -1;
+  }
+
+  canvas.onmousedown = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const w = screenToWorld(sx, sy);
+    const idx = findNodeAt(w.x, w.y);
+    if (idx >= 0) {
+      graphDrag = { nodeIdx: idx, offsetX: graphNodes[idx].x - w.x, offsetY: graphNodes[idx].y - w.y };
+      graphSelected = idx;
+      canvas.classList.add('dragging');
+    } else {
+      graphDrag = { pan: true, startX: e.clientX, startY: e.clientY,
+        startTX: graphTransform.x, startTY: graphTransform.y };
+      canvas.classList.add('dragging');
+    }
+    render();
+    updateTooltip(e, idx >= 0 ? idx : graphHover);
+  };
+
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+
+    if (graphDrag) {
+      if (graphDrag.pan) {
+        graphTransform.x = graphDrag.startTX + (e.clientX - graphDrag.startX);
+        graphTransform.y = graphDrag.startTY + (e.clientY - graphDrag.startY);
+      } else {
+        const w = screenToWorld(sx, sy);
+        graphNodes[graphDrag.nodeIdx].x = w.x + graphDrag.offsetX;
+        graphNodes[graphDrag.nodeIdx].y = w.y + graphDrag.offsetY;
+        graphNodes[graphDrag.nodeIdx].vx = 0;
+        graphNodes[graphDrag.nodeIdx].vy = 0;
+      }
+      render();
+      return;
+    }
+
+    const w = screenToWorld(sx, sy);
+    const idx = findNodeAt(w.x, w.y);
+    if (idx !== graphHover) {
+      graphHover = idx >= 0 ? idx : null;
+      render();
+    }
+    updateTooltip(e, idx >= 0 ? idx : null);
+  };
+
+  canvas.onmouseup = () => {
+    graphDrag = null;
+    canvas.classList.remove('dragging');
+  };
+
+  canvas.ondblclick = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const w = screenToWorld(sx, sy);
+    const idx = findNodeAt(w.x, w.y);
+    if (idx >= 0) {
+      const n = graphNodes[idx];
+      showMemory(currentNS || 'agent:claude-code', n.key);
+    } else {
+      graphSelected = null;
+      render();
+    }
+  };
+
+  canvas.onwheel = (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * delta));
+    // Zoom toward cursor
+    graphTransform.x = sx - (sx - graphTransform.x) * (newScale / graphTransform.scale);
+    graphTransform.y = sy - (sy - graphTransform.y) * (newScale / graphTransform.scale);
+    graphTransform.scale = newScale;
+    render();
+  };
+
+  function updateTooltip(e, idx) {
+    const tip = document.getElementById('graph-tooltip');
+    if (idx === null || idx === undefined || idx < 0) {
+      tip.style.display = 'none';
+      return;
+    }
+    const n = graphNodes[idx];
+    const edgeCount = graphEdges.filter(ed => ed.source === idx || ed.target === idx).length;
+    tip.innerHTML = `<strong>${esc(n.key)}</strong><br>
+      <span style="color:${TIER_COLORS[n.tier]}">${n.tier}</span> | ${n.est_tokens} tokens | ${edgeCount} edges
+      ${n.pinned ? ' | pinned' : ''}<br>
+      <span style="color:var(--text2)">importance: ${n.importance.toFixed(2)}</span><br>
+      <span style="color:var(--text2)">click to select, dbl-click to open</span>`;
+    tip.style.display = 'block';
+    const rect = canvas.parentElement.getBoundingClientRect();
+    tip.style.left = (e.clientX - rect.left + 12) + 'px';
+    tip.style.top = (e.clientY - rect.top + 12) + 'px';
+  }
+
+  // Render top connected nodes table
+  const degreeMap = {};
+  graphEdges.forEach(e => {
+    degreeMap[graphNodes[e.source].key] = (degreeMap[graphNodes[e.source].key]||0)+1;
+    degreeMap[graphNodes[e.target].key] = (degreeMap[graphNodes[e.target].key]||0)+1;
+  });
+  const topNodes = Object.entries(degreeMap).sort((a,b) => b[1]-a[1]).slice(0, 20);
+  let tableHtml = '<h2>Most Connected Memories</h2><table><thead><tr><th>Key</th><th>Edges</th></tr></thead><tbody>';
+  for (const [key, count] of topNodes) {
+    tableHtml += `<tr><td class="key-cell" onclick="showMemory('${esc(currentNS||'agent:claude-code')}','${esc(key)}')">${esc(key)}</td><td>${count}</td></tr>`;
+  }
+  tableHtml += '</tbody></table>';
+  document.getElementById('graph-table').innerHTML = tableHtml;
+
+  tick();
+}
+
+function resetGraphZoom() {
+  graphSelected = null;
+  graphHover = null;
+  if (graphNodes.length) {
+    const canvas = document.getElementById('graph-canvas');
+    const W = parseInt(canvas.style.width);
+    const H = parseInt(canvas.style.height);
+    // Refit to all nodes
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of graphNodes) {
+      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    }
+    const pad = 60;
+    const bw = (maxX - minX) || 1;
+    const bh = (maxY - minY) || 1;
+    const scale = Math.min((W - pad*2) / bw, (H - pad*2) / bh, 2);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    graphTransform = { x: W/2 - cx * scale, y: H/2 - cy * scale, scale };
+  } else {
+    graphTransform = { x: 0, y: 0, scale: 1 };
+    if (graphData) applyGraphFilter();
+    return;
+  }
+  // Re-render without re-running simulation
+  const canvas = document.getElementById('graph-canvas');
+  const W = parseInt(canvas.style.width);
+  const H = parseInt(canvas.style.height);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(window.devicePixelRatio||1, 0, 0, window.devicePixelRatio||1, 0, 0);
+  renderGraph(ctx, W, H);
+}
+
+// ---- Memory Detail Modal ----
+async function showMemory(ns, key) {
+  const resp = await fetch(`/api/memory?ns=${encodeURIComponent(ns)}&key=${encodeURIComponent(key)}`);
+  const data = await resp.json();
+  const mems = data.memory || [];
+  const edges = data.edges || [];
+  const m = mems[0];
+  if (!m) return;
+  const mc = document.getElementById('modal-content');
+  const tier = m.tier || m.Tier || 'stm';
+  const kind = m.kind || m.Kind || '';
+  const imp = m.importance || m.Importance || 0;
+  const tokens = m.est_tokens || m.EstTokens || 0;
+  const access = m.access_count || m.AccessCount || 0;
+  const utility = m.utility_count || m.UtilityCount || 0;
+  const content = m.content || m.Content || '';
+  const tags = m.tags || m.Tags || [];
+  const pinned = m.pinned || m.Pinned;
+  const created = m.created_at || m.CreatedAt || '';
+  const accessed = m.last_accessed_at || m.LastAccessedAt || '';
+  const version = m.version || m.Version || 1;
+
+  let html = `<button class="close-btn" onclick="closeModal()">X</button>`;
+  html += `<h3>${esc(key)} ${pinned ? '<span class="pinned-icon">* pinned</span>' : ''}</h3>`;
+  html += `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;">`;
+  html += `<div class="field"><div class="field-label">Namespace</div><div class="field-value">${esc(ns)}</div></div>`;
+  html += `<div class="field"><div class="field-label">Tier</div><div class="field-value"><span class="tier-badge ${tier}">${tier}</span></div></div>`;
+  html += `<div class="field"><div class="field-label">Kind</div><div class="field-value">${kind}</div></div>`;
+  html += `<div class="field"><div class="field-label">Importance</div><div class="field-value">${imp.toFixed(2)}</div></div>`;
+  html += `<div class="field"><div class="field-label">Tokens</div><div class="field-value">${tokens}</div></div>`;
+  html += `<div class="field"><div class="field-label">Access</div><div class="field-value">${access}</div></div>`;
+  html += `<div class="field"><div class="field-label">Utility</div><div class="field-value">${utility}</div></div>`;
+  html += `<div class="field"><div class="field-label">Version</div><div class="field-value">${version}</div></div>`;
+  html += `</div>`;
+  if (tags.length) {
+    html += `<div class="field"><div class="field-label">Tags</div><div class="field-value">${tags.map(t => `<span style="background:var(--border);padding:1px 6px;border-radius:4px;font-size:12px;margin-right:4px">${esc(t)}</span>`).join('')}</div></div>`;
+  }
+  html += `<div style="display:flex;gap:16px;margin:8px 0;">`;
+  html += `<div class="field"><div class="field-label">Created</div><div class="field-value" style="font-size:12px">${fmtDate(created)}</div></div>`;
+  html += `<div class="field"><div class="field-label">Last Accessed</div><div class="field-value" style="font-size:12px">${fmtDate(accessed)}</div></div>`;
+  html += `</div>`;
+  html += `<div class="field" style="margin-top:12px"><div class="field-label">Content</div><div class="content-block">${esc(content)}</div></div>`;
+  if (edges.length) {
+    html += `<div class="field" style="margin-top:12px"><div class="field-label">Edges (${edges.length})</div><div class="edge-list">`;
+    for (const e of edges) {
+      const rel = e.rel || e.Rel;
+      const w = (e.weight || e.Weight || 0).toFixed(2);
+      const fromID = e.from_id || e.FromID || '';
+      const toID = e.to_id || e.ToID || '';
+      const other = (fromID === (m.id||m.ID)) ? toID : fromID;
+      const dir = (fromID === (m.id||m.ID)) ? '->' : '<-';
+      html += `<div class="edge-item"><span class="edge-rel">${rel}</span><span>${dir} ${esc(other.substring(0,40))}</span><span style="color:var(--text2)">(w=${w})</span></div>`;
+    }
+    html += `</div></div>`;
+  }
+  if (mems.length > 1) {
+    html += `<div class="field" style="margin-top:12px"><div class="field-label">History (${mems.length} versions)</div>`;
+    for (let i = 1; i < mems.length; i++) {
+      const h = mems[i];
+      html += `<div style="font-size:12px;color:var(--text2);margin-top:4px">v${h.version||h.Version} - ${fmtDate(h.created_at||h.CreatedAt)}</div>`;
+    }
+    html += `</div>`;
+  }
+  mc.innerHTML = html;
+  document.getElementById('modal').classList.add('open');
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// ---- Utils ----
+function fmt(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
+function fmtBytes(b) { if (!b) return '-'; if (b > 1e6) return (b/1e6).toFixed(1)+'MB'; return (b/1e3).toFixed(0)+'KB'; }
+function fmtDate(s) { if (!s) return '-'; try { return new Date(s).toLocaleDateString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); } catch(e) { return s; } }
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ---- Shared: render a memory card in context-window style ----
+function renderMemCard(m, idx, opts) {
+  const key = m.key || m.Key || '';
+  const ns = m.ns || m.NS || '';
+  const kind = m.kind || m.Kind || '';
+  const tier = m.tier || m.Tier || 'stm';
+  const content = m.content || m.Content || '';
+  const score = opts.score;
+  const sim = opts.similarity;
+  const excerpt = opts.excerpt;
+  const tokens = opts.tokens || 0;
+  const cardId = `card-${opts.prefix}-${idx}`;
+
+  let metaHtml = '';
+  if (score !== undefined) metaHtml += `<span class="score" style="color:${score > 0.7 ? 'var(--green)' : score > 0.4 ? 'var(--yellow)' : 'var(--text2)'}">score ${score.toFixed(3)}</span>`;
+  if (sim !== undefined && sim > 0) metaHtml += `<span style="color:${sim > 0.5 ? 'var(--green)' : sim > 0.3 ? 'var(--yellow)' : 'var(--text2)'}">sim ${sim.toFixed(3)}</span>`;
+  metaHtml += `<span class="tier-badge ${tier}">${tier}</span>`;
+  if (kind) metaHtml += `<span class="kind-badge">${kind}</span>`;
+  if (tokens) metaHtml += `<span style="color:var(--text2)">${tokens}tok</span>`;
+  if (excerpt) metaHtml += `<span class="excerpt-badge">excerpted</span>`;
+
+  return `<div class="ctx-card">
+    <div class="ctx-card-header" onclick="document.getElementById('${cardId}').classList.toggle('collapsed')">
+      <span><span style="color:var(--text2);margin-right:6px">#${idx+1}</span>
+        <span class="ctx-card-key" onclick="event.stopPropagation();showMemory('${esc(ns)}','${esc(key)}')">[${esc(key)}]</span></span>
+      <span class="ctx-card-meta">${metaHtml}</span>
+    </div>
+    <div class="ctx-card-body" id="${cardId}">${esc(content)}</div>
+  </div>`;
+}
+
+// ---- Context Tester ----
+async function runContext() {
+  const q = document.getElementById('ctx-query').value.trim();
+  if (!q) return;
+  const budget = document.getElementById('ctx-budget').value;
+  const maxMemTok = document.getElementById('ctx-max-mem-tok').value;
+  const kind = document.getElementById('ctx-kind').value;
+  const tags = document.getElementById('ctx-tags').value.trim();
+  const excludePinned = document.getElementById('ctx-exclude-pinned').checked;
+  const ns = currentNS || '';
+
+  let url = `/api/context?q=${encodeURIComponent(q)}&budget=${budget}`;
+  if (ns) url += `&ns=${encodeURIComponent(ns)}`;
+  if (kind) url += `&kind=${kind}`;
+  if (tags) url += `&tags=${encodeURIComponent(tags)}`;
+  if (excludePinned) url += `&exclude_pinned=true`;
+  if (maxMemTok && maxMemTok !== '0') url += `&max_memory_tokens=${maxMemTok}`;
+
+  const container = document.getElementById('ctx-result');
+  container.innerHTML = '<div class="loading">Assembling context...</div>';
+
+  const t0 = performance.now();
+  const resp = await fetch(url);
+  const elapsed = (performance.now() - t0).toFixed(0);
+
+  if (!resp.ok) {
+    container.innerHTML = `<div style="color:var(--red)">Error: ${await resp.text()}</div>`;
+    return;
+  }
+  const data = await resp.json();
+  const mems = data.memories || [];
+
+  // Stats bar
+  const usedPct = Math.min(100, (data.used / data.budget) * 100);
+  let html = `<div class="stats" style="margin-bottom:8px">
+    <div class="stat-card"><div class="label">Used / Budget</div><div class="value">${fmt(data.used)} / ${fmt(data.budget)}</div></div>
+    <div class="stat-card"><div class="label">Memories</div><div class="value">${mems.length}</div></div>
+    <div class="stat-card"><div class="label">Skipped</div><div class="value">${data.skipped || 0}</div></div>
+    <div class="stat-card"><div class="label">Compaction</div><div class="value" style="color:${data.compaction_suggested ? 'var(--yellow)' : 'var(--green)'}">${data.compaction_suggested ? 'suggested' : 'ok'}</div></div>
+    <div class="stat-card"><div class="label">Time</div><div class="value">${elapsed}ms</div></div>
+  </div>`;
+
+  // Token bar — segmented by memory
+  html += `<div style="margin-bottom:16px">
+    <div style="display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--border)">`;
+  let runningPct = 0;
+  const colors = ['#58a6ff','#3fb950','#d29922','#bc8cff','#f85149','#d18616','#8b949e'];
+  mems.forEach((m, i) => {
+    const tokEst = m.content ? Math.ceil(m.content.length / 4) : 0;
+    const pct = (tokEst / data.budget) * 100;
+    html += `<div class="ctx-token-seg" style="width:${pct}%;background:${colors[i % colors.length]}" title="${esc(m.key)}: ~${tokEst}tok"></div>`;
+    runningPct += pct;
+  });
+  html += `</div><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-top:2px">
+    <span>${usedPct.toFixed(1)}% budget used</span>
+    <span>${data.budget - data.used} tokens remaining</span></div></div>`;
+
+  // Context window — card per memory
+  html += `<div class="ctx-window">`;
+  html += `<div style="color:var(--text2);font-size:11px;padding:4px 0;border-bottom:1px dashed var(--border);margin-bottom:8px">
+    --- agent context window (${mems.length} memories, ${fmt(data.used)} tokens) ---</div>`;
+  mems.forEach((m, i) => {
+    const tokEst = m.content ? Math.ceil(m.content.length / 4) : 0;
+    html += renderMemCard(m, i, { score: m.score, excerpt: m.excerpt, tokens: tokEst, prefix: 'ctx' });
+  });
+  html += `<div style="color:var(--text2);font-size:11px;padding:4px 0;border-top:1px dashed var(--border);margin-top:8px">
+    --- end context (${data.skipped || 0} memories skipped due to budget) ---</div>`;
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+
+// ---- Search Tester ----
+async function runSearch() {
+  const q = document.getElementById('srch-query').value.trim();
+  if (!q) return;
+  const limit = document.getElementById('srch-limit').value;
+  const kind = document.getElementById('srch-kind').value;
+  const tags = document.getElementById('srch-tags').value.trim();
+  const excludeTiers = document.getElementById('srch-exclude-tiers').value.trim();
+  const includeAll = document.getElementById('srch-include-all').checked;
+  const ns = currentNS || '';
+
+  let url = `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`;
+  if (ns) url += `&ns=${encodeURIComponent(ns)}`;
+  if (kind) url += `&kind=${kind}`;
+  if (tags) url += `&tags=${encodeURIComponent(tags)}`;
+  if (excludeTiers) url += `&exclude_tiers=${encodeURIComponent(excludeTiers)}`;
+  if (includeAll) url += `&include_all=true`;
+
+  const container = document.getElementById('srch-result');
+  container.innerHTML = '<div class="loading">Searching...</div>';
+
+  const t0 = performance.now();
+  const resp = await fetch(url);
+  const elapsed = (performance.now() - t0).toFixed(0);
+
+  if (!resp.ok) {
+    container.innerHTML = `<div style="color:var(--red)">Error: ${await resp.text()}</div>`;
+    return;
+  }
+  const results = await resp.json() || [];
+
+  let html = `<div class="stats" style="margin-bottom:12px">
+    <div class="stat-card"><div class="label">Results</div><div class="value">${results.length}</div></div>
+    <div class="stat-card"><div class="label">Time</div><div class="value">${elapsed}ms</div></div>
+  </div>`;
+
+  html += `<div class="ctx-window">`;
+  results.forEach((r, i) => {
+    const m = r.memory || r.Memory || r;
+    const sim = r.similarity || r.Similarity || 0;
+    const tokens = m.est_tokens || m.EstTokens || 0;
+    html += renderMemCard(m, i, { similarity: sim, tokens: tokens, prefix: 'srch' });
+  });
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+
+init();
+</script>
+</body>
+</html>
