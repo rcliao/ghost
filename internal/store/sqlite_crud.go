@@ -135,25 +135,35 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		return nil, fmt.Errorf("insert memory: %w", err)
 	}
 
-	// Chunk the content and capture first chunk embedding for auto-linking
+	// Chunk the content and batch-embed all chunks at once
 	chunks := chunker.Chunk(p.Content, chunker.DefaultOptions())
+
+	// Batch embed all chunk texts in a single call (much faster than one-at-a-time)
+	var chunkVecs []embedding.Vector
+	if s.embedder != nil && len(chunks) > 0 {
+		texts := make([]string, len(chunks))
+		for i, c := range chunks {
+			texts[i] = c.Text
+		}
+		vecs, err := embedding.EmbedBatch(ctx, s.embedder, texts)
+		if err == nil {
+			chunkVecs = vecs
+		}
+		// Silently skip embedding errors — FTS5 still works
+	}
+
 	var firstChunkVec embedding.Vector
 	for i, c := range chunks {
 		chunkID := s.newID()
 
-		// Generate embedding if provider is configured
 		var embeddingJSON *string
-		if s.embedder != nil {
-			vec, err := s.embedder.Embed(ctx, c.Text)
-			if err == nil && len(vec) > 0 {
-				b, _ := json.Marshal(vec)
-				str := string(b)
-				embeddingJSON = &str
-				if i == 0 {
-					firstChunkVec = vec
-				}
+		if i < len(chunkVecs) && len(chunkVecs[i]) > 0 {
+			b, _ := json.Marshal(chunkVecs[i])
+			str := string(b)
+			embeddingJSON = &str
+			if i == 0 {
+				firstChunkVec = chunkVecs[i]
 			}
-			// Silently skip embedding errors — FTS5 still works
 		}
 
 		_, err = tx.ExecContext(ctx,

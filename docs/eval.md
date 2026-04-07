@@ -249,6 +249,65 @@ Failed:     6 (all benchmark, no hard failures)
 | Utility feedback | Increase utility weight in context scoring, or add dedicated utility_ratio factor | Make utility signal meaningful | Open |
 | Context fill | Lower minimum score threshold for budget fill, or excerpt more memories | Budget util 38% → 70%+ | Open |
 
+## External Benchmarks
+
+### LongMemEval (ICLR 2025)
+
+Published benchmark for long-term memory abilities: 500 questions across 6 categories testing information extraction, multi-session reasoning, temporal reasoning, knowledge updates, and abstention.
+
+Paper: https://arxiv.org/abs/2410.10813 | Dataset: https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned
+
+**Setup:**
+
+```bash
+# Download dataset (see testdata/longmemeval/README.md)
+cd testdata/longmemeval/
+wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+
+# Run benchmark
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+  go test ./internal/store/ -run TestLongMemEval -v -timeout 30m
+
+# Quick iteration (limit questions)
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_LIMIT=50 \
+  go test ./internal/store/ -run TestLongMemEval -v -timeout 10m
+
+# Debug single question
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_QUESTION=42 \
+  go test ./internal/store/ -run TestLongMemEvalSingleQuestion -v
+```
+
+**Protocol:** For each question, ingests ~50 timestamped chat sessions as memories via `Put()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
+
+**Files:**
+
+| File | Purpose |
+|------|---------|
+| `longmemeval.go` | Dataset types, loader, benchmark runner |
+| `longmemeval_test.go` | Test entry points (skip if dataset not present) |
+| `testdata/longmemeval/` | Dataset files (git-ignored) + README |
+
+**Baseline Results (FTS-only, no embeddings, `_s` dataset, 470 questions):**
+
+| Question Type | n | Recall@5 | Recall@10 | Recall@50 | MRR | NDCG@10 |
+|---|---|---|---|---|---|---|
+| **Overall** | **470** | **0.141** | **0.289** | **0.987** | **0.167** | **0.152** |
+| knowledge-update | 72 | 0.194 | 0.361 | 1.000 | 0.248 | 0.214 |
+| multi-session | 121 | 0.165 | 0.304 | 0.982 | 0.212 | 0.179 |
+| single-session-user | 64 | 0.188 | 0.391 | 0.984 | 0.136 | 0.172 |
+| temporal-reasoning | 127 | 0.114 | 0.246 | 0.983 | 0.160 | 0.131 |
+| single-session-assistant | 56 | 0.089 | 0.161 | 0.982 | 0.077 | 0.071 |
+| single-session-preference | 30 | 0.033 | 0.267 | 1.000 | 0.061 | 0.086 |
+
+**Interpretation:**
+- Recall@50 ~99% — evidence is almost always found, just poorly ranked
+- Recall@5 ~14% — FTS struggles to rank evidence above keyword-similar distractors
+- Hardest: `single-session-assistant` (recalling assistant responses) and `single-session-preference` (implicit preferences) — minimal keyword overlap
+- Easiest: `knowledge-update` and `multi-session` — more keyword-rich questions
+- Embeddings expected to significantly improve Recall@5 and NDCG by capturing semantic similarity
+
 ## Adding New Scenarios
 
 1. Add seed memories to `DefaultSeedCorpus()` in `eval_seed.go` if needed

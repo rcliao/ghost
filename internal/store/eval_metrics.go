@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // ── Metric functions ────────────────────────────────────────────────
 
@@ -46,6 +49,44 @@ func RecallAtK(retrieved, relevant []string, k int) float64 {
 		}
 	}
 	return float64(hits) / float64(len(relevant))
+}
+
+// NDCGAtK computes Normalized Discounted Cumulative Gain at k.
+// Relevance is binary: 1 if in relevant set, 0 otherwise.
+func NDCGAtK(retrieved, relevant []string, k int) float64 {
+	if k <= 0 || len(relevant) == 0 {
+		return 0
+	}
+	relSet := make(map[string]bool, len(relevant))
+	for _, r := range relevant {
+		relSet[r] = true
+	}
+	n := k
+	if n > len(retrieved) {
+		n = len(retrieved)
+	}
+
+	// DCG: sum of 1/log2(i+2) for relevant items at position i (0-indexed)
+	dcg := 0.0
+	for i := 0; i < n; i++ {
+		if relSet[retrieved[i]] {
+			dcg += 1.0 / math.Log2(float64(i+2))
+		}
+	}
+
+	// Ideal DCG: first |relevant| positions all relevant
+	idealN := k
+	if idealN > len(relevant) {
+		idealN = len(relevant)
+	}
+	idcg := 0.0
+	for i := 0; i < idealN; i++ {
+		idcg += 1.0 / math.Log2(float64(i+2))
+	}
+	if idcg == 0 {
+		return 0
+	}
+	return dcg / idcg
 }
 
 // MRR computes Mean Reciprocal Rank: 1/(rank of first relevant result).

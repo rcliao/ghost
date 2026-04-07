@@ -22,6 +22,31 @@ type Embedder interface {
 	Dims() int
 }
 
+// BatchEmbedder extends Embedder with batch support for efficiency.
+// Implementations that support batch processing should implement this interface.
+type BatchEmbedder interface {
+	Embedder
+	EmbedBatch(ctx context.Context, texts []string) ([]Vector, error)
+}
+
+// EmbedBatch embeds multiple texts. If the embedder supports BatchEmbedder,
+// it uses the batch method. Otherwise, falls back to sequential Embed calls.
+func EmbedBatch(ctx context.Context, e Embedder, texts []string) ([]Vector, error) {
+	if be, ok := e.(BatchEmbedder); ok {
+		return be.EmbedBatch(ctx, texts)
+	}
+	// Fallback: sequential
+	vecs := make([]Vector, len(texts))
+	for i, t := range texts {
+		v, err := e.Embed(ctx, t)
+		if err != nil {
+			return nil, fmt.Errorf("embed text %d: %w", i, err)
+		}
+		vecs[i] = v
+	}
+	return vecs, nil
+}
+
 // CosineSimilarity computes cosine similarity between two vectors.
 func CosineSimilarity(a, b Vector) float64 {
 	if len(a) != len(b) || len(a) == 0 {

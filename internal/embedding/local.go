@@ -123,6 +123,34 @@ func (e *LocalEmbedder) Embed(ctx context.Context, text string) (vec Vector, err
 	return vec, nil
 }
 
+func (e *LocalEmbedder) EmbedBatch(ctx context.Context, texts []string) ([]Vector, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if initErr := e.init(); initErr != nil {
+		return nil, initErr
+	}
+
+	// hugot's RunPipeline natively supports batch input
+	result, err := e.pipeline.RunPipeline(texts)
+	if err != nil {
+		return nil, fmt.Errorf("embed batch: %w", err)
+	}
+	if len(result.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("embed batch: expected %d embeddings, got %d", len(texts), len(result.Embeddings))
+	}
+
+	vecs := make([]Vector, len(texts))
+	for i, emb64 := range result.Embeddings {
+		vec := make(Vector, len(emb64))
+		for j, v := range emb64 {
+			vec[j] = float32(v)
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
 func (e *LocalEmbedder) Dims() int { return localDims }
 
 // Close releases the hugot session resources.
