@@ -125,28 +125,25 @@ func BuildEmbedCache(datasetPath, cachePath string, embedder embedding.Embedder,
 		return err
 	}
 
-	// Collect unique session contents
-	type sessionInfo struct {
-		content string
+	// Collect unique session texts and question texts.
+	// Sessions are embedded as whole texts (not chunked) for benchmark speed.
+	unique := make(map[string]string) // content hash → text
+	addText := func(text string) {
+		h := embedding.ContentHash(text)
+		if _, ok := unique[h]; !ok {
+			unique[h] = text
+		}
 	}
-	unique := make(map[string]sessionInfo) // content hash → info
+
 	for _, entry := range entries {
 		for _, session := range entry.HaystackSessions {
 			content := sessionContent(session)
-			if content == "" {
-				continue
-			}
-			h := embedding.ContentHash(content)
-			if _, ok := unique[h]; !ok {
-				unique[h] = sessionInfo{content: content}
+			if content != "" {
+				addText(content)
 			}
 		}
-		// Also cache question embeddings
 		if entry.Question != "" {
-			h := embedding.ContentHash(entry.Question)
-			if _, ok := unique[h]; !ok {
-				unique[h] = sessionInfo{content: entry.Question}
-			}
+			addText(entry.Question)
 		}
 	}
 
@@ -157,8 +154,8 @@ func BuildEmbedCache(datasetPath, cachePath string, embedder embedding.Embedder,
 	// Embed in batches of 32 for efficiency
 	const batchSize = 32
 	texts := make([]string, 0, batchSize)
-	for _, info := range unique {
-		texts = append(texts, info.content)
+	for _, text := range unique {
+		texts = append(texts, text)
 		if len(texts) >= batchSize {
 			if _, err := cached.EmbedBatch(context.Background(), texts); err != nil {
 				return fmt.Errorf("embed batch: %w", err)
@@ -252,7 +249,8 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 			return nil, fmt.Errorf("create store for q%d: %w", i, err)
 		}
 
-		// Ingest haystack sessions
+		// Ingest haystack sessions using fast bulk insert (single chunk per session,
+		// no chunking, no auto-linking — optimized for retrieval benchmarking)
 		for j, session := range entry.HaystackSessions {
 			sessionID := fmt.Sprintf("session-%d", j)
 			if j < len(entry.HaystackIDs) {
@@ -264,21 +262,7 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				continue
 			}
 
-			pp := PutParams{
-				NS:           cfg.NS,
-				Key:          sessionID,
-				Content:      content,
-				Kind:         "episodic",
-				Tier:         "stm",
-				SkipAutoLink: true, // benchmark doesn't need edge linking
-			}
-
-			// Set timestamp if available
-			if j < len(entry.HaystackDates) && entry.HaystackDates[j] != "" {
-				pp.Meta = fmt.Sprintf(`{"session_date":"%s"}`, entry.HaystackDates[j])
-			}
-
-			if _, err := store.Put(ctx, pp); err != nil {
+			if err := store.BenchInsert(ctx, cfg.NS, sessionID, content); err != nil {
 				cleanup()
 				return nil, fmt.Errorf("ingest session %s for q%d: %w", sessionID, i, err)
 			}

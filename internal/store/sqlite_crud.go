@@ -237,6 +237,50 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	return mem, nil
 }
 
+// BenchInsert is a fast-path insert for benchmarking. It creates a single memory
+// with a single chunk (no splitting), pre-computed embedding from the embedder,
+// and skips auto-linking, dedup, versioning, and file refs.
+func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string) error {
+	now := time.Now().UTC()
+	id := s.newID()
+	chunkID := s.newID()
+
+	// Get embedding for the full content (will hit cache if CachedEmbedder is used)
+	var embJSON *string
+	if s.embedder != nil {
+		vec, err := s.embedder.Embed(ctx, content)
+		if err == nil && len(vec) > 0 {
+			b, _ := json.Marshal(vec)
+			str := string(b)
+			embJSON = &str
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, est_tokens, tier, pinned)
+		 VALUES (?, ?, ?, ?, 'episodic', 1, ?, 'normal', 0, 0.5, ?, 'stm', 0)`,
+		id, ns, key, content, now.Format(time.RFC3339), estimateTokens(content))
+	if err != nil {
+		return fmt.Errorf("insert memory: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO chunks (id, memory_id, seq, text, start_line, end_line, embedding)
+		 VALUES (?, ?, 0, ?, 1, ?, ?)`,
+		chunkID, id, content, strings.Count(content, "\n")+1, embJSON)
+	if err != nil {
+		return fmt.Errorf("insert chunk: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, error) {
 	var query string
 	var args []interface{}
