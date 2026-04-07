@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rcliao/ghost/internal/embedding"
 )
 
 // ── LongMemEval dataset types ──────────────────────────────────────
@@ -44,6 +46,7 @@ type LongMemEvalConfig struct {
 	PerTypeLimit   int    // max questions per type for stratified sampling (0 = no limit)
 	TopK           []int  // K values for metrics (default: [5, 10])
 	NS             string // namespace for memories (default: "bench:longmemeval")
+	EmbedCachePath string // path to embedding cache file (speeds up repeated runs)
 	ProgressFunc   func(done, total int) // optional progress callback
 }
 
@@ -111,6 +114,74 @@ func sessionContent(turns []LMETurn) string {
 		sb.WriteString(t.Content)
 	}
 	return sb.String()
+}
+
+// BuildEmbedCache pre-computes embeddings for all unique session texts in the dataset
+// and saves them to a cache file. This is a one-time cost that makes subsequent
+// benchmark runs much faster (cache hits skip ONNX inference entirely).
+func BuildEmbedCache(datasetPath, cachePath string, embedder embedding.Embedder, progressFunc func(done, total int)) error {
+	entries, err := LoadLongMemEval(datasetPath)
+	if err != nil {
+		return err
+	}
+
+	// Collect unique session contents
+	type sessionInfo struct {
+		content string
+	}
+	unique := make(map[string]sessionInfo) // content hash → info
+	for _, entry := range entries {
+		for _, session := range entry.HaystackSessions {
+			content := sessionContent(session)
+			if content == "" {
+				continue
+			}
+			h := embedding.ContentHash(content)
+			if _, ok := unique[h]; !ok {
+				unique[h] = sessionInfo{content: content}
+			}
+		}
+		// Also cache question embeddings
+		if entry.Question != "" {
+			h := embedding.ContentHash(entry.Question)
+			if _, ok := unique[h]; !ok {
+				unique[h] = sessionInfo{content: entry.Question}
+			}
+		}
+	}
+
+	cached := embedding.NewCachedEmbedder(embedder, cachePath)
+	total := len(unique)
+	done := 0
+
+	// Embed in batches of 32 for efficiency
+	const batchSize = 32
+	texts := make([]string, 0, batchSize)
+	for _, info := range unique {
+		texts = append(texts, info.content)
+		if len(texts) >= batchSize {
+			if _, err := cached.EmbedBatch(context.Background(), texts); err != nil {
+				return fmt.Errorf("embed batch: %w", err)
+			}
+			done += len(texts)
+			if progressFunc != nil {
+				progressFunc(done, total)
+			}
+			texts = texts[:0]
+		}
+	}
+	// Final batch
+	if len(texts) > 0 {
+		if _, err := cached.EmbedBatch(context.Background(), texts); err != nil {
+			return fmt.Errorf("embed final batch: %w", err)
+		}
+		done += len(texts)
+		if progressFunc != nil {
+			progressFunc(done, total)
+		}
+	}
+
+	return cached.Save()
 }
 
 // RunLongMemEval executes the benchmark and returns the report.
@@ -194,11 +265,12 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 			}
 
 			pp := PutParams{
-				NS:      cfg.NS,
-				Key:     sessionID,
-				Content: content,
-				Kind:    "episodic",
-				Tier:    "stm",
+				NS:           cfg.NS,
+				Key:          sessionID,
+				Content:      content,
+				Kind:         "episodic",
+				Tier:         "stm",
+				SkipAutoLink: true, // benchmark doesn't need edge linking
 			}
 
 			// Set timestamp if available

@@ -204,7 +204,9 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 
 	// Auto-link edges to similar memories (after commit, non-transactional)
 	// Errors are silently ignored — auto-linking is best-effort.
-	s.autoLinkEdges(ctx, id, p.NS, firstChunkVec)
+	if !p.SkipAutoLink {
+		s.autoLinkEdges(ctx, id, p.NS, firstChunkVec)
+	}
 
 	mem := &model.Memory{
 		ID:         id,

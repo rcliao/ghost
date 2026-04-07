@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"testing"
+
+	"github.com/rcliao/ghost/internal/embedding"
 )
 
 // TestLongMemEval runs the LongMemEval retrieval benchmark against ghost's search.
@@ -25,22 +27,7 @@ func TestLongMemEval(t *testing.T) {
 		t.Skip("GHOST_BENCH_LONGMEMEVAL not set — skipping LongMemEval benchmark")
 	}
 
-	// Resolve relative paths from repo root
-	if !filepath.IsAbs(datasetPath) {
-		// Walk up to find repo root (contains go.mod)
-		dir, _ := os.Getwd()
-		for {
-			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-				datasetPath = filepath.Join(dir, datasetPath)
-				break
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
+	datasetPath = resolveRepoPath(datasetPath)
 
 	if _, err := os.Stat(datasetPath); os.IsNotExist(err) {
 		t.Skipf("dataset not found at %s — see testdata/longmemeval/README.md", datasetPath)
@@ -59,11 +46,17 @@ func TestLongMemEval(t *testing.T) {
 		}
 	}
 
+	cachePath := os.Getenv("GHOST_BENCH_EMBED_CACHE")
+	if cachePath != "" && !filepath.IsAbs(cachePath) {
+		cachePath = resolveRepoPath(cachePath)
+	}
+
 	cfg := LongMemEvalConfig{
-		DatasetPath:  datasetPath,
-		Limit:        limit,
-		PerTypeLimit: perTypeLimit,
-		TopK:         []int{5, 10, 50},
+		DatasetPath:    datasetPath,
+		Limit:          limit,
+		PerTypeLimit:   perTypeLimit,
+		TopK:           []int{5, 10, 50},
+		EmbedCachePath: cachePath,
 		ProgressFunc: func(done, total int) {
 			if done%10 == 0 || done == total {
 				t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
@@ -71,11 +64,25 @@ func TestLongMemEval(t *testing.T) {
 		},
 	}
 
+	// Build the embedder: use cached embedder if cache path is set
+	var embedder embedding.Embedder
+	if baseEmbedder := embedding.NewFromEnv(); baseEmbedder != nil {
+		if cachePath != "" {
+			embedder = embedding.NewCachedEmbedder(baseEmbedder, cachePath)
+			t.Logf("Using embed cache: %s (%d entries)", cachePath, embedder.(*embedding.CachedEmbedder).Len())
+		} else {
+			embedder = baseEmbedder
+		}
+	}
+
 	report, err := RunLongMemEval(cfg, func() (*SQLiteStore, func(), error) {
 		dir := t.TempDir()
 		s, err := NewSQLiteStore(filepath.Join(dir, "bench.db"))
 		if err != nil {
 			return nil, nil, err
+		}
+		if embedder != nil {
+			s.SetEmbedder(embedder)
 		}
 		return s, func() { s.Close() }, nil
 	})
@@ -118,21 +125,7 @@ func TestLongMemEvalLoad(t *testing.T) {
 	if datasetPath == "" {
 		t.Skip("GHOST_BENCH_LONGMEMEVAL not set")
 	}
-
-	if !filepath.IsAbs(datasetPath) {
-		dir, _ := os.Getwd()
-		for {
-			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-				datasetPath = filepath.Join(dir, datasetPath)
-				break
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
+	datasetPath = resolveRepoPath(datasetPath)
 
 	entries, err := LoadLongMemEval(datasetPath)
 	if err != nil {
@@ -172,6 +165,63 @@ func TestLongMemEvalLoad(t *testing.T) {
 		t.Logf("  Sessions: %d", len(e.HaystackSessions))
 		t.Logf("  Evidence sessions: %v", e.AnswerSessionIDs)
 	}
+}
+
+// resolveRepoPath resolves a relative path from the repo root (where go.mod lives).
+func resolveRepoPath(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return filepath.Join(dir, p)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return p
+}
+
+// TestLongMemEvalBuildCache pre-computes embeddings for all dataset sessions.
+//
+// Usage:
+//
+//	GHOST_EMBED_PROVIDER=local \
+//	GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+//	GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
+//	  go test ./internal/store/ -run TestLongMemEvalBuildCache -v -timeout 180m
+func TestLongMemEvalBuildCache(t *testing.T) {
+	datasetPath := os.Getenv("GHOST_BENCH_LONGMEMEVAL")
+	cachePath := os.Getenv("GHOST_BENCH_EMBED_CACHE")
+	if datasetPath == "" || cachePath == "" {
+		t.Skip("GHOST_BENCH_LONGMEMEVAL and GHOST_BENCH_EMBED_CACHE required")
+	}
+
+	datasetPath = resolveRepoPath(datasetPath)
+	cachePath = resolveRepoPath(cachePath)
+
+	embedder := embedding.NewFromEnv()
+	if embedder == nil {
+		t.Skip("no embedder configured (set GHOST_EMBED_PROVIDER)")
+	}
+
+	t.Logf("Building embed cache: %s", cachePath)
+	err := BuildEmbedCache(datasetPath, cachePath, embedder, func(done, total int) {
+		if done%100 == 0 || done == total {
+			t.Logf("Embedding progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
+		}
+	})
+	if err != nil {
+		t.Fatalf("build cache: %v", err)
+	}
+
+	// Verify
+	cached := embedding.NewCachedEmbedder(embedder, cachePath)
+	t.Logf("Cache built: %d entries at %s", cached.Len(), cachePath)
 }
 
 func printMetrics(t *testing.T, metrics map[string]float64) {
@@ -254,20 +304,7 @@ func TestLongMemEvalSingleQuestion(t *testing.T) {
 		}
 	}
 
-	if !filepath.IsAbs(datasetPath) {
-		dir, _ := os.Getwd()
-		for {
-			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-				datasetPath = filepath.Join(dir, datasetPath)
-				break
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
+	datasetPath = resolveRepoPath(datasetPath)
 
 	entries, err := LoadLongMemEval(datasetPath)
 	if err != nil {

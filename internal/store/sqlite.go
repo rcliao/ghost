@@ -58,6 +58,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	return s, nil
 }
 
+// SetEmbedder overrides the embedder used for vector operations.
+// Useful for injecting a cached embedder in benchmarks.
+func (s *SQLiteStore) SetEmbedder(e embedding.Embedder) {
+	s.embedder = e
+}
+
 func (s *SQLiteStore) newID() string {
 	return ulid.MustNew(ulid.Timestamp(time.Now()), s.entropy).String()
 }
