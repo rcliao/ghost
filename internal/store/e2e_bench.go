@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ import (
 // LLMClient abstracts the LLM call for testability.
 type LLMClient interface {
 	Generate(ctx context.Context, systemPrompt, userMessage string) (string, error)
+	Name() string
 }
 
 // E2EConfig controls the end-to-end benchmark.
@@ -58,6 +60,7 @@ type E2EResult struct {
 type E2EReport struct {
 	Timestamp time.Time                     `json:"timestamp"`
 	Dataset   string                        `json:"dataset"`
+	LLM       string                        `json:"llm"`
 	Total     int                           `json:"total"`
 	ByType    map[string]*E2ETypeAgg        `json:"by_type"`
 	Overall   map[string]map[string]float64 `json:"overall"` // mode → metric → value
@@ -151,6 +154,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 	report := &E2EReport{
 		Timestamp: time.Now(),
 		Dataset:   filepath.Base(cfg.DatasetPath),
+		LLM:       cfg.LLM.Name(),
 		ByType:    make(map[string]*E2ETypeAgg),
 		Overall:   make(map[string]map[string]float64),
 	}
@@ -289,7 +293,42 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 	return report, nil
 }
 
-// ── Anthropic HTTP Client (no SDK dependency) ─────────────────────
+// ── LLM Client implementations ────────────────────────────────────
+
+// ClaudeCLIClient calls `claude -p` for LLM generation.
+// Uses the Claude Code CLI — no API key management needed.
+type ClaudeCLIClient struct {
+	Model string // optional: "sonnet", "haiku", "opus"
+}
+
+func NewClaudeCLIClient(model string) *ClaudeCLIClient {
+	return &ClaudeCLIClient{Model: model}
+}
+
+func (c *ClaudeCLIClient) Name() string {
+	if c.Model != "" {
+		return "claude-cli:" + c.Model
+	}
+	return "claude-cli"
+}
+
+func (c *ClaudeCLIClient) Generate(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	prompt := systemPrompt + "\n\n" + userMessage
+	args := []string{"-p", prompt, "--no-input"}
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("claude -p failed: %s", string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("claude -p: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // AnthropicClient calls the Anthropic Messages API via HTTP.
 type AnthropicClient struct {
@@ -298,31 +337,29 @@ type AnthropicClient struct {
 	client *http.Client
 }
 
-// NewAnthropicClient creates a client. Defaults to Haiku for cost efficiency.
 func NewAnthropicClient(model string) *AnthropicClient {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if model == "" {
 		model = "claude-haiku-4-5-20251001"
 	}
 	return &AnthropicClient{
-		APIKey: apiKey,
-		Model:  model,
+		APIKey: apiKey, Model: model,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
+
+func (c *AnthropicClient) Name() string { return "api:" + c.Model }
 
 type anthropicReqMsg struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
-
 type anthropicReq struct {
 	Model     string            `json:"model"`
 	MaxTokens int               `json:"max_tokens"`
 	System    string            `json:"system,omitempty"`
 	Messages  []anthropicReqMsg `json:"messages"`
 }
-
 type anthropicResp struct {
 	Content []struct {
 		Text string `json:"text"`
@@ -338,10 +375,9 @@ func (c *AnthropicClient) Generate(ctx context.Context, systemPrompt, userMessag
 	}
 
 	reqBody, _ := json.Marshal(anthropicReq{
-		Model:     c.Model,
-		MaxTokens: 256,
-		System:    systemPrompt,
-		Messages:  []anthropicReqMsg{{Role: "user", Content: userMessage}},
+		Model: c.Model, MaxTokens: 256,
+		System:   systemPrompt,
+		Messages: []anthropicReqMsg{{Role: "user", Content: userMessage}},
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
@@ -368,7 +404,7 @@ func (c *AnthropicClient) Generate(ctx context.Context, systemPrompt, userMessag
 		return "", fmt.Errorf("parse response: %w", err)
 	}
 	if result.Error != nil {
-		return "", fmt.Errorf("anthropic error: %s", result.Error.Message)
+		return "", fmt.Errorf("anthropic: %s", result.Error.Message)
 	}
 	if len(result.Content) == 0 {
 		return "", fmt.Errorf("empty response")

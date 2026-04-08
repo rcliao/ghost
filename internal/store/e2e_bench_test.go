@@ -14,24 +14,26 @@ import (
 
 // TestE2ELongMemEval runs the end-to-end benchmark: Ghost retrieval + Claude answering.
 //
-// Requires: ANTHROPIC_API_KEY + GHOST_BENCH_LONGMEMEVAL
+// Uses `claude -p` by default (no API key needed). Set ANTHROPIC_API_KEY to use the API instead.
 //
-// Usage (cheap: 3 per type with Haiku ≈ $0.10):
+// Usage (via Claude CLI):
 //
-//	ANTHROPIC_API_KEY=sk-... \
 //	GHOST_EMBED_PROVIDER=local \
 //	GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
 //	GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
 //	GHOST_BENCH_PER_TYPE=3 \
 //	  go test ./internal/store/ -run TestE2ELongMemEval -v -timeout 30m
+//
+// Usage (via Anthropic API, cheaper with Haiku):
+//
+//	ANTHROPIC_API_KEY=sk-... GHOST_BENCH_LLM_MODEL=claude-haiku-4-5-20251001 \
+//	GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+//	GHOST_BENCH_PER_TYPE=3 \
+//	  go test ./internal/store/ -run TestE2ELongMemEval -v -timeout 30m
 func TestE2ELongMemEval(t *testing.T) {
 	datasetPath := os.Getenv("GHOST_BENCH_LONGMEMEVAL")
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if datasetPath == "" {
 		t.Skip("GHOST_BENCH_LONGMEMEVAL not set")
-	}
-	if apiKey == "" {
-		t.Skip("ANTHROPIC_API_KEY not set — skipping E2E benchmark")
 	}
 	datasetPath = resolveRepoPath(datasetPath)
 
@@ -62,8 +64,16 @@ func TestE2ELongMemEval(t *testing.T) {
 		}
 	}
 
+	// Choose LLM client: claude CLI (default) or Anthropic API
 	model := os.Getenv("GHOST_BENCH_LLM_MODEL")
-	llm := NewAnthropicClient(model)
+	var llm LLMClient
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		llm = NewAnthropicClient(model)
+		t.Logf("Using Anthropic API: %s", llm.Name())
+	} else {
+		llm = NewClaudeCLIClient(model)
+		t.Logf("Using Claude CLI: %s", llm.Name())
+	}
 
 	cfg := E2EConfig{
 		DatasetPath:  datasetPath,
@@ -93,7 +103,7 @@ func TestE2ELongMemEval(t *testing.T) {
 	}
 
 	// Print summary
-	t.Logf("\n=== E2E Benchmark Results (LLM: %s) ===", llm.Model)
+	t.Logf("\n=== E2E Benchmark Results (LLM: %s) ===", llm.Name())
 	t.Logf("Dataset: %s, Questions: %d", report.Dataset, report.Total)
 	t.Logf("")
 
