@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rcliao/ghost/internal/model"
@@ -159,19 +161,23 @@ func registerTools(server *mcp.Server, st store.Store) {
 		Name:        "ghost_search",
 		Description: "Search memories by content using full-text search with ranking. Use this to recall knowledge from past sessions.",
 		InputSchema: schema([]string{"query"}, map[string]map[string]any{
-			"query": prop("string", "Search query text"),
-			"ns":    prop("string", "Namespace filter (optional)"),
-			"kind":  prop("string", "Filter by kind: semantic, episodic, procedural"),
-			"tags":  {"type": "array", "items": map[string]any{"type": "string"}, "description": "Filter by tags (e.g. identity, project:ghost)"},
-			"limit": prop("integer", "Max results (default 20)"),
+			"query":  prop("string", "Search query text"),
+			"ns":     prop("string", "Namespace filter (optional)"),
+			"kind":   prop("string", "Filter by kind: semantic, episodic, procedural"),
+			"tags":   {"type": "array", "items": map[string]any{"type": "string"}, "description": "Filter by tags (e.g. identity, project:ghost)"},
+			"limit":  prop("integer", "Max results (default 20)"),
+			"after":  prop("string", "Only memories created after this date (YYYY-MM-DD or RFC3339)"),
+			"before": prop("string", "Only memories created before this date (YYYY-MM-DD or RFC3339)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
-			Query string   `json:"query"`
-			NS    string   `json:"ns"`
-			Kind  string   `json:"kind"`
-			Tags  []string `json:"tags"`
-			Limit int      `json:"limit"`
+			Query  string   `json:"query"`
+			NS     string   `json:"ns"`
+			Kind   string   `json:"kind"`
+			Tags   []string `json:"tags"`
+			Limit  int      `json:"limit"`
+			After  string   `json:"after"`
+			Before string   `json:"before"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -179,13 +185,24 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if p.Query == "" {
 			return errResult("query is required"), nil
 		}
-		results, err := st.Search(ctx, store.SearchParams{
+		sp := store.SearchParams{
 			NS:    p.NS,
 			Query: p.Query,
 			Kind:  p.Kind,
 			Tags:  p.Tags,
 			Limit: p.Limit,
-		})
+		}
+		if p.After != "" {
+			if t, err := parseDate(p.After); err == nil {
+				sp.After = t
+			}
+		}
+		if p.Before != "" {
+			if t, err := parseDate(p.Before); err == nil {
+				sp.Before = t
+			}
+		}
+		results, err := st.Search(ctx, sp)
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
@@ -483,6 +500,15 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: buf.String()}},
 	}, nil
+}
+
+func parseDate(s string) (time.Time, error) {
+	for _, f := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid date: %s", s)
 }
 
 func errResult(msg string) *mcp.CallToolResult {

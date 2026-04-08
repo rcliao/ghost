@@ -24,6 +24,8 @@ type SearchParams struct {
 	ExcludeTiers  []string  // tiers to exclude (e.g. ["dormant", "sensory"])
 	IncludeAll    bool      // if true, skip default tier exclusions
 	ReferenceTime time.Time // if set, temporal scoring uses this instead of now()
+	After         time.Time // if set, only return memories created after this time
+	Before        time.Time // if set, only return memories created before this time
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -286,6 +288,19 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	return results, nil
 }
 
+// appendDateFilter adds After/Before WHERE clauses to a query builder.
+func appendDateFilter(where []string, args []interface{}, p SearchParams) ([]string, []interface{}) {
+	if !p.After.IsZero() {
+		where = append(where, "m.created_at >= ?")
+		args = append(args, p.After.UTC().Format(time.RFC3339))
+	}
+	if !p.Before.IsZero() {
+		where = append(where, "m.created_at <= ?")
+		args = append(args, p.Before.UTC().Format(time.RFC3339))
+	}
+	return where, args
+}
+
 // searchFTS runs the FTS5 full-text search and returns ranked results.
 func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) []SearchResult {
 	ftsQuery := buildFTSQuery(p.Query)
@@ -317,6 +332,7 @@ func (s *SQLiteStore) searchFTS(ctx context.Context, p SearchParams, limit int) 
 		where = append(where, "COALESCE(m.tier, 'stm') != ?")
 		args = append(args, tier)
 	}
+	where, args = appendDateFilter(where, args, p)
 
 	// Boost recency weight when query has temporal intent
 	recencyWeight := 0.3
@@ -403,6 +419,14 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 	for _, tier := range p.ExcludeTiers {
 		where += " AND COALESCE(m.tier, 'stm') != ?"
 		args = append(args, tier)
+	}
+	if !p.After.IsZero() {
+		where += " AND m.created_at >= ?"
+		args = append(args, p.After.UTC().Format(time.RFC3339))
+	}
+	if !p.Before.IsZero() {
+		where += " AND m.created_at <= ?"
+		args = append(args, p.Before.UTC().Format(time.RFC3339))
 	}
 
 	query := fmt.Sprintf(`
@@ -574,6 +598,7 @@ func (s *SQLiteStore) searchLike(ctx context.Context, p SearchParams, baseWhere 
 		where = append(where, "COALESCE(m.tier, 'stm') != ?")
 		args = append(args, tier)
 	}
+	where, args = appendDateFilter(where, args, p)
 	_ = baseWhere // we rebuild where clauses here
 
 	// Build per-term LIKE clauses joined with OR for better recall.
