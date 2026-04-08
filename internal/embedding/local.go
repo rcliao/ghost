@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/knights-analytics/hugot"
@@ -12,15 +13,44 @@ import (
 )
 
 const (
-	defaultModel    = "sentence-transformers/all-MiniLM-L6-v2"
 	defaultOnnxFile = "model.onnx"
-	localDims       = 384
 )
 
-// LocalEmbedder runs all-MiniLM-L6-v2 locally via hugot (pure Go, no CGo).
+// localModelSpec defines a supported local embedding model.
+type localModelSpec struct {
+	hfName   string // HuggingFace model ID
+	dims     int
+	onnxPath string // path within HF repo (e.g. "onnx/model.onnx")
+}
+
+// supportedLocalModels maps short names to model specs.
+var supportedLocalModels = map[string]localModelSpec{
+	"all-MiniLM-L6-v2": {
+		hfName:   "sentence-transformers/all-MiniLM-L6-v2",
+		dims:     384,
+		onnxPath: "onnx/" + defaultOnnxFile,
+	},
+	"gte-small": {
+		hfName:   "thenlper/gte-small",
+		dims:     384,
+		onnxPath: "onnx/" + defaultOnnxFile,
+	},
+	"bge-base-en-v1.5": {
+		hfName:   "BAAI/bge-base-en-v1.5",
+		dims:     768,
+		onnxPath: "onnx/" + defaultOnnxFile,
+	},
+}
+
+// defaultLocalModel is the model used when GHOST_EMBED_MODEL_LOCAL is not set.
+const defaultLocalModel = "all-MiniLM-L6-v2"
+
+// LocalEmbedder runs embedding models locally via hugot (pure Go, no CGo).
 // The model is downloaded on first use to ~/.ghost/models/.
 type LocalEmbedder struct {
 	modelsDir string
+	modelName string
+	spec      localModelSpec
 
 	mu       sync.Mutex
 	session  *hugot.Session
@@ -29,15 +59,26 @@ type LocalEmbedder struct {
 	inited   bool
 }
 
-// NewLocalEmbedder creates a local embedder. The model is lazily downloaded
-// and the pipeline is lazily initialized on first Embed call.
+// NewLocalEmbedder creates a local embedder using the default model.
+// Override with GHOST_EMBED_MODEL_LOCAL env var.
+// Supported: all-MiniLM-L6-v2 (default), gte-small, bge-base-en-v1.5
 func NewLocalEmbedder() *LocalEmbedder {
 	dir := os.Getenv("GHOST_MODELS_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".ghost", "models")
 	}
-	return &LocalEmbedder{modelsDir: dir}
+	modelName := os.Getenv("GHOST_EMBED_MODEL_LOCAL")
+	if modelName == "" {
+		modelName = defaultLocalModel
+	}
+	spec, ok := supportedLocalModels[modelName]
+	if !ok {
+		// Fallback to default if unknown model
+		spec = supportedLocalModels[defaultLocalModel]
+		modelName = defaultLocalModel
+	}
+	return &LocalEmbedder{modelsDir: dir, modelName: modelName, spec: spec}
 }
 
 func (e *LocalEmbedder) init() error {
@@ -55,14 +96,16 @@ func (e *LocalEmbedder) init() error {
 	}
 
 	// Download model if not present
-	modelPath := filepath.Join(e.modelsDir, "sentence-transformers_all-MiniLM-L6-v2")
+	// Model dir name: replace / with _ in HF name
+	modelDirName := strings.ReplaceAll(e.spec.hfName, "/", "_")
+	modelPath := filepath.Join(e.modelsDir, modelDirName)
 	onnxPath := filepath.Join(modelPath, defaultOnnxFile)
 	if _, err := os.Stat(onnxPath); os.IsNotExist(err) {
 		opts := hugot.NewDownloadOptions()
-		opts.OnnxFilePath = "onnx/" + defaultOnnxFile
-		downloaded, err := hugot.DownloadModel(defaultModel, e.modelsDir, opts)
+		opts.OnnxFilePath = e.spec.onnxPath
+		downloaded, err := hugot.DownloadModel(e.spec.hfName, e.modelsDir, opts)
 		if err != nil {
-			e.initErr = fmt.Errorf("download model: %w", err)
+			e.initErr = fmt.Errorf("download model %s: %w", e.spec.hfName, err)
 			return e.initErr
 		}
 		modelPath = downloaded
@@ -151,7 +194,7 @@ func (e *LocalEmbedder) EmbedBatch(ctx context.Context, texts []string) ([]Vecto
 	return vecs, nil
 }
 
-func (e *LocalEmbedder) Dims() int { return localDims }
+func (e *LocalEmbedder) Dims() int { return e.spec.dims }
 
 // Close releases the hugot session resources.
 func (e *LocalEmbedder) Close() {

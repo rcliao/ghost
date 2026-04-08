@@ -81,6 +81,31 @@ func rrfScore(ranks []int, k int) float64 {
 	return score
 }
 
+// queryTermOverlap computes the fraction of query terms (non-stopwords) that
+// appear in the content. This is a lightweight keyword-matching signal that
+// complements embedding similarity for entity-specific queries.
+func queryTermOverlap(query, content string) float64 {
+	queryWords := strings.Fields(strings.ToLower(query))
+	var terms []string
+	for _, w := range queryWords {
+		w = strings.Trim(w, "?.,!\"'()[]{}:;")
+		if len(w) > 2 && !englishStopWords[w] {
+			terms = append(terms, w)
+		}
+	}
+	if len(terms) == 0 {
+		return 0
+	}
+	contentLower := strings.ToLower(content)
+	hits := 0
+	for _, t := range terms {
+		if strings.Contains(contentLower, t) {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(terms))
+}
+
 // temporalKeywords are words that signal the user wants recency-ranked results.
 var temporalKeywords = map[string]bool{
 	"yesterday": true, "today": true, "recent": true, "latest": true,
@@ -185,10 +210,52 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	if refTime.IsZero() {
 		refTime = time.Now()
 	}
+
+	// For temporal queries, compute relative recency within the result set.
+	// This ensures meaningful differentiation even for old conversations where
+	// absolute decay (exp(-0.1*days)) would flatten to ~0 for all results.
+	var relRecency map[string]float64
+	if temporal && len(fused) > 0 {
+		relRecency = make(map[string]float64, len(fused))
+		// Find time range: oldest and newest in result set
+		var minTime, maxTime time.Time
+		for _, f := range fused {
+			t := f.result.CreatedAt
+			if minTime.IsZero() || t.Before(minTime) {
+				minTime = t
+			}
+			if maxTime.IsZero() || t.After(maxTime) {
+				maxTime = t
+			}
+		}
+		span := maxTime.Sub(minTime).Hours()
+		if span < 1 {
+			span = 1 // avoid division by zero
+		}
+		for _, f := range fused {
+			// Normalize: newest=1.0, oldest=0.0
+			age := maxTime.Sub(f.result.CreatedAt).Hours()
+			relRecency[f.result.ID] = 1.0 - (age / span)
+		}
+	}
+
+	// Pre-compute term overlap scores for reranking (B/G improvement)
+	termOverlaps := make(map[string]float64, len(fused))
+	for _, f := range fused {
+		termOverlaps[f.result.ID] = queryTermOverlap(p.Query, f.result.Content)
+	}
+
 	sort.Slice(fused, func(i, j int) bool {
 		si, sj := fused[i].rrfScore, fused[j].rrfScore
+
+		// Rerank: blend RRF with term overlap for entity-specific queries
+		overlapI := termOverlaps[fused[i].result.ID]
+		overlapJ := termOverlaps[fused[j].result.ID]
+		// Blend: 70% RRF + 30% term overlap
+		si = si*0.7 + overlapI*0.3*si
+		sj = sj*0.7 + overlapJ*0.3*sj
+
 		if temporal {
-			// Episodic memories are events — boost them for temporal queries
 			kindBoostI, kindBoostJ := 0.0, 0.0
 			if fused[i].result.Kind == "episodic" {
 				kindBoostI = 0.3
@@ -196,11 +263,9 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 			if fused[j].result.Kind == "episodic" {
 				kindBoostJ = 0.3
 			}
-			// Blend: 40% RRF + 30% recency + 30% kind
-			ageDaysI := refTime.Sub(fused[i].result.CreatedAt).Hours() / 24.0
-			ageDaysJ := refTime.Sub(fused[j].result.CreatedAt).Hours() / 24.0
-			recencyI := math.Exp(-0.1 * ageDaysI)
-			recencyJ := math.Exp(-0.1 * ageDaysJ)
+			// Blend: 40% base + 30% relative recency + 30% kind
+			recencyI := relRecency[fused[i].result.ID]
+			recencyJ := relRecency[fused[j].result.ID]
 			si = si*0.4 + recencyI*0.3 + kindBoostI
 			sj = sj*0.4 + recencyJ*0.3 + kindBoostJ
 		}

@@ -47,6 +47,7 @@ type LongMemEvalConfig struct {
 	TopK           []int  // K values for metrics (default: [5, 10])
 	NS             string // namespace for memories (default: "bench:longmemeval")
 	EmbedCachePath string // path to embedding cache file (speeds up repeated runs)
+	UseContext     bool   // if true, use Context() instead of Search() (tests edge expansion + cognitive scoring)
 	ProgressFunc   func(done, total int) // optional progress callback
 }
 
@@ -278,12 +279,7 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 			}
 		}
 
-		// Search with the question
-		searchLimit := maxK
-		if searchLimit < 50 {
-			searchLimit = 50 // get enough candidates
-		}
-		// Parse question date for temporal-aware scoring
+		// Retrieve with the question — either Search() or Context()
 		var questionTime time.Time
 		if entry.QuestionDate != "" {
 			if t, err := time.Parse("2006-01-02 15:04:05", entry.QuestionDate); err == nil {
@@ -292,22 +288,44 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				questionTime = t
 			}
 		}
-		results, err := store.Search(ctx, SearchParams{
-			NS:            cfg.NS,
-			Query:         entry.Question,
-			Limit:         searchLimit,
-			IncludeAll:    true,
-			ReferenceTime: questionTime,
-		})
-		if err != nil {
-			cleanup()
-			return nil, fmt.Errorf("search q%d: %w", i, err)
-		}
 
-		// Extract retrieved session keys
-		retrieved := make([]string, len(results))
-		for ri, r := range results {
-			retrieved[ri] = r.Key
+		var retrieved []string
+		if cfg.UseContext {
+			ctxResult, err := store.Context(ctx, ContextParams{
+				NS:            cfg.NS,
+				Query:         entry.Question,
+				Budget:        100000, // large budget to avoid truncation
+				MaxMemoryTokens: 10000,
+				ExcludePinned: true,
+			})
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("context q%d: %w", i, err)
+			}
+			retrieved = make([]string, len(ctxResult.Memories))
+			for ri, m := range ctxResult.Memories {
+				retrieved[ri] = m.Key
+			}
+		} else {
+			searchLimit := maxK
+			if searchLimit < 50 {
+				searchLimit = 50
+			}
+			results, err := store.Search(ctx, SearchParams{
+				NS:            cfg.NS,
+				Query:         entry.Question,
+				Limit:         searchLimit,
+				IncludeAll:    true,
+				ReferenceTime: questionTime,
+			})
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("search q%d: %w", i, err)
+			}
+			retrieved = make([]string, len(results))
+			for ri, r := range results {
+				retrieved[ri] = r.Key
+			}
 		}
 
 		// Compute metrics

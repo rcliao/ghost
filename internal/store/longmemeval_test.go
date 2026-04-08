@@ -51,12 +51,15 @@ func TestLongMemEval(t *testing.T) {
 		cachePath = resolveRepoPath(cachePath)
 	}
 
+	useContext := os.Getenv("GHOST_BENCH_USE_CONTEXT") != ""
+
 	cfg := LongMemEvalConfig{
 		DatasetPath:    datasetPath,
 		Limit:          limit,
 		PerTypeLimit:   perTypeLimit,
 		TopK:           []int{5, 10, 50},
 		EmbedCachePath: cachePath,
+		UseContext:     useContext,
 		ProgressFunc: func(done, total int) {
 			if done%10 == 0 || done == total {
 				t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
