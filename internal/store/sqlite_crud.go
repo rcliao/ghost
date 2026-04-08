@@ -240,8 +240,12 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 // BenchInsert is a fast-path insert for benchmarking. It creates a single memory
 // with a single chunk (no splitting), pre-computed embedding from the embedder,
 // and skips auto-linking, dedup, versioning, and file refs.
-func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string) error {
-	now := time.Now().UTC()
+// If createdAt is zero, uses current time.
+func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string, createdAt time.Time) error {
+	now := createdAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	id := s.newID()
 	chunkID := s.newID()
 

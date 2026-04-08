@@ -262,7 +262,17 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				continue
 			}
 
-			if err := store.BenchInsert(ctx, cfg.NS, sessionID, content); err != nil {
+			// Parse session date for temporal-aware retrieval
+			var sessionTime time.Time
+			if j < len(entry.HaystackDates) && entry.HaystackDates[j] != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", entry.HaystackDates[j]); err == nil {
+					sessionTime = t
+				} else if t, err := time.Parse("2006-01-02", entry.HaystackDates[j]); err == nil {
+					sessionTime = t
+				}
+			}
+
+			if err := store.BenchInsert(ctx, cfg.NS, sessionID, content, sessionTime); err != nil {
 				cleanup()
 				return nil, fmt.Errorf("ingest session %s for q%d: %w", sessionID, i, err)
 			}
@@ -273,11 +283,21 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 		if searchLimit < 50 {
 			searchLimit = 50 // get enough candidates
 		}
+		// Parse question date for temporal-aware scoring
+		var questionTime time.Time
+		if entry.QuestionDate != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", entry.QuestionDate); err == nil {
+				questionTime = t
+			} else if t, err := time.Parse("2006-01-02", entry.QuestionDate); err == nil {
+				questionTime = t
+			}
+		}
 		results, err := store.Search(ctx, SearchParams{
-			NS:         cfg.NS,
-			Query:      entry.Question,
-			Limit:      searchLimit,
-			IncludeAll: true,
+			NS:            cfg.NS,
+			Query:         entry.Question,
+			Limit:         searchLimit,
+			IncludeAll:    true,
+			ReferenceTime: questionTime,
 		})
 		if err != nil {
 			cleanup()

@@ -16,13 +16,14 @@ import (
 
 // SearchParams holds parameters for searching memories.
 type SearchParams struct {
-	NS           string
-	Query        string
-	Kind         string
-	Tags         []string
-	Limit        int
-	ExcludeTiers []string // tiers to exclude (e.g. ["dormant", "sensory"])
-	IncludeAll   bool     // if true, skip default tier exclusions
+	NS            string
+	Query         string
+	Kind          string
+	Tags          []string
+	Limit         int
+	ExcludeTiers  []string  // tiers to exclude (e.g. ["dormant", "sensory"])
+	IncludeAll    bool      // if true, skip default tier exclusions
+	ReferenceTime time.Time // if set, temporal scoring uses this instead of now()
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -165,7 +166,7 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	}
 	var fused []fusedResult
 	for id, ranks := range methodRanks {
-		score := rrfScore(ranks, 60)
+		score := rrfScore(ranks, 20)
 		r := memoryByID[id]
 		// Only set Similarity to RRF score if no actual cosine similarity exists.
 		// Vector search results have real cosine similarity (0.0-1.0) that downstream
@@ -180,6 +181,10 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	// Sort by RRF score descending. For temporal queries, blend in recency
 	// and prefer episodic memories (events) over procedural/semantic (facts).
 	temporal := hasTemporalIntent(p.Query)
+	refTime := p.ReferenceTime
+	if refTime.IsZero() {
+		refTime = time.Now()
+	}
 	sort.Slice(fused, func(i, j int) bool {
 		si, sj := fused[i].rrfScore, fused[j].rrfScore
 		if temporal {
@@ -192,9 +197,8 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 				kindBoostJ = 0.3
 			}
 			// Blend: 40% RRF + 30% recency + 30% kind
-			now := time.Now()
-			ageDaysI := now.Sub(fused[i].result.CreatedAt).Hours() / 24.0
-			ageDaysJ := now.Sub(fused[j].result.CreatedAt).Hours() / 24.0
+			ageDaysI := refTime.Sub(fused[i].result.CreatedAt).Hours() / 24.0
+			ageDaysJ := refTime.Sub(fused[j].result.CreatedAt).Hours() / 24.0
 			recencyI := math.Exp(-0.1 * ageDaysI)
 			recencyJ := math.Exp(-0.1 * ageDaysJ)
 			si = si*0.4 + recencyI*0.3 + kindBoostI
@@ -391,7 +395,7 @@ func (s *SQLiteStore) searchVector(ctx context.Context, p SearchParams, exclude 
 	// Convert to results, filter by minimum similarity
 	var results []SearchResult
 	for _, s := range best {
-		if s.similarity < 0.3 { // minimum threshold
+		if s.similarity < 0.2 { // minimum threshold
 			continue
 		}
 		results = append(results, SearchResult{
