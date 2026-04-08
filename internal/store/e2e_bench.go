@@ -54,6 +54,7 @@ type E2EResult struct {
 	GoldAnswer   string             `json:"gold_answer"`
 	Answers      map[string]string  `json:"answers"`
 	TokenF1      map[string]float64 `json:"token_f1"`
+	Contains     map[string]bool    `json:"contains"` // does response contain the gold answer?
 }
 
 // E2EReport holds aggregate results.
@@ -100,15 +101,16 @@ func tokenF1(prediction, reference string) float64 {
 }
 
 // formatMemoryContext formats retrieved memories like shell's InjectContext.
-func formatMemoryContext(contents []string) string {
+// maxPerMemory controls truncation (0 = no truncation).
+func formatMemoryContext(contents []string, maxPerMemory int) string {
 	if len(contents) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("[Relevant memories from previous conversations]\n")
 	for _, c := range contents {
-		if len(c) > 500 {
-			c = c[:500] + "..."
+		if maxPerMemory > 0 && len(c) > maxPerMemory {
+			c = c[:maxPerMemory] + "..."
 		}
 		sb.WriteString("- ")
 		sb.WriteString(c)
@@ -208,6 +210,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			GoldAnswer:   entry.Answer,
 			Answers:      make(map[string]string),
 			TokenF1:      make(map[string]float64),
+			Contains:     make(map[string]bool),
 		}
 
 		for _, mode := range cfg.Modes {
@@ -224,7 +227,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 				for _, r := range results {
 					contents = append(contents, r.Content)
 				}
-				userMsg = formatMemoryContext(contents) + entry.Question
+				userMsg = formatMemoryContext(contents, 2000) + entry.Question
 			case "oracle":
 				var contents []string
 				for _, sid := range entry.AnswerSessionIDs {
@@ -232,7 +235,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 						contents = append(contents, c)
 					}
 				}
-				userMsg = formatMemoryContext(contents) + entry.Question
+				userMsg = formatMemoryContext(contents, 2000) + entry.Question
 			}
 
 			answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
@@ -243,6 +246,8 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 
 			result.Answers[mode] = answer
 			result.TokenF1[mode] = tokenF1(answer, entry.Answer)
+			result.Contains[mode] = strings.Contains(
+				strings.ToLower(answer), strings.ToLower(entry.Answer))
 		}
 
 		cleanup()
@@ -264,6 +269,10 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 		for _, mode := range cfg.Modes {
 			report.ByType[qt].Metrics[mode]["token_f1"] += result.TokenF1[mode]
 			report.Overall[mode]["token_f1"] += result.TokenF1[mode]
+			if result.Contains[mode] {
+				report.ByType[qt].Metrics[mode]["contains"] += 1
+				report.Overall[mode]["contains"] += 1
+			}
 		}
 
 		evalDone++
@@ -313,8 +322,7 @@ func (c *ClaudeCLIClient) Name() string {
 }
 
 func (c *ClaudeCLIClient) Generate(ctx context.Context, systemPrompt, userMessage string) (string, error) {
-	prompt := systemPrompt + "\n\n" + userMessage
-	args := []string{"-p", prompt, "--no-input"}
+	args := []string{"-p", userMessage, "--system-prompt", systemPrompt}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
 	}

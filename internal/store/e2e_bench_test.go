@@ -108,11 +108,11 @@ func TestE2ELongMemEval(t *testing.T) {
 	t.Logf("")
 
 	// Overall
-	t.Logf("── Overall Token F1 ──")
+	t.Logf("── Overall ──")
 	modes := []string{"no-memory", "ghost", "oracle"}
 	for _, mode := range modes {
 		if m, ok := report.Overall[mode]; ok {
-			t.Logf("  %-12s %.4f", mode, m["token_f1"])
+			t.Logf("  %-12s F1=%.4f  Contains=%.1f%%", mode, m["token_f1"], m["contains"]*100)
 		}
 	}
 
@@ -129,7 +129,7 @@ func TestE2ELongMemEval(t *testing.T) {
 		t.Logf("── %s (n=%d) ──", qt, agg.Count)
 		for _, mode := range modes {
 			if m, ok := agg.Metrics[mode]; ok {
-				t.Logf("  %-12s F1=%.4f", mode, m["token_f1"])
+				t.Logf("  %-12s F1=%.4f  Contains=%.0f%%", mode, m["token_f1"], m["contains"]*100)
 			}
 		}
 	}
