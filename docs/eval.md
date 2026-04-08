@@ -264,49 +264,98 @@ Paper: https://arxiv.org/abs/2410.10813 | Dataset: https://huggingface.co/datase
 cd testdata/longmemeval/
 wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
 
-# Run benchmark
+# Build embedding cache (one-time, ~30-60 min depending on model)
+GHOST_EMBED_PROVIDER=local \
 GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
+  go test ./internal/store/ -run TestLongMemEvalBuildCache -v -timeout 120m
+
+# Run benchmark with cache (~21 seconds for all 470 questions)
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
   go test ./internal/store/ -run TestLongMemEval -v -timeout 30m
 
-# Quick iteration (limit questions)
+# FTS-only baseline (no embeddings, ~78 seconds)
 GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
-GHOST_BENCH_LIMIT=50 \
   go test ./internal/store/ -run TestLongMemEval -v -timeout 10m
 
 # Debug single question
 GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
 GHOST_BENCH_QUESTION=42 \
   go test ./internal/store/ -run TestLongMemEvalSingleQuestion -v
 ```
 
-**Protocol:** For each question, ingests ~50 timestamped chat sessions as memories via `Put()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
+**Protocol:** For each question, ingests ~50 timestamped chat sessions via `BenchInsert()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
 
-**Files:**
+### LoCoMo (Snap Research, 2024)
 
-| File | Purpose |
-|------|---------|
-| `longmemeval.go` | Dataset types, loader, benchmark runner |
-| `longmemeval_test.go` | Test entry points (skip if dataset not present) |
-| `testdata/longmemeval/` | Dataset files (git-ignored) + README |
+Benchmark for long-term conversational memory: 10 conversations (~27 sessions each, ~300 turns), 1,986 QA pairs across 5 categories.
 
-**Baseline Results (FTS-only, no embeddings, `_s` dataset, 470 questions):**
+Paper: https://arxiv.org/abs/2402.17753 | Repo: https://github.com/snap-research/LoCoMo
 
-| Question Type | n | Recall@5 | Recall@10 | Recall@50 | MRR | NDCG@10 |
-|---|---|---|---|---|---|---|
-| **Overall** | **470** | **0.141** | **0.289** | **0.987** | **0.167** | **0.152** |
-| knowledge-update | 72 | 0.194 | 0.361 | 1.000 | 0.248 | 0.214 |
-| multi-session | 121 | 0.165 | 0.304 | 0.982 | 0.212 | 0.179 |
-| single-session-user | 64 | 0.188 | 0.391 | 0.984 | 0.136 | 0.172 |
-| temporal-reasoning | 127 | 0.114 | 0.246 | 0.983 | 0.160 | 0.131 |
-| single-session-assistant | 56 | 0.089 | 0.161 | 0.982 | 0.077 | 0.071 |
-| single-session-preference | 30 | 0.033 | 0.267 | 1.000 | 0.061 | 0.086 |
+**Setup:**
 
-**Interpretation:**
-- Recall@50 ~99% — evidence is almost always found, just poorly ranked
-- Recall@5 ~14% — FTS struggles to rank evidence above keyword-similar distractors
-- Hardest: `single-session-assistant` (recalling assistant responses) and `single-session-preference` (implicit preferences) — minimal keyword overlap
-- Easiest: `knowledge-update` and `multi-session` — more keyword-rich questions
-- Embeddings expected to significantly improve Recall@5 and NDCG by capturing semantic similarity
+```bash
+cd testdata/locomo/
+wget https://raw.githubusercontent.com/snap-research/LoCoMo/main/data/locomo10.json
+
+# Build cache + run (~4 seconds with cache)
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LOCOMO=testdata/locomo/locomo10.json \
+GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
+  go test ./internal/store/ -run TestLoCoMoBuildCache -v -timeout 30m
+
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LOCOMO=testdata/locomo/locomo10.json \
+GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
+  go test ./internal/store/ -run TestLoCoMo -v -timeout 30m
+```
+
+### Benchmark Results Summary
+
+**Improvement journey (LongMemEval_S, 470 questions):**
+
+| Stage | Recall@5 | MRR | NDCG@10 |
+|-------|----------|-----|---------|
+| FTS-only | 0.141 | 0.169 | 0.149 |
+| + MiniLM embeddings | 0.642 | 0.703 | 0.639 |
+| + Threshold 0.3→0.2, RRF k 60→20 | 0.766 | 0.713 | 0.700 |
+| + Term overlap reranking + relative temporal | 0.795 | 0.785 | 0.757 |
+| + gte-small model | **0.847** | 0.740 | **0.759** |
+| Paper BM25 (_M, harder dataset) | 0.634 | — | 0.540 |
+| Paper Contriever (_M, harder dataset) | 0.723 | — | 0.663 |
+
+**LongMemEval per-type (best config: gte-small + reranking):**
+
+| Question Type | n | Recall@5 | MRR | NDCG@10 |
+|---|---|---|---|---|
+| **Overall** | **470** | **0.847** | **0.740** | **0.759** |
+| knowledge-update | 72 | 0.931 | 0.909 | 0.886 |
+| single-session-user | 64 | 0.906 | 0.709 | 0.772 |
+| single-session-assistant | 56 | 0.929 | 0.567 | 0.658 |
+| temporal-reasoning | 127 | 0.813 | 0.733 | 0.750 |
+| multi-session | 121 | 0.807 | 0.841 | 0.802 |
+| single-session-preference | 30 | 0.667 | 0.347 | 0.474 |
+
+**LoCoMo per-category (best config: gte-small + reranking):**
+
+| Category | n | Recall@5 | MRR | NDCG@10 |
+|---|---|---|---|---|
+| **Overall** | **1,532** | **0.501** | **0.398** | **0.437** |
+| temporal | 321 | 0.606 | 0.462 | 0.521 |
+| open-domain | 841 | 0.498 | 0.344 | 0.403 |
+| single-hop | 281 | 0.427 | 0.510 | 0.467 |
+| multi-hop | 89 | 0.378 | 0.330 | 0.362 |
+
+**Key findings:**
+- Ghost exceeds published BM25 and Contriever baselines (on easier _S dataset)
+- Term overlap reranking was the biggest single improvement (+46% Recall@5 on LoCoMo)
+- gte-small model improves recall over MiniLM but trades some MRR
+- LoCoMo is much harder — dense conversations with similar topics across sessions
+- Remaining weak spots: `single-session-preference` (implicit preferences), `multi-hop` (cross-session reasoning)
+- All achieved without LLM in the loop — pure retrieval with local embeddings
 
 ## Adding New Scenarios
 
