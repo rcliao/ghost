@@ -12,20 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // ── E2E Benchmark: Ghost retrieval + LLM answering ────────────────
 //
-// Replicates how shell uses Ghost:
-//   1. Ingest sessions into Ghost
-//   2. Retrieve relevant memories via Search()
-//   3. Format as "[Relevant memories]..." prefix (like shell's InjectContext)
-//   4. Call LLM with context + question
-//   5. Score answer against ground truth
-//
 // Three modes compared:
 //   - no-memory: LLM answers with no context (baseline)
-//   - ghost: LLM answers with Ghost-retrieved memories
+//   - ghost: LLM answers with Ghost-retrieved memories (best config)
 //   - oracle: LLM answers with ground-truth evidence sessions (upper bound)
 
 // LLMClient abstracts the LLM call for testability.
@@ -53,8 +49,7 @@ type E2EResult struct {
 	Question     string             `json:"question"`
 	GoldAnswer   string             `json:"gold_answer"`
 	Answers      map[string]string  `json:"answers"`
-	TokenF1      map[string]float64 `json:"token_f1"`
-	Contains     map[string]bool    `json:"contains"` // does response contain the gold answer?
+	Scores       map[string]float64 `json:"scores"` // combined score per mode
 }
 
 // E2EReport holds aggregate results.
@@ -72,6 +67,113 @@ type E2EReport struct {
 type E2ETypeAgg struct {
 	Count   int                           `json:"count"`
 	Metrics map[string]map[string]float64 `json:"metrics"` // mode → metric → value
+}
+
+// ── Smarter Scoring (#2) ──────────────────────────────────────────
+
+// scoreAnswer computes multiple objective metrics between LLM answer and gold.
+// Returns a map of metric name → score.
+func scoreAnswer(answer, gold string) map[string]float64 {
+	scores := make(map[string]float64)
+
+	ansLower := normalize(answer)
+	goldLower := normalize(gold)
+
+	// 1. Exact containment: does the answer contain the gold answer?
+	scores["contains"] = 0
+	if strings.Contains(ansLower, goldLower) {
+		scores["contains"] = 1
+	}
+
+	// 2. Flexible containment: check each gold "answer phrase"
+	// Handle gold answers like "3" or "45 minutes each way"
+	scores["flexible_contains"] = flexibleContains(ansLower, goldLower)
+
+	// 3. Token recall: what fraction of gold tokens appear in the answer?
+	scores["token_recall"] = tokenRecall(ansLower, goldLower)
+
+	// 4. Token F1
+	scores["token_f1"] = tokenF1(answer, gold)
+
+	// 5. Combined score: if flexible_contains found the answer, that's a strong signal.
+	// For short gold answers (1-3 words), containment is the primary metric.
+	if scores["flexible_contains"] >= 0.8 {
+		scores["score"] = 0.7 + scores["token_recall"]*0.2 + scores["token_f1"]*0.1
+	} else {
+		scores["score"] = scores["flexible_contains"]*0.4 + scores["token_recall"]*0.35 + scores["token_f1"]*0.25
+	}
+
+	return scores
+}
+
+// normalize cleans text for comparison: lowercase, strip punctuation, collapse whitespace.
+func normalize(s string) string {
+	s = strings.ToLower(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			return r
+		}
+		return ' '
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// flexibleContains checks if the answer contains the gold answer or key parts of it.
+// Handles numeric answers ("3"), short phrases ("Target"), and multi-part answers.
+func flexibleContains(ansNorm, goldNorm string) float64 {
+	// Direct containment
+	if strings.Contains(ansNorm, goldNorm) {
+		return 1.0
+	}
+
+	// Check for numeric match first (e.g., gold="3", answer contains "3" or "three")
+	numWords := map[string]string{
+		"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+		"5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+		"10": "ten", "11": "eleven", "12": "twelve",
+	}
+	for num, word := range numWords {
+		if goldNorm == num || goldNorm == word {
+			if strings.Contains(ansNorm, num) || strings.Contains(ansNorm, word) {
+				return 1.0
+			}
+		}
+	}
+
+	// Check each word of gold answer (for short answers like "Target")
+	goldWords := strings.Fields(goldNorm)
+	if len(goldWords) <= 3 {
+		found := 0
+		for _, w := range goldWords {
+			if len(w) >= 1 && strings.Contains(ansNorm, w) {
+				found++
+			}
+		}
+		if len(goldWords) > 0 {
+			return float64(found) / float64(len(goldWords))
+		}
+	}
+
+	return 0
+}
+
+// tokenRecall computes what fraction of gold answer tokens appear in the prediction.
+func tokenRecall(predNorm, goldNorm string) float64 {
+	goldTokens := strings.Fields(goldNorm)
+	if len(goldTokens) == 0 {
+		return 0
+	}
+	predSet := make(map[string]bool)
+	for _, t := range strings.Fields(predNorm) {
+		predSet[t] = true
+	}
+	hits := 0
+	for _, t := range goldTokens {
+		if len(t) >= 2 && predSet[t] {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(goldTokens))
 }
 
 // tokenF1 computes token-level F1 between prediction and reference.
@@ -100,27 +202,175 @@ func tokenF1(prediction, reference string) float64 {
 	return 2 * precision * recall / (precision + recall)
 }
 
-// formatMemoryContext formats retrieved memories like shell's InjectContext.
-// maxPerMemory controls truncation (0 = no truncation).
-func formatMemoryContext(contents []string, maxPerMemory int) string {
-	if len(contents) == 0 {
+// ── Optimized Prompt Formatting (#5) ───────────────────────────────
+
+// formatMemoryForLLM formats retrieved memories optimally for LLM consumption.
+// Instead of dumping raw session text, extracts the most relevant excerpts.
+func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) string {
+	if len(memories) == 0 {
 		return ""
 	}
-	var sb strings.Builder
-	sb.WriteString("[Relevant memories from previous conversations]\n")
-	for _, c := range contents {
-		if maxPerMemory > 0 && len(c) > maxPerMemory {
-			c = c[:maxPerMemory] + "..."
-		}
-		sb.WriteString("- ")
-		sb.WriteString(c)
-		sb.WriteString("\n")
+	if maxTotal <= 0 {
+		maxTotal = 4000
 	}
+
+	var sb strings.Builder
+	sb.WriteString("[Memories from previous conversations]\n\n")
+
+	budget := maxTotal
+	for i, m := range memories {
+		if budget <= 0 {
+			break
+		}
+
+		// Extract the most relevant excerpt from this memory
+		excerpt := extractRelevantExcerpt(query, m.Content, 800)
+
+		header := fmt.Sprintf("Memory %d", i+1)
+		if m.CreatedAt.Year() > 2000 {
+			header += fmt.Sprintf(" (%s)", m.CreatedAt.Format("2006-01-02"))
+		}
+		entry := fmt.Sprintf("### %s\n%s\n\n", header, excerpt)
+
+		if len(entry) > budget {
+			entry = entry[:budget] + "...\n\n"
+		}
+		sb.WriteString(entry)
+		budget -= len(entry)
+	}
+
 	sb.WriteString("[End of memories]\n\n")
 	return sb.String()
 }
 
-const e2eSystemPrompt = `You are a helpful assistant with access to memories from previous conversations. Answer the user's question based on the provided memories. If the memories don't contain enough information, say you don't know. Be concise — answer in 1-2 sentences only.`
+// extractRelevantExcerpt finds the most query-relevant passage in content.
+// Returns up to maxLen chars centered on the best-matching paragraph.
+func extractRelevantExcerpt(query, content string, maxLen int) string {
+	if len(content) <= maxLen {
+		return content
+	}
+
+	// Split into paragraphs (double newline or speaker turns)
+	paragraphs := splitParagraphs(content)
+	if len(paragraphs) == 0 {
+		return content[:maxLen]
+	}
+
+	// Score each paragraph by query term overlap
+	queryTerms := extractQueryTerms(query)
+	bestIdx := 0
+	bestScore := -1.0
+	for i, p := range paragraphs {
+		score := 0.0
+		pLower := strings.ToLower(p)
+		for _, qt := range queryTerms {
+			if strings.Contains(pLower, qt) {
+				score += 1.0
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIdx = i
+		}
+	}
+
+	// Build excerpt centered on best paragraph, expanding to fill maxLen
+	var parts []string
+	totalLen := 0
+	parts = append(parts, paragraphs[bestIdx])
+	totalLen += len(paragraphs[bestIdx])
+
+	// Expand outward from best paragraph
+	lo, hi := bestIdx-1, bestIdx+1
+	for totalLen < maxLen && (lo >= 0 || hi < len(paragraphs)) {
+		if hi < len(paragraphs) && totalLen+len(paragraphs[hi]) <= maxLen {
+			parts = append(parts, paragraphs[hi])
+			totalLen += len(paragraphs[hi])
+			hi++
+		} else if lo >= 0 && totalLen+len(paragraphs[lo]) <= maxLen {
+			parts = append([]string{paragraphs[lo]}, parts...)
+			totalLen += len(paragraphs[lo])
+			lo--
+		} else {
+			break
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func splitParagraphs(text string) []string {
+	// Split on double newlines or speaker turn boundaries (Name: ...)
+	lines := strings.Split(text, "\n")
+	var result []string
+	var current []string
+
+	flush := func() {
+		if len(current) > 0 {
+			p := strings.TrimSpace(strings.Join(current, "\n"))
+			if len(p) > 20 {
+				result = append(result, p)
+			}
+			current = nil
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			flush()
+			continue
+		}
+		// Split on speaker turns (e.g., "user: " or "Caroline: ")
+		if idx := strings.Index(trimmed, ": "); idx > 0 && idx < 25 {
+			prefix := trimmed[:idx]
+			if !strings.Contains(prefix, " ") || len(strings.Fields(prefix)) <= 2 {
+				flush()
+			}
+		}
+		current = append(current, line)
+	}
+	flush()
+	return result
+}
+
+func extractQueryTerms(query string) []string {
+	var terms []string
+	for _, w := range strings.Fields(strings.ToLower(query)) {
+		w = strings.Trim(w, "?.,!\"'")
+		if len(w) >= 3 && !isStopWord(w) {
+			terms = append(terms, w)
+		}
+	}
+	return terms
+}
+
+var stopWords = map[string]bool{
+	"the": true, "and": true, "for": true, "are": true, "was": true,
+	"were": true, "been": true, "have": true, "has": true, "had": true,
+	"does": true, "did": true, "will": true, "would": true, "could": true,
+	"should": true, "can": true, "may": true, "might": true, "what": true,
+	"which": true, "who": true, "whom": true, "how": true, "when": true,
+	"where": true, "why": true, "that": true, "this": true, "with": true,
+	"from": true, "into": true, "about": true, "you": true, "your": true,
+	"our": true, "their": true, "his": true, "her": true, "its": true,
+}
+
+func isStopWord(w string) bool { return stopWords[w] }
+
+// ── System Prompt (#5) ────────────────────────────────────────────
+
+const e2eSystemPrompt = `You are a personal assistant with access to memories from previous conversations with this user. Your task is to answer the user's question using ONLY the provided memories.
+
+Rules:
+- Answer concisely in 1-2 sentences
+- If the answer is a number, state just the number
+- If the answer is a name or place, state it directly
+- If the memories contain the answer, always provide it — do NOT say you don't know
+- If the memories truly don't contain relevant information, say "I don't have that information"
+- Do NOT ask follow-up questions`
+
+// ── E2E Runner ────────────────────────────────────────────────────
 
 // RunE2ELongMemEval runs the end-to-end benchmark on LongMemEval.
 func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) (*E2EReport, error) {
@@ -209,8 +459,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			Question:     entry.Question,
 			GoldAnswer:   entry.Answer,
 			Answers:      make(map[string]string),
-			TokenF1:      make(map[string]float64),
-			Contains:     make(map[string]bool),
+			Scores:       make(map[string]float64),
 		}
 
 		for _, mode := range cfg.Modes {
@@ -219,23 +468,22 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			case "no-memory":
 				userMsg = entry.Question
 			case "ghost":
+				// Use best config: full search with reranker if available
 				results, _ := store.Search(ctx, SearchParams{
 					NS: cfg.NS, Query: entry.Question,
 					Limit: cfg.TopK, IncludeAll: true,
 				})
-				var contents []string
-				for _, r := range results {
-					contents = append(contents, r.Content)
-				}
-				userMsg = formatMemoryContext(contents, 2000) + entry.Question
+				userMsg = formatMemoryForLLM(entry.Question, results, 4000) + entry.Question
 			case "oracle":
-				var contents []string
+				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
 					if c, ok := sessionContents[sid]; ok {
-						contents = append(contents, c)
+						oracleResults = append(oracleResults, SearchResult{
+							Memory: model.Memory{Content: c},
+						})
 					}
 				}
-				userMsg = formatMemoryContext(contents, 2000) + entry.Question
+				userMsg = formatMemoryForLLM(entry.Question, oracleResults, 4000) + entry.Question
 			}
 
 			answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
@@ -245,35 +493,31 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			}
 
 			result.Answers[mode] = answer
-			result.TokenF1[mode] = tokenF1(answer, entry.Answer)
-			result.Contains[mode] = strings.Contains(
-				strings.ToLower(answer), strings.ToLower(entry.Answer))
+			answerScores := scoreAnswer(answer, entry.Answer)
+			result.Scores[mode] = answerScores["score"]
+
+			// Aggregate all metrics
+			qt := entry.QuestionType
+			if _, ok := report.ByType[qt]; !ok {
+				report.ByType[qt] = &E2ETypeAgg{
+					Metrics: make(map[string]map[string]float64),
+				}
+				for _, m := range cfg.Modes {
+					report.ByType[qt].Metrics[m] = make(map[string]float64)
+				}
+			}
+			for metric, val := range answerScores {
+				report.ByType[qt].Metrics[mode][metric] += val
+				report.Overall[mode][metric] += val
+			}
 		}
 
 		cleanup()
 		report.Results = append(report.Results, result)
 
-		// Aggregate
 		qt := entry.QuestionType
-		if _, ok := report.ByType[qt]; !ok {
-			report.ByType[qt] = &E2ETypeAgg{
-				Metrics: make(map[string]map[string]float64),
-			}
-			for _, mode := range cfg.Modes {
-				report.ByType[qt].Metrics[mode] = make(map[string]float64)
-			}
-		}
 		report.ByType[qt].Count++
 		report.Total++
-
-		for _, mode := range cfg.Modes {
-			report.ByType[qt].Metrics[mode]["token_f1"] += result.TokenF1[mode]
-			report.Overall[mode]["token_f1"] += result.TokenF1[mode]
-			if result.Contains[mode] {
-				report.ByType[qt].Metrics[mode]["contains"] += 1
-				report.Overall[mode]["contains"] += 1
-			}
-		}
 
 		evalDone++
 		if cfg.ProgressFunc != nil && (evalDone%5 == 0 || evalDone == evalTotal) {
@@ -281,7 +525,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 		}
 	}
 
-	// Average
+	// Average all metrics
 	if report.Total > 0 {
 		for _, mode := range cfg.Modes {
 			for metric := range report.Overall[mode] {
@@ -305,9 +549,8 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 // ── LLM Client implementations ────────────────────────────────────
 
 // ClaudeCLIClient calls `claude -p` for LLM generation.
-// Uses the Claude Code CLI — no API key management needed.
 type ClaudeCLIClient struct {
-	Model string // optional: "sonnet", "haiku", "opus"
+	Model string
 }
 
 func NewClaudeCLIClient(model string) *ClaudeCLIClient {

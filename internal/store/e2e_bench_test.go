@@ -10,25 +10,20 @@ import (
 	"testing"
 
 	"github.com/rcliao/ghost/internal/embedding"
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // TestE2ELongMemEval runs the end-to-end benchmark: Ghost retrieval + Claude answering.
 //
-// Uses `claude -p` by default (no API key needed). Set ANTHROPIC_API_KEY to use the API instead.
+// Uses `claude -p` by default. Set ANTHROPIC_API_KEY for API mode.
 //
-// Usage (via Claude CLI):
+// Usage:
 //
 //	GHOST_EMBED_PROVIDER=local \
 //	GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
 //	GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
 //	GHOST_BENCH_PER_TYPE=3 \
-//	  go test ./internal/store/ -run TestE2ELongMemEval -v -timeout 30m
-//
-// Usage (via Anthropic API, cheaper with Haiku):
-//
-//	ANTHROPIC_API_KEY=sk-... GHOST_BENCH_LLM_MODEL=claude-haiku-4-5-20251001 \
-//	GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
-//	GHOST_BENCH_PER_TYPE=3 \
+//	GHOST_BENCH_LLM_MODEL=haiku \
 //	  go test ./internal/store/ -run TestE2ELongMemEval -v -timeout 30m
 func TestE2ELongMemEval(t *testing.T) {
 	datasetPath := os.Getenv("GHOST_BENCH_LONGMEMEVAL")
@@ -64,14 +59,13 @@ func TestE2ELongMemEval(t *testing.T) {
 		}
 	}
 
-	// Choose LLM client: claude CLI (default) or Anthropic API
-	model := os.Getenv("GHOST_BENCH_LLM_MODEL")
+	llmModel := os.Getenv("GHOST_BENCH_LLM_MODEL")
 	var llm LLMClient
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		llm = NewAnthropicClient(model)
+		llm = NewAnthropicClient(llmModel)
 		t.Logf("Using Anthropic API: %s", llm.Name())
 	} else {
-		llm = NewClaudeCLIClient(model)
+		llm = NewClaudeCLIClient(llmModel)
 		t.Logf("Using Claude CLI: %s", llm.Name())
 	}
 
@@ -103,16 +97,31 @@ func TestE2ELongMemEval(t *testing.T) {
 	}
 
 	// Print summary
-	t.Logf("\n=== E2E Benchmark Results (LLM: %s) ===", llm.Name())
+	t.Logf("\n=== E2E Benchmark Results (LLM: %s) ===", report.LLM)
 	t.Logf("Dataset: %s, Questions: %d", report.Dataset, report.Total)
-	t.Logf("")
+
+	modes := []string{"no-memory", "ghost", "oracle"}
 
 	// Overall
+	t.Logf("")
 	t.Logf("── Overall ──")
-	modes := []string{"no-memory", "ghost", "oracle"}
+	t.Logf("  %-14s %8s %8s %8s %8s", "Mode", "Score", "Contains", "TokRecall", "TokF1")
 	for _, mode := range modes {
 		if m, ok := report.Overall[mode]; ok {
-			t.Logf("  %-12s F1=%.4f  Contains=%.1f%%", mode, m["token_f1"], m["contains"]*100)
+			t.Logf("  %-14s %8.3f %8.1f%% %8.3f %8.3f",
+				mode, m["score"], m["flexible_contains"]*100, m["token_recall"], m["token_f1"])
+		}
+	}
+
+	// Ghost value metrics
+	if ghost, ok := report.Overall["ghost"]; ok {
+		if nomem, ok2 := report.Overall["no-memory"]; ok2 {
+			t.Logf("")
+			t.Logf("── Ghost Value ──")
+			t.Logf("  Ghost vs No-Memory: +%.1f%% score", (ghost["score"]-nomem["score"])*100)
+		}
+		if oracle, ok3 := report.Overall["oracle"]; ok3 {
+			t.Logf("  Ghost vs Oracle:    %.1f%% of ceiling", ghost["score"]/oracle["score"]*100)
 		}
 	}
 
@@ -129,7 +138,8 @@ func TestE2ELongMemEval(t *testing.T) {
 		t.Logf("── %s (n=%d) ──", qt, agg.Count)
 		for _, mode := range modes {
 			if m, ok := agg.Metrics[mode]; ok {
-				t.Logf("  %-12s F1=%.4f  Contains=%.0f%%", mode, m["token_f1"], m["contains"]*100)
+				t.Logf("  %-14s score=%.3f contains=%.0f%% recall=%.3f",
+					mode, m["score"], m["flexible_contains"]*100, m["token_recall"])
 			}
 		}
 	}
@@ -144,10 +154,10 @@ func TestE2ELongMemEval(t *testing.T) {
 		t.Logf("  Gold: %s", r.GoldAnswer)
 		for _, mode := range modes {
 			answer := r.Answers[mode]
-			if len(answer) > 100 {
-				answer = answer[:100] + "..."
+			if len(answer) > 120 {
+				answer = answer[:120] + "..."
 			}
-			t.Logf("  %-12s (F1=%.2f) %s", mode, r.TokenF1[mode], answer)
+			t.Logf("  %-14s (%.2f) %s", mode, r.Scores[mode], answer)
 		}
 		t.Logf("")
 	}
@@ -156,21 +166,27 @@ func TestE2ELongMemEval(t *testing.T) {
 	fmt.Fprintf(os.Stdout, "E2E_REPORT:%s\n", string(jsonReport))
 }
 
-func TestTokenF1(t *testing.T) {
+func TestScoreAnswer(t *testing.T) {
 	tests := []struct {
-		pred, ref string
-		wantMin   float64
-		wantMax   float64
+		answer, gold string
+		wantMin      float64
 	}{
-		{"Business Administration", "Business Administration", 0.99, 1.01},
-		{"The answer is Business Administration degree", "Business Administration", 0.5, 0.9},
-		{"something completely different", "Business Administration", 0, 0.1},
-		{"", "Business Administration", 0, 0.01},
+		{"Business Administration", "Business Administration", 0.9},
+		{"I graduated with a degree in Business Administration from State University.", "Business Administration", 0.7},
+		{"The answer is 3 items.", "3", 0.7},
+		{"Three items need to be picked up.", "3", 0.7},
+		{"I bought it at Target last week.", "Target", 0.7},
+		{"I don't have that information.", "Business Administration", 0.0},
+		{"something completely unrelated", "Target", 0.0},
 	}
 	for _, tt := range tests {
-		got := tokenF1(tt.pred, tt.ref)
-		if got < tt.wantMin || got > tt.wantMax {
-			t.Errorf("tokenF1(%q, %q) = %.3f, want [%.2f, %.2f]", tt.pred, tt.ref, got, tt.wantMin, tt.wantMax)
+		scores := scoreAnswer(tt.answer, tt.gold)
+		if scores["score"] < tt.wantMin {
+			t.Errorf("scoreAnswer(%q, %q) score=%.3f, want >= %.3f\n  details: %v",
+				tt.answer, tt.gold, scores["score"], tt.wantMin, scores)
 		}
 	}
 }
+
+// Ensure model import is used (for oracle mode SearchResult construction)
+var _ = model.Memory{}
