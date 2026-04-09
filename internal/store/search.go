@@ -26,6 +26,7 @@ type SearchParams struct {
 	ReferenceTime time.Time // if set, temporal scoring uses this instead of now()
 	After         time.Time // if set, only return memories created after this time
 	Before        time.Time // if set, only return memories created before this time
+	MultiQuery    bool      // if true, decompose query into sub-queries for multi-hop retrieval
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -125,13 +126,39 @@ func hasTemporalIntent(query string) bool {
 	return false
 }
 
+// decomposeQuery splits a complex query into sub-queries for multi-hop retrieval.
+// Uses heuristic clause splitting on conjunctions. Returns nil if the query is simple.
+func decomposeQuery(query string) []string {
+	// Split on common conjunctions that indicate multi-part questions
+	lower := strings.ToLower(query)
+	for _, sep := range []string{" and ", " also ", " as well as "} {
+		if idx := strings.Index(lower, sep); idx > 10 && idx < len(lower)-10 {
+			parts := []string{
+				strings.TrimSpace(query[:idx]),
+				strings.TrimSpace(query[idx+len(sep):]),
+			}
+			// Only decompose if both parts are substantial
+			if len(parts[0]) > 15 && len(parts[1]) > 15 {
+				return parts
+			}
+		}
+	}
+	return nil
+}
+
 // Search finds memories whose content or chunks match the query.
 // Uses RRF (Reciprocal Rank Fusion) to merge results from FTS5, LIKE, and
 // vector search into a single ranked list.
 // By default, dormant-tier memories are excluded. Set IncludeAll=true to override.
 func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResult, error) {
+	// Multi-query: decompose complex queries and merge results
+	if p.MultiQuery {
+		if subQueries := decomposeQuery(p.Query); len(subQueries) > 0 {
+			return s.searchMultiQuery(ctx, p, subQueries)
+		}
+	}
+
 	// Default: exclude dormant and sensory tiers unless caller opts in.
-	// Dormant = archived, sensory = ephemeral observations not yet promoted.
 	if !p.IncludeAll && len(p.ExcludeTiers) == 0 {
 		p.ExcludeTiers = []string{"dormant", "sensory"}
 	}
@@ -275,6 +302,106 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 			return si > sj
 		}
 		return fused[i].result.CreatedAt.After(fused[j].result.CreatedAt)
+	})
+
+	if len(fused) > limit {
+		fused = fused[:limit]
+	}
+
+	results := make([]SearchResult, len(fused))
+	for i, f := range fused {
+		results[i] = f.result
+	}
+
+	// Cross-encoder reranking: re-score top results using a model that
+	// sees query + document together (much more accurate than cosine similarity).
+	if s.reranker != nil && len(results) > 1 {
+		docs := make([]string, len(results))
+		for i, r := range results {
+			// Use first 512 chars to keep inference fast
+			doc := r.Content
+			if len(doc) > 512 {
+				doc = doc[:512]
+			}
+			docs[i] = doc
+		}
+		reranked, err := s.reranker.Rerank(ctx, p.Query, docs)
+		if err == nil && len(reranked) == len(results) {
+			// Rebuild results in reranked order
+			orig := make([]SearchResult, len(results))
+			copy(orig, results)
+			for i, rr := range reranked {
+				results[i] = orig[rr.Index]
+				results[i].Similarity = float64(rr.Score)
+			}
+		}
+		// On reranker error, silently fall back to RRF order
+	}
+
+	return results, nil
+}
+
+// searchMultiQuery runs multiple sub-queries and merges results via RRF.
+// This helps multi-hop questions that need information from different sessions.
+func (s *SQLiteStore) searchMultiQuery(ctx context.Context, p SearchParams, subQueries []string) ([]SearchResult, error) {
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Run each sub-query
+	type scored struct {
+		result SearchResult
+		ranks  []int
+	}
+	merged := make(map[string]*scored)
+
+	for qi, sq := range subQueries {
+		subP := p
+		subP.Query = sq
+		subP.MultiQuery = false // prevent recursion
+		subP.Limit = limit
+
+		results, err := s.Search(ctx, subP)
+		if err != nil {
+			continue
+		}
+		for rank, r := range results {
+			if existing, ok := merged[r.ID]; ok {
+				existing.ranks = append(existing.ranks, rank+1)
+			} else {
+				merged[r.ID] = &scored{
+					result: r,
+					ranks:  make([]int, qi), // pad with zeros for previous queries
+				}
+				// Pad missing ranks with a high value (not found = rank 100)
+				for i := range merged[r.ID].ranks {
+					merged[r.ID].ranks[i] = 100
+				}
+				merged[r.ID].ranks = append(merged[r.ID].ranks, rank+1)
+			}
+		}
+		// Pad existing entries that weren't found in this sub-query
+		for _, s := range merged {
+			if len(s.ranks) <= qi {
+				s.ranks = append(s.ranks, 100)
+			}
+		}
+	}
+
+	// Score via RRF and sort
+	type fusedResult struct {
+		result   SearchResult
+		rrfScore float64
+	}
+	var fused []fusedResult
+	for _, s := range merged {
+		score := rrfScore(s.ranks, 20)
+		fused = append(fused, fusedResult{result: s.result, rrfScore: score})
+	}
+
+	sort.Slice(fused, func(i, j int) bool {
+		return fused[i].rrfScore > fused[j].rrfScore
 	})
 
 	if len(fused) > limit {

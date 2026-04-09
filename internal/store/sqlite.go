@@ -27,6 +27,7 @@ type SQLiteStore struct {
 	db       *sql.DB
 	entropy  *rand.Rand
 	embedder embedding.Embedder
+	reranker embedding.Reranker
 }
 
 // NewSQLiteStore opens or creates a SQLite database at the given path.
@@ -45,6 +46,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		db:       db,
 		entropy:  rand.New(rand.NewSource(time.Now().UnixNano())),
 		embedder: embedding.NewFromEnv(),
+		reranker: embedding.NewRerankerFromEnv(),
 	}
 
 	if err := s.migrate(); err != nil {
@@ -59,9 +61,13 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 // SetEmbedder overrides the embedder used for vector operations.
-// Useful for injecting a cached embedder in benchmarks.
 func (s *SQLiteStore) SetEmbedder(e embedding.Embedder) {
 	s.embedder = e
+}
+
+// SetReranker overrides the reranker used for cross-encoder reranking.
+func (s *SQLiteStore) SetReranker(r embedding.Reranker) {
+	s.reranker = r
 }
 
 func (s *SQLiteStore) newID() string {
