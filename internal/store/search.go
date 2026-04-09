@@ -313,32 +313,121 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		results[i] = f.result
 	}
 
-	// Cross-encoder reranking: re-score top results using a model that
-	// sees query + document together (much more accurate than cosine similarity).
+	// Cross-encoder reranking with MaxP (max passage) scoring:
+	// Rerank the top-N candidates using cross-encoder with chunked scoring.
+	// Only rerank top candidates to keep latency reasonable.
 	if s.reranker != nil && len(results) > 1 {
-		docs := make([]string, len(results))
-		for i, r := range results {
-			// Use first 512 chars to keep inference fast
-			doc := r.Content
-			if len(doc) > 512 {
-				doc = doc[:512]
-			}
-			docs[i] = doc
+		rerankN := 10
+		if rerankN > len(results) {
+			rerankN = len(results)
 		}
-		reranked, err := s.reranker.Rerank(ctx, p.Query, docs)
-		if err == nil && len(reranked) == len(results) {
-			// Rebuild results in reranked order
-			orig := make([]SearchResult, len(results))
-			copy(orig, results)
-			for i, rr := range reranked {
-				results[i] = orig[rr.Index]
-				results[i].Similarity = float64(rr.Score)
-			}
-		}
-		// On reranker error, silently fall back to RRF order
+		top := s.rerankMaxP(ctx, p.Query, results[:rerankN])
+		results = append(top, results[rerankN:]...)
 	}
 
 	return results, nil
+}
+
+// rerankMaxP re-scores results using cross-encoder with MaxP strategy.
+// For each document, it chunks the content, scores each chunk, and uses
+// the max score. This handles long sessions where the relevant passage
+// may not be at the beginning.
+func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []SearchResult) []SearchResult {
+	const maxChunkLen = 512
+
+	// Build a flat list of all chunks with their document index
+	type chunkRef struct {
+		docIdx   int
+		chunkIdx int
+	}
+	var allChunks []string
+	var refs []chunkRef
+
+	for i, r := range results {
+		chunks := chunkForReranking(r.Content, maxChunkLen)
+		if len(chunks) == 0 {
+			chunks = []string{r.Content}
+		}
+		for ci, c := range chunks {
+			allChunks = append(allChunks, c)
+			refs = append(refs, chunkRef{docIdx: i, chunkIdx: ci})
+		}
+	}
+
+	if len(allChunks) == 0 {
+		return results
+	}
+
+	// Single batch call to cross-encoder for all chunks
+	reranked, err := s.reranker.Rerank(ctx, query, allChunks)
+	if err != nil {
+		return results // fallback to original order
+	}
+
+	// Find max score per document
+	docMaxScore := make([]float32, len(results))
+	for i, rr := range reranked {
+		if i < len(refs) {
+			docIdx := refs[rr.Index].docIdx
+			if rr.Score > docMaxScore[docIdx] {
+				docMaxScore[docIdx] = rr.Score
+			}
+		}
+	}
+
+	// Sort by max chunk score descending
+	type docScore struct {
+		idx   int
+		score float32
+	}
+	scores := make([]docScore, len(results))
+	for i := range results {
+		scores[i] = docScore{idx: i, score: docMaxScore[i]}
+	}
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
+
+	out := make([]SearchResult, len(results))
+	for i, ds := range scores {
+		out[i] = results[ds.idx]
+		out[i].Similarity = float64(ds.score)
+	}
+	return out
+}
+
+// chunkForReranking splits content into overlapping passages for cross-encoder scoring.
+func chunkForReranking(content string, maxLen int) []string {
+	lines := strings.Split(content, "\n")
+	var chunks []string
+	var current []string
+	currentLen := 0
+
+	for _, line := range lines {
+		lineLen := len(line) + 1 // +1 for newline
+		if currentLen+lineLen > maxLen && len(current) > 0 {
+			chunks = append(chunks, strings.Join(current, "\n"))
+			// Keep last 2 lines for overlap
+			if len(current) > 2 {
+				overlap := current[len(current)-2:]
+				current = make([]string, len(overlap))
+				copy(current, overlap)
+				currentLen = 0
+				for _, l := range current {
+					currentLen += len(l) + 1
+				}
+			} else {
+				current = nil
+				currentLen = 0
+			}
+		}
+		current = append(current, line)
+		currentLen += lineLen
+	}
+	if len(current) > 0 {
+		chunks = append(chunks, strings.Join(current, "\n"))
+	}
+	return chunks
 }
 
 // searchMultiQuery runs multiple sub-queries and merges results via RRF.
