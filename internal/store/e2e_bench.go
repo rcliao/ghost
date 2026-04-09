@@ -205,15 +205,17 @@ func tokenF1(prediction, reference string) float64 {
 // ── Optimized Prompt Formatting (#5) ───────────────────────────────
 
 // formatMemoryForLLM formats retrieved memories for LLM consumption.
-// Shows full session content to avoid losing key details in excerpting.
-// Budget controls total chars across all memories.
+// Highlights the most query-relevant sentences to help the LLM find answers
+// in long conversation transcripts.
 func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) string {
 	if len(memories) == 0 {
 		return ""
 	}
 	if maxTotal <= 0 {
-		maxTotal = 8000
+		maxTotal = 30000
 	}
+
+	queryTerms := extractQueryTerms(query)
 
 	var sb strings.Builder
 	sb.WriteString("[Memories from previous conversations]\n\n")
@@ -225,9 +227,14 @@ func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) str
 		}
 
 		content := m.Content
-		// If a single memory exceeds remaining budget, excerpt the most relevant part
-		if len(content) > budget-50 {
-			content = extractRelevantExcerpt(query, content, budget-50)
+
+		// If content fits in budget, highlight relevant lines
+		if len(content) <= budget-100 {
+			content = highlightRelevantLines(content, queryTerms)
+		} else {
+			// Excerpt the most relevant part
+			content = extractRelevantExcerpt(query, content, budget-100)
+			content = highlightRelevantLines(content, queryTerms)
 		}
 
 		header := fmt.Sprintf("Memory %d", i+1)
@@ -242,6 +249,32 @@ func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) str
 
 	sb.WriteString("[End of memories]\n\n")
 	return sb.String()
+}
+
+// highlightRelevantLines marks lines that contain query-relevant terms with >>> prefix.
+// This draws the LLM's attention to the most important parts of long sessions.
+func highlightRelevantLines(content string, queryTerms []string) string {
+	if len(queryTerms) == 0 {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	var result []string
+	for _, line := range lines {
+		lineLower := strings.ToLower(line)
+		hits := 0
+		for _, qt := range queryTerms {
+			if strings.Contains(lineLower, qt) {
+				hits++
+			}
+		}
+		if hits >= 1 && len(strings.TrimSpace(line)) > 10 {
+			result = append(result, ">>> "+line)
+		} else {
+			result = append(result, line)
+		}
+	}
+	return strings.Join(result, "\n")
 }
 
 // extractRelevantExcerpt finds the most query-relevant passage in content.
@@ -363,15 +396,18 @@ func isStopWord(w string) bool { return stopWords[w] }
 
 const e2eSystemPrompt = `You are a personal assistant answering questions from a user's conversation history. Memories from previous conversations are provided below.
 
+Lines marked with >>> are the most relevant to the question — pay extra attention to them and their surrounding context.
+
 CRITICAL INSTRUCTIONS:
 1. Read ALL provided memories carefully — the answer is almost always in there
-2. Look for SPECIFIC details: names, numbers, places, dates, even if mentioned briefly
-3. Give a DIRECT answer — just the fact, name, number, or place
-4. Keep answers SHORT — one sentence maximum
-5. Do NOT say "I don't have that information" unless you have genuinely read every memory and the answer is truly absent
-6. Do NOT ask follow-up questions
-7. If the answer is a number, respond with just the number
-8. If you're unsure between options, pick the most likely one based on context`
+2. Lines marked >>> are highlights — the answer is often in or near these lines
+3. Look for SPECIFIC details: names, numbers, places, dates, even if mentioned briefly or indirectly
+4. Give a DIRECT answer — just the fact, name, number, or place
+5. Keep answers SHORT — one sentence maximum
+6. Do NOT say "I don't have that information" unless you have genuinely read every memory and the answer is truly absent
+7. Do NOT ask follow-up questions
+8. If the answer is a number, respond with just the number
+9. If you're unsure between options, pick the most likely one based on context`
 
 // ── E2E Runner ────────────────────────────────────────────────────
 
