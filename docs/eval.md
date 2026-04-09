@@ -323,23 +323,23 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 | + MiniLM embeddings | 0.642 | 0.703 | 0.639 |
 | + Threshold 0.3→0.2, RRF k 60→20 | 0.766 | 0.713 | 0.700 |
 | + Term overlap reranking + relative temporal | 0.795 | 0.785 | 0.757 |
-| + gte-small model | **0.847** | 0.740 | **0.759** |
+| + Cross-encoder reranking (ms-marco-MiniLM) | **0.849** | **0.857** | **0.835** |
 | Paper BM25 (_M, harder dataset) | 0.634 | — | 0.540 |
 | Paper Contriever (_M, harder dataset) | 0.723 | — | 0.663 |
 
-**LongMemEval per-type (best config: gte-small + reranking):**
+**LongMemEval per-type (best config: cross-encoder reranking, GHOST_RERANKER=local):**
 
 | Question Type | n | Recall@5 | MRR | NDCG@10 |
 |---|---|---|---|---|
-| **Overall** | **470** | **0.847** | **0.740** | **0.759** |
-| knowledge-update | 72 | 0.931 | 0.909 | 0.886 |
-| single-session-user | 64 | 0.906 | 0.709 | 0.772 |
-| single-session-assistant | 56 | 0.929 | 0.567 | 0.658 |
-| temporal-reasoning | 127 | 0.813 | 0.733 | 0.750 |
-| multi-session | 121 | 0.807 | 0.841 | 0.802 |
-| single-session-preference | 30 | 0.667 | 0.347 | 0.474 |
+| **Overall** | **470** | **0.849** | **0.857** | **0.835** |
+| multi-session | 121 | 0.908 | 0.968 | 0.919 |
+| single-session-assistant | 56 | 0.982 | 0.937 | 0.948 |
+| temporal-reasoning | 127 | 0.852 | 0.876 | 0.849 |
+| knowledge-update | 72 | 0.792 | 0.877 | 0.810 |
+| single-session-preference | 30 | 0.800 | 0.674 | 0.724 |
+| single-session-user | 64 | 0.703 | 0.604 | 0.629 |
 
-**LoCoMo per-category (best config: gte-small + reranking):**
+**LoCoMo per-category (gte-small + term overlap reranking):**
 
 | Category | n | Recall@5 | MRR | NDCG@10 |
 |---|---|---|---|---|
@@ -350,11 +350,17 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 | multi-hop | 89 | 0.378 | 0.330 | 0.362 |
 
 **Key findings:**
-- Ghost exceeds published BM25 and Contriever baselines (on easier _S dataset)
-- Term overlap reranking was the biggest single improvement (+46% Recall@5 on LoCoMo)
-- gte-small model improves recall over MiniLM but trades some MRR
+- Ghost significantly exceeds published BM25 and Contriever baselines (on easier _S dataset)
+- Cross-encoder reranking was the biggest single improvement for ranking quality (MRR +9%, NDCG +10%)
+- Multi-session MRR=0.968 — near-perfect ranking when connecting info across sessions
 - LoCoMo is much harder — dense conversations with similar topics across sessions
-- Remaining weak spots: `single-session-preference` (implicit preferences), `multi-hop` (cross-session reasoning)
+- Remaining weak spots: `single-session-user` (MRR 0.60), LoCoMo `multi-hop` (R@5 0.38)
+- All achieved without LLM in the retrieval loop — pure local models (gte-small + ms-marco cross-encoder)
+
+**Optional features (env vars):**
+- `GHOST_RERANKER=local` — enables cross-encoder reranking (~42 min for 470 questions vs 21s without)
+- `GHOST_EMBED_MODEL_LOCAL=gte-small` — better embedding model (same 384 dims, +7% recall)
+- `GHOST_BENCH_EMBED_CACHE=path` — pre-computed embeddings for fast iteration
 - All achieved without LLM in the loop — pure retrieval with local embeddings
 
 ## Adding New Scenarios
