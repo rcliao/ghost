@@ -47,7 +47,8 @@ type LongMemEvalConfig struct {
 	TopK           []int  // K values for metrics (default: [5, 10])
 	NS             string // namespace for memories (default: "bench:longmemeval")
 	EmbedCachePath string // path to embedding cache file (speeds up repeated runs)
-	UseContext     bool   // if true, use Context() instead of Search() (tests edge expansion + cognitive scoring)
+	UseContext     bool   // if true, use Context() instead of Search()
+	ExpandEdges    bool   // if true, build graph edges at ingest and expand during search
 	ProgressFunc   func(done, total int) // optional progress callback
 }
 
@@ -279,6 +280,11 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 			}
 		}
 
+		// Build graph edges between sessions if enabled
+		if cfg.ExpandEdges {
+			store.BenchBuildEdges(ctx, cfg.NS)
+		}
+
 		// Retrieve with the question — either Search() or Context()
 		var questionTime time.Time
 		if entry.QuestionDate != "" {
@@ -317,6 +323,7 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				Limit:         searchLimit,
 				IncludeAll:    true,
 				ReferenceTime: questionTime,
+				ExpandEdges:   cfg.ExpandEdges,
 			})
 			if err != nil {
 				cleanup()

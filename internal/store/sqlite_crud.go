@@ -285,6 +285,62 @@ func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string, 
 	return tx.Commit()
 }
 
+// BenchBuildEdges builds relates_to edges between all memories in a namespace
+// by comparing their embeddings. This is the batch equivalent of autoLinkEdges
+// that runs after all BenchInsert calls. O(n²) comparison but runs once.
+func (s *SQLiteStore) BenchBuildEdges(ctx context.Context, ns string) (int, error) {
+	if s.embedder == nil {
+		return 0, nil
+	}
+
+	threshold := edgeAutoLinkThreshold()
+
+	// Load all memory IDs + embeddings in namespace
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id, c.embedding
+		 FROM memories m
+		 INNER JOIN chunks c ON c.memory_id = m.id AND c.seq = 0
+		 WHERE m.ns = ? AND m.deleted_at IS NULL AND c.embedding IS NOT NULL`, ns)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type memVec struct {
+		id  string
+		vec embedding.Vector
+	}
+	var mems []memVec
+	for rows.Next() {
+		var id, embJSON string
+		if err := rows.Scan(&id, &embJSON); err != nil {
+			continue
+		}
+		var vec embedding.Vector
+		if err := json.Unmarshal([]byte(embJSON), &vec); err != nil {
+			continue
+		}
+		mems = append(mems, memVec{id: id, vec: vec})
+	}
+
+	// Pairwise comparison — create edges for similar pairs
+	edgeCount := 0
+	for i := 0; i < len(mems); i++ {
+		for j := i + 1; j < len(mems); j++ {
+			sim := embedding.CosineSimilarity(mems[i].vec, mems[j].vec)
+			if sim >= threshold {
+				weight := float32(sim)
+				s.db.ExecContext(ctx,
+					`INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, created_at)
+					 VALUES (?, ?, 'relates_to', ?, 0, datetime('now'))`,
+					mems[i].id, mems[j].id, weight)
+				edgeCount++
+			}
+		}
+	}
+	return edgeCount, nil
+}
+
 func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, error) {
 	var query string
 	var args []interface{}

@@ -52,6 +52,7 @@ func TestLongMemEval(t *testing.T) {
 	}
 
 	useContext := os.Getenv("GHOST_BENCH_USE_CONTEXT") != ""
+	expandEdges := os.Getenv("GHOST_BENCH_EXPAND_EDGES") != ""
 
 	cfg := LongMemEvalConfig{
 		DatasetPath:    datasetPath,
@@ -60,6 +61,7 @@ func TestLongMemEval(t *testing.T) {
 		TopK:           []int{5, 10, 50},
 		EmbedCachePath: cachePath,
 		UseContext:     useContext,
+		ExpandEdges:    expandEdges,
 		ProgressFunc: func(done, total int) {
 			if done%10 == 0 || done == total {
 				t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)

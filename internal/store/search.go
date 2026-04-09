@@ -27,6 +27,7 @@ type SearchParams struct {
 	After         time.Time // if set, only return memories created after this time
 	Before        time.Time // if set, only return memories created before this time
 	MultiQuery    bool      // if true, decompose query into sub-queries for multi-hop retrieval
+	ExpandEdges   bool      // if true, expand results via 1-hop graph edges for multi-hop retrieval
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -313,6 +314,12 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		results[i] = f.result
 	}
 
+	// Graph edge expansion: follow 1-hop edges from top results to find
+	// connected memories for multi-hop queries.
+	if p.ExpandEdges && len(results) > 0 {
+		results = s.expandSearchEdges(ctx, p, results, limit)
+	}
+
 	// Cross-encoder reranking with MaxP (max passage) scoring:
 	// Rerank the top-N candidates using cross-encoder with chunked scoring.
 	// Only rerank top candidates to keep latency reasonable.
@@ -326,6 +333,118 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	}
 
 	return results, nil
+}
+
+// expandSearchEdges follows 1-hop graph edges from the top search results
+// to find connected memories that might be missed by keyword/vector search.
+// This helps multi-hop queries where the answer spans multiple sessions
+// connected by relates_to, depends_on, or refines edges.
+func (s *SQLiteStore) expandSearchEdges(ctx context.Context, p SearchParams, results []SearchResult, limit int) []SearchResult {
+	// Only expand from top-5 seeds to keep it fast
+	seedN := 5
+	if seedN > len(results) {
+		seedN = len(results)
+	}
+
+	// Collect IDs already in results
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.ID] = true
+	}
+
+	// Follow edges from top seeds
+	var expanded []SearchResult
+	for _, seed := range results[:seedN] {
+		edges, err := s.GetEdges(ctx, seed.ID)
+		if err != nil {
+			continue
+		}
+		for _, edge := range edges {
+			// Get the neighbor ID (the other end of the edge)
+			neighborID := edge.ToID
+			if neighborID == seed.ID {
+				neighborID = edge.FromID
+			}
+			if seen[neighborID] {
+				continue
+			}
+			seen[neighborID] = true
+
+			// Fetch the neighbor memory
+			neighbor, err := s.getMemoryByID(ctx, neighborID)
+			if err != nil || neighbor == nil {
+				continue
+			}
+
+			// Only include if it has some query term overlap (not just any connected memory)
+			overlap := queryTermOverlap(p.Query, neighbor.Content)
+			if overlap < 0.1 {
+				continue
+			}
+
+			expanded = append(expanded, SearchResult{
+				Memory:     *neighbor,
+				Similarity: float64(edge.Weight) * overlap, // score = edge weight × query relevance
+			})
+		}
+	}
+
+	if len(expanded) == 0 {
+		return results
+	}
+
+	// Sort expanded by score
+	sort.Slice(expanded, func(i, j int) bool {
+		return expanded[i].Similarity > expanded[j].Similarity
+	})
+
+	// Interleave: keep original order but insert expanded results
+	// Strategy: append expanded after original results, let the limit handle it
+	combined := append(results, expanded...)
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
+	return combined
+}
+
+// getMemoryByID fetches a single memory by ID.
+func (s *SQLiteStore) getMemoryByID(ctx context.Context, id string) (*model.Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, ns, key, content, kind, tags, version, supersedes,
+		        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
+		        importance, utility_count, tier, est_tokens, pinned
+		 FROM memories WHERE id = ? AND deleted_at IS NULL`, id)
+
+	var m model.Memory
+	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier sql.NullString
+	var createdAt string
+	var importance sql.NullFloat64
+	var utilityCount, estTokens, pinned sql.NullInt64
+
+	err := row.Scan(
+		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
+		&m.Version, &supersedes, &createdAt, &deletedAt,
+		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
+		&importance, &utilityCount, &tier, &estTokens, &pinned,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	if importance.Valid {
+		m.Importance = importance.Float64
+	}
+	if estTokens.Valid {
+		m.EstTokens = int(estTokens.Int64)
+	}
+	if tier.Valid {
+		m.Tier = tier.String
+	}
+	if pinned.Valid && pinned.Int64 == 1 {
+		m.Pinned = true
+	}
+	return &m, nil
 }
 
 // rerankMaxP re-scores results using cross-encoder with MaxP strategy.
