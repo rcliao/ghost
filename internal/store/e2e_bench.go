@@ -471,12 +471,17 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			case "no-memory":
 				userMsg = entry.Question
 			case "ghost":
-				// Use best config: full search with reranker if available
+				// Use best config: retrieve top candidates, show top-3 in full
 				results, _ := store.Search(ctx, SearchParams{
 					NS: cfg.NS, Query: entry.Question,
 					Limit: cfg.TopK, IncludeAll: true,
 				})
-				userMsg = formatMemoryForLLM(entry.Question, results, 4000) + entry.Question
+				// Show fewer memories but with more content each
+				showN := 3
+				if showN > len(results) {
+					showN = len(results)
+				}
+				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 30000) + entry.Question
 			case "oracle":
 				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
@@ -486,7 +491,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 						})
 					}
 				}
-				userMsg = formatMemoryForLLM(entry.Question, oracleResults, 4000) + entry.Question
+				userMsg = formatMemoryForLLM(entry.Question, oracleResults, 30000) + entry.Question
 			}
 
 			answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
