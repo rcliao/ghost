@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rcliao/ghost/internal/chunker"
 	"github.com/rcliao/ghost/internal/embedding"
+	"github.com/rcliao/ghost/internal/entity"
 	"github.com/rcliao/ghost/internal/model"
 )
 
@@ -285,51 +287,90 @@ func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string, 
 	return tx.Commit()
 }
 
-// BenchBuildEdges builds relates_to edges between all memories in a namespace
-// by comparing their embeddings. This is the batch equivalent of autoLinkEdges
-// that runs after all BenchInsert calls. O(n²) comparison but runs once.
+// BenchBuildEdges builds edges between memories in a namespace using three signals:
+//   1. Embedding cosine similarity (semantic relatedness)
+//   2. Named entity co-occurrence (shared people, places, things)
+//   3. Topic overlap (shared distinctive keywords via TF-IDF)
+//
+// This creates more meaningful edges than pure cosine similarity alone.
 func (s *SQLiteStore) BenchBuildEdges(ctx context.Context, ns string) (int, error) {
-	if s.embedder == nil {
-		return 0, nil
-	}
+	cosineThreshold := edgeAutoLinkThreshold()
 
-	threshold := edgeAutoLinkThreshold()
-
-	// Load all memory IDs + embeddings in namespace
+	// Load all memory IDs, content, and embeddings in namespace
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.id, c.embedding
+		`SELECT m.id, m.content, c.embedding
 		 FROM memories m
-		 INNER JOIN chunks c ON c.memory_id = m.id AND c.seq = 0
-		 WHERE m.ns = ? AND m.deleted_at IS NULL AND c.embedding IS NOT NULL`, ns)
+		 LEFT JOIN chunks c ON c.memory_id = m.id AND c.seq = 0
+		 WHERE m.ns = ? AND m.deleted_at IS NULL`, ns)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
-	type memVec struct {
-		id  string
-		vec embedding.Vector
+	type memInfo struct {
+		id       string
+		content  string
+		vec      embedding.Vector
+		entities []entity.Entity
+		topics   []entity.Topic
 	}
-	var mems []memVec
+	var mems []memInfo
+	var allContents []string
+
 	for rows.Next() {
-		var id, embJSON string
-		if err := rows.Scan(&id, &embJSON); err != nil {
+		var id, content string
+		var embJSON sql.NullString
+		if err := rows.Scan(&id, &content, &embJSON); err != nil {
 			continue
 		}
-		var vec embedding.Vector
-		if err := json.Unmarshal([]byte(embJSON), &vec); err != nil {
-			continue
+		m := memInfo{id: id, content: content}
+		if embJSON.Valid {
+			json.Unmarshal([]byte(embJSON.String), &m.vec)
 		}
-		mems = append(mems, memVec{id: id, vec: vec})
+		m.entities = entity.Extract(content)
+		mems = append(mems, m)
+		allContents = append(allContents, content)
 	}
 
-	// Pairwise comparison — create edges for similar pairs
+	// Extract topics using TF-IDF across the corpus
+	for i := range mems {
+		mems[i].topics = entity.ExtractTopics(mems[i].content, allContents, 10)
+	}
+
+	// Pairwise comparison using all three signals
 	edgeCount := 0
 	for i := 0; i < len(mems); i++ {
 		for j := i + 1; j < len(mems); j++ {
-			sim := embedding.CosineSimilarity(mems[i].vec, mems[j].vec)
-			if sim >= threshold {
-				weight := float32(sim)
+			// Signal 1: Cosine similarity (if embeddings available)
+			var cosineSim float64
+			if len(mems[i].vec) > 0 && len(mems[j].vec) > 0 {
+				cosineSim = embedding.CosineSimilarity(mems[i].vec, mems[j].vec)
+			}
+
+			// Signal 2: Entity co-occurrence
+			_, entityScore := entity.EntityOverlap(mems[i].entities, mems[j].entities)
+
+			// Signal 3: Topic overlap
+			_, topicScore := entity.TopicOverlap(mems[i].topics, mems[j].topics)
+
+			// Create edge if any signal is strong enough
+			// Cosine: semantic similarity (broad)
+			// Entity: shared named entities (precise, multi-hop signal)
+			// Topic: shared distinctive keywords (medium)
+			shouldLink := cosineSim >= cosineThreshold ||
+				entityScore >= 0.15 || // at least ~1 shared entity out of ~5
+				topicScore >= 0.3 // meaningful topic overlap
+
+			if shouldLink {
+				// Weight = max of the three signals
+				weight := float32(cosineSim)
+				if float32(entityScore) > weight {
+					weight = float32(entityScore)
+				}
+				if float32(topicScore) > weight {
+					weight = float32(topicScore)
+				}
+
 				s.db.ExecContext(ctx,
 					`INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, created_at)
 					 VALUES (?, ?, 'relates_to', ?, 0, datetime('now'))`,
