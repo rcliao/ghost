@@ -204,14 +204,15 @@ func tokenF1(prediction, reference string) float64 {
 
 // ── Optimized Prompt Formatting (#5) ───────────────────────────────
 
-// formatMemoryForLLM formats retrieved memories optimally for LLM consumption.
-// Instead of dumping raw session text, extracts the most relevant excerpts.
+// formatMemoryForLLM formats retrieved memories for LLM consumption.
+// Shows full session content to avoid losing key details in excerpting.
+// Budget controls total chars across all memories.
 func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) string {
 	if len(memories) == 0 {
 		return ""
 	}
 	if maxTotal <= 0 {
-		maxTotal = 4000
+		maxTotal = 8000
 	}
 
 	var sb strings.Builder
@@ -219,22 +220,22 @@ func formatMemoryForLLM(query string, memories []SearchResult, maxTotal int) str
 
 	budget := maxTotal
 	for i, m := range memories {
-		if budget <= 0 {
+		if budget <= 100 {
 			break
 		}
 
-		// Extract the most relevant excerpt from this memory
-		excerpt := extractRelevantExcerpt(query, m.Content, 800)
+		content := m.Content
+		// If a single memory exceeds remaining budget, excerpt the most relevant part
+		if len(content) > budget-50 {
+			content = extractRelevantExcerpt(query, content, budget-50)
+		}
 
 		header := fmt.Sprintf("Memory %d", i+1)
 		if m.CreatedAt.Year() > 2000 {
 			header += fmt.Sprintf(" (%s)", m.CreatedAt.Format("2006-01-02"))
 		}
-		entry := fmt.Sprintf("### %s\n%s\n\n", header, excerpt)
+		entry := fmt.Sprintf("### %s\n%s\n\n", header, content)
 
-		if len(entry) > budget {
-			entry = entry[:budget] + "...\n\n"
-		}
 		sb.WriteString(entry)
 		budget -= len(entry)
 	}
@@ -360,15 +361,17 @@ func isStopWord(w string) bool { return stopWords[w] }
 
 // ── System Prompt (#5) ────────────────────────────────────────────
 
-const e2eSystemPrompt = `You are a personal assistant with access to memories from previous conversations with this user. Your task is to answer the user's question using ONLY the provided memories.
+const e2eSystemPrompt = `You are a personal assistant answering questions from a user's conversation history. Memories from previous conversations are provided below.
 
-Rules:
-- Answer concisely in 1-2 sentences
-- If the answer is a number, state just the number
-- If the answer is a name or place, state it directly
-- If the memories contain the answer, always provide it — do NOT say you don't know
-- If the memories truly don't contain relevant information, say "I don't have that information"
-- Do NOT ask follow-up questions`
+CRITICAL INSTRUCTIONS:
+1. Read ALL provided memories carefully — the answer is almost always in there
+2. Look for SPECIFIC details: names, numbers, places, dates, even if mentioned briefly
+3. Give a DIRECT answer — just the fact, name, number, or place
+4. Keep answers SHORT — one sentence maximum
+5. Do NOT say "I don't have that information" unless you have genuinely read every memory and the answer is truly absent
+6. Do NOT ask follow-up questions
+7. If the answer is a number, respond with just the number
+8. If you're unsure between options, pick the most likely one based on context`
 
 // ── E2E Runner ────────────────────────────────────────────────────
 
@@ -397,7 +400,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 		cfg.NS = "bench:e2e"
 	}
 	if cfg.TopK == 0 {
-		cfg.TopK = 5
+		cfg.TopK = 10
 	}
 	if len(cfg.Modes) == 0 {
 		cfg.Modes = []string{"no-memory", "ghost", "oracle"}
