@@ -57,11 +57,16 @@ func TestLoCoMo(t *testing.T) {
 		}
 	}
 
+	expandEdges := os.Getenv("GHOST_BENCH_EXPAND_EDGES") == "1"
+	multiQuery := os.Getenv("GHOST_BENCH_MULTI_QUERY") == "1"
+
 	cfg := LoCoMoConfig{
 		DatasetPath:    datasetPath,
 		PerCatLimit:    perCatLimit,
 		TopK:           []int{5, 10},
 		EmbedCachePath: cachePath,
+		ExpandEdges:    expandEdges,
+		MultiQuery:     multiQuery,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},

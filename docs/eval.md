@@ -361,7 +361,62 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 - `GHOST_RERANKER=local` — enables cross-encoder reranking (~42 min for 470 questions vs 21s without)
 - `GHOST_EMBED_MODEL_LOCAL=gte-small` — better embedding model (same 384 dims, +7% recall)
 - `GHOST_BENCH_EMBED_CACHE=path` — pre-computed embeddings for fast iteration
+- `GHOST_BENCH_EXPAND_EDGES=1` — build entity-based edges and use edge expansion during search (multi-hop)
+- `GHOST_BENCH_MULTI_QUERY=1` — decompose complex queries into sub-queries (multi-hop)
 - All achieved without LLM in the loop — pure retrieval with local embeddings
+
+### E2E Benchmark (Ghost + LLM)
+
+End-to-end evaluation: Ghost retrieves memories → LLM answers questions. Three modes compared:
+- **no-memory**: LLM answers with no context (baseline)
+- **ghost**: LLM answers with Ghost-retrieved top-5 sessions + highlighting
+- **oracle**: LLM answers with ground-truth evidence sessions (upper bound)
+
+**LongMemEval E2E:**
+```bash
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_s_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_s.json \
+GHOST_BENCH_PER_TYPE=10 \
+GHOST_BENCH_LLM_MODEL=haiku \
+  go test ./internal/store/ -run TestE2ELongMemEval -v -timeout 120m
+```
+
+**LoCoMo E2E:**
+```bash
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LOCOMO=testdata/locomo/locomo10.json \
+GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
+GHOST_BENCH_PER_CAT=5 \
+GHOST_BENCH_LLM_MODEL=haiku \
+  go test ./internal/store/ -run TestE2ELoCoMo -v -timeout 60m
+```
+
+**LongMemEval _M dataset** (harder, ~500 sessions/question):
+```bash
+# Download _M dataset
+cd testdata/longmemeval/
+wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_m_cleaned.json
+
+# Build cache (larger dataset, takes longer)
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_m_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_m.json \
+  go test ./internal/store/ -run TestLongMemEvalBuildCache -v -timeout 240m
+
+# Run benchmark (uses BatchBenchInsert for fast ingestion)
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_m_cleaned.json \
+GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_m.json \
+  go test ./internal/store/ -run TestLongMemEval -v -timeout 60m
+```
+
+**Retrieval improvements in this round:**
+- **Knowledge-update detection**: Queries with update intent ("current", "now", "latest") get strong recency bias among topically relevant results
+- **User-turn-aware scoring**: Sessions where the user (not assistant) mentioned relevant facts get a scoring boost
+- **Improved multi-hop decomposition**: Comma-separated clauses, "both X and Y", multiple question words
+- **BatchBenchInsert**: Single-transaction batch insert with batched embeddings — critical for _M dataset performance
+- **LoCoMo edge expansion**: `BenchBuildEdges` + `ExpandEdges` flag for entity-based graph traversal
 
 ## Adding New Scenarios
 

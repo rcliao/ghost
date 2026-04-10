@@ -47,6 +47,8 @@ type LoCoMoConfig struct {
 	TopK           []int
 	NS             string
 	EmbedCachePath string
+	ExpandEdges    bool // if true, build entity edges and expand during search
+	MultiQuery     bool // if true, decompose complex queries into sub-queries
 	ProgressFunc   func(done, total int)
 }
 
@@ -250,12 +252,21 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 			return nil, fmt.Errorf("create store for %s: %w", entry.SampleID, err)
 		}
 
-		// Ingest sessions
+		// Ingest sessions via batch insert (single transaction, batched embeddings)
+		var batchSessions []BenchSession
 		for _, sess := range sessions {
-			if err := store.BenchInsert(ctx, cfg.NS, sess.key, sess.content, time.Time{}); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("ingest %s/%s: %w", entry.SampleID, sess.key, err)
-			}
+			batchSessions = append(batchSessions, BenchSession{
+				Key: sess.key, Content: sess.content,
+			})
+		}
+		if err := store.BatchBenchInsert(ctx, cfg.NS, batchSessions); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("batch ingest %s: %w", entry.SampleID, err)
+		}
+
+		// Build entity-based edges for multi-hop expansion
+		if cfg.ExpandEdges {
+			store.BenchBuildEdges(ctx, cfg.NS)
 		}
 
 		// Evaluate each QA pair
@@ -277,10 +288,12 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 				searchLimit = 50
 			}
 			results, err := store.Search(ctx, SearchParams{
-				NS:         cfg.NS,
-				Query:      qa.Question,
-				Limit:      searchLimit,
-				IncludeAll: true,
+				NS:          cfg.NS,
+				Query:       qa.Question,
+				Limit:       searchLimit,
+				IncludeAll:  true,
+				ExpandEdges: cfg.ExpandEdges,
+				MultiQuery:  cfg.MultiQuery,
 			})
 			if err != nil {
 				cleanup()

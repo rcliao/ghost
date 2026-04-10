@@ -507,6 +507,7 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 			return nil, fmt.Errorf("create store q%d: %w", i, err)
 		}
 
+		var batchSessions []BenchSession
 		for j, session := range entry.HaystackSessions {
 			sessionID := fmt.Sprintf("session-%d", j)
 			if j < len(entry.HaystackIDs) {
@@ -523,8 +524,11 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 				t, _ := time.Parse("2006-01-02 15:04:05", entry.HaystackDates[j])
 				sessionTime = t
 			}
-			store.BenchInsert(ctx, cfg.NS, sessionID, content, sessionTime)
+			batchSessions = append(batchSessions, BenchSession{
+				Key: sessionID, Content: content, CreatedAt: sessionTime,
+			})
 		}
+		store.BatchBenchInsert(ctx, cfg.NS, batchSessions)
 
 		result := E2EResult{
 			QuestionID:   entry.QuestionID,
@@ -656,6 +660,189 @@ func (c *ClaudeCLIClient) Generate(ctx context.Context, systemPrompt, userMessag
 		return "", fmt.Errorf("claude -p: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// ── LoCoMo E2E Runner ────────────────────────────────────────────
+
+// RunE2ELoCoMo runs the end-to-end benchmark on LoCoMo.
+// Same three modes as LongMemEval: no-memory, ghost, oracle.
+func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) (*E2EReport, error) {
+	entries, err := LoadLoCoMo(cfg.DatasetPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.NS == "" {
+		cfg.NS = "bench:e2e-locomo"
+	}
+	if cfg.TopK == 0 {
+		cfg.TopK = 10
+	}
+	if len(cfg.Modes) == 0 {
+		cfg.Modes = []string{"no-memory", "ghost", "oracle"}
+	}
+
+	report := &E2EReport{
+		Timestamp: time.Now(),
+		Dataset:   filepath.Base(cfg.DatasetPath),
+		LLM:       cfg.LLM.Name(),
+		ByType:    make(map[string]*E2ETypeAgg),
+		Overall:   make(map[string]map[string]float64),
+	}
+	for _, mode := range cfg.Modes {
+		report.Overall[mode] = make(map[string]float64)
+	}
+
+	ctx := context.Background()
+
+	// Count evaluable QA pairs
+	evalTotal := 0
+	catCounts := make(map[int]int)
+	for _, entry := range entries {
+		for _, qa := range entry.QA {
+			if qa.Category == 5 { // skip adversarial
+				continue
+			}
+			if cfg.PerTypeLimit > 0 {
+				cat := qa.Category
+				if catCounts[cat] >= cfg.PerTypeLimit {
+					continue
+				}
+				catCounts[cat]++
+			}
+			evalTotal++
+		}
+	}
+	// Reset counts for actual eval
+	catCounts = make(map[int]int)
+	evalDone := 0
+
+	for _, entry := range entries {
+		sessions := parseLoCoMoSessions(entry.Conversation)
+		if len(sessions) == 0 {
+			continue
+		}
+
+		// Build session content map for oracle mode
+		sessionContents := make(map[string]string)
+		store, cleanup, err := newStore()
+		if err != nil {
+			return nil, fmt.Errorf("create store for %s: %w", entry.SampleID, err)
+		}
+
+		var batchSessions []BenchSession
+		for _, sess := range sessions {
+			sessionContents[sess.key] = sess.content
+			batchSessions = append(batchSessions, BenchSession{
+				Key: sess.key, Content: sess.content,
+			})
+		}
+		store.BatchBenchInsert(ctx, cfg.NS, batchSessions)
+
+		for _, qa := range entry.QA {
+			if qa.Category == 5 {
+				continue
+			}
+			if cfg.PerTypeLimit > 0 && catCounts[qa.Category] >= cfg.PerTypeLimit {
+				continue
+			}
+
+			catName := categoryName(qa.Category)
+			result := E2EResult{
+				QuestionID:   fmt.Sprintf("%s_cat%d", entry.SampleID, qa.Category),
+				QuestionType: catName,
+				Question:     qa.Question,
+				GoldAnswer:   qa.Answer,
+				Answers:      make(map[string]string),
+				Scores:       make(map[string]float64),
+			}
+
+			for _, mode := range cfg.Modes {
+				var userMsg string
+				switch mode {
+				case "no-memory":
+					userMsg = qa.Question
+				case "ghost":
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: qa.Question,
+						Limit: cfg.TopK, IncludeAll: true,
+					})
+					showN := 5
+					if showN > len(results) {
+						showN = len(results)
+					}
+					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
+				case "oracle":
+					evidenceSessions := evidenceToSessions(qa.Evidence)
+					var oracleResults []SearchResult
+					for _, sid := range evidenceSessions {
+						if c, ok := sessionContents[sid]; ok {
+							oracleResults = append(oracleResults, SearchResult{
+								Memory: model.Memory{Content: c},
+							})
+						}
+					}
+					userMsg = formatMemoryForLLM(qa.Question, oracleResults, 50000) + qa.Question
+				}
+
+				answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
+				if err != nil {
+					cleanup()
+					return nil, fmt.Errorf("llm %s %s: %w", mode, entry.SampleID, err)
+				}
+
+				result.Answers[mode] = answer
+				answerScores := scoreAnswer(answer, qa.Answer)
+				result.Scores[mode] = answerScores["score"]
+
+				// Aggregate metrics
+				if _, ok := report.ByType[catName]; !ok {
+					report.ByType[catName] = &E2ETypeAgg{
+						Metrics: make(map[string]map[string]float64),
+					}
+					for _, m := range cfg.Modes {
+						report.ByType[catName].Metrics[m] = make(map[string]float64)
+					}
+				}
+				for metric, val := range answerScores {
+					report.ByType[catName].Metrics[mode][metric] += val
+					report.Overall[mode][metric] += val
+				}
+			}
+
+			report.Results = append(report.Results, result)
+			report.ByType[catName].Count++
+			catCounts[qa.Category]++
+			report.Total++
+			evalDone++
+
+			if cfg.ProgressFunc != nil && (evalDone%5 == 0 || evalDone == evalTotal) {
+				cfg.ProgressFunc(evalDone, evalTotal)
+			}
+		}
+
+		cleanup()
+	}
+
+	// Average all metrics
+	if report.Total > 0 {
+		for _, mode := range cfg.Modes {
+			for metric := range report.Overall[mode] {
+				report.Overall[mode][metric] /= float64(report.Total)
+			}
+		}
+	}
+	for _, agg := range report.ByType {
+		if agg.Count > 0 {
+			for _, mode := range cfg.Modes {
+				for metric := range agg.Metrics[mode] {
+					agg.Metrics[mode][metric] /= float64(agg.Count)
+				}
+			}
+		}
+	}
+
+	return report, nil
 }
 
 // AnthropicClient calls the Anthropic Messages API via HTTP.

@@ -251,8 +251,11 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 			return nil, fmt.Errorf("create store for q%d: %w", i, err)
 		}
 
-		// Ingest haystack sessions using fast bulk insert (single chunk per session,
-		// no chunking, no auto-linking — optimized for retrieval benchmarking)
+		// Ingest haystack sessions using batch insert (single chunk per session,
+		// no chunking, no auto-linking — optimized for retrieval benchmarking).
+		// BatchBenchInsert embeds all sessions in one batch and inserts in a single
+		// transaction, which is much faster for _M datasets (~500 sessions/question).
+		var batchSessions []BenchSession
 		for j, session := range entry.HaystackSessions {
 			sessionID := fmt.Sprintf("session-%d", j)
 			if j < len(entry.HaystackIDs) {
@@ -264,7 +267,6 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				continue
 			}
 
-			// Parse session date for temporal-aware retrieval
 			var sessionTime time.Time
 			if j < len(entry.HaystackDates) && entry.HaystackDates[j] != "" {
 				if t, err := time.Parse("2006-01-02 15:04:05", entry.HaystackDates[j]); err == nil {
@@ -274,10 +276,13 @@ func RunLongMemEval(cfg LongMemEvalConfig, newStore func() (*SQLiteStore, func()
 				}
 			}
 
-			if err := store.BenchInsert(ctx, cfg.NS, sessionID, content, sessionTime); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("ingest session %s for q%d: %w", sessionID, i, err)
-			}
+			batchSessions = append(batchSessions, BenchSession{
+				Key: sessionID, Content: content, CreatedAt: sessionTime,
+			})
+		}
+		if err := store.BatchBenchInsert(ctx, cfg.NS, batchSessions); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("batch ingest q%d: %w", i, err)
 		}
 
 		// Build graph edges between sessions if enabled

@@ -117,6 +117,65 @@ var temporalKeywords = map[string]bool{
 	"currently": true, "now": true, "earlier": true, "previously": true,
 }
 
+// updateKeywords signal the user wants the most current version of a fact.
+// Knowledge-update queries like "what is my current address" or "where do I live now"
+// need the most recent session mentioning the topic, not the original.
+var updateKeywords = map[string]bool{
+	"current": true, "currently": true, "now": true, "latest": true,
+	"updated": true, "changed": true, "new": true, "moved": true,
+	"switched": true, "replaced": true, "nowadays": true,
+}
+
+// hasUpdateIntent returns true if the query likely asks about an updated/current fact.
+func hasUpdateIntent(query string) bool {
+	words := strings.Fields(strings.ToLower(query))
+	for _, w := range words {
+		if updateKeywords[w] {
+			return true
+		}
+	}
+	return false
+}
+
+// userTermOverlap computes query term overlap against only user-spoken lines.
+// This helps surface sessions where the USER (not the assistant) mentioned relevant facts.
+func userTermOverlap(query, content string) float64 {
+	queryWords := strings.Fields(strings.ToLower(query))
+	var terms []string
+	for _, w := range queryWords {
+		w = strings.Trim(w, "?.,!\"'()[]{}:;")
+		if len(w) > 2 && !englishStopWords[w] {
+			terms = append(terms, w)
+		}
+	}
+	if len(terms) == 0 {
+		return 0
+	}
+
+	// Extract user-spoken lines only
+	lines := strings.Split(content, "\n")
+	var userText strings.Builder
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lower, "user:") || strings.HasPrefix(lower, "human:") {
+			userText.WriteString(lower)
+			userText.WriteByte(' ')
+		}
+	}
+	userContent := userText.String()
+	if userContent == "" {
+		return 0
+	}
+
+	hits := 0
+	for _, t := range terms {
+		if strings.Contains(userContent, t) {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(terms))
+}
+
 // hasTemporalIntent returns true if the query contains temporal keywords.
 func hasTemporalIntent(query string) bool {
 	for _, w := range strings.Fields(query) {
@@ -130,20 +189,74 @@ func hasTemporalIntent(query string) bool {
 // decomposeQuery splits a complex query into sub-queries for multi-hop retrieval.
 // Uses heuristic clause splitting on conjunctions. Returns nil if the query is simple.
 func decomposeQuery(query string) []string {
-	// Split on common conjunctions that indicate multi-part questions
 	lower := strings.ToLower(query)
+
+	// Pattern 1: Conjunction separators ("and", "also", "as well as")
 	for _, sep := range []string{" and ", " also ", " as well as "} {
 		if idx := strings.Index(lower, sep); idx > 10 && idx < len(lower)-10 {
 			parts := []string{
 				strings.TrimSpace(query[:idx]),
 				strings.TrimSpace(query[idx+len(sep):]),
 			}
-			// Only decompose if both parts are substantial
 			if len(parts[0]) > 15 && len(parts[1]) > 15 {
 				return parts
 			}
 		}
 	}
+
+	// Pattern 2: Comma-separated clauses ("who is X, and where does Y")
+	if commaIdx := strings.Index(query, ", "); commaIdx > 15 && commaIdx < len(query)-15 {
+		after := strings.TrimSpace(query[commaIdx+2:])
+		// Strip leading "and" if present
+		afterLower := strings.ToLower(after)
+		if strings.HasPrefix(afterLower, "and ") {
+			after = strings.TrimSpace(after[4:])
+		}
+		if len(after) > 15 {
+			return []string{strings.TrimSpace(query[:commaIdx]), after}
+		}
+	}
+
+	// Pattern 3: "both X and Y" where X and Y are substantial
+	if strings.HasPrefix(lower, "both ") {
+		rest := query[5:]
+		restLower := strings.ToLower(rest)
+		if idx := strings.Index(restLower, " and "); idx > 10 && idx < len(rest)-10 {
+			return []string{
+				strings.TrimSpace(rest[:idx]),
+				strings.TrimSpace(rest[idx+5:]),
+			}
+		}
+	}
+
+	// Pattern 4: Multiple question words ("who... where...", "what... how...")
+	qWords := []string{"who ", "what ", "where ", "when ", "how ", "which ", "why "}
+	var qPositions []int
+	for _, qw := range qWords {
+		pos := 0
+		for {
+			idx := strings.Index(lower[pos:], qw)
+			if idx == -1 {
+				break
+			}
+			absIdx := pos + idx
+			// Only count if at word boundary
+			if absIdx == 0 || lower[absIdx-1] == ' ' || lower[absIdx-1] == ',' {
+				qPositions = append(qPositions, absIdx)
+			}
+			pos = absIdx + len(qw)
+		}
+	}
+	if len(qPositions) >= 2 {
+		sort.Ints(qPositions)
+		p1 := strings.TrimSpace(query[qPositions[0]:qPositions[1]])
+		p2 := strings.TrimSpace(query[qPositions[1]:])
+		p1 = strings.TrimRight(p1, ",;")
+		if len(p1) > 15 && len(p2) > 15 {
+			return []string{p1, p2}
+		}
+	}
+
 	return nil
 }
 
@@ -241,11 +354,11 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		refTime = time.Now()
 	}
 
-	// For temporal queries, compute relative recency within the result set.
-	// This ensures meaningful differentiation even for old conversations where
-	// absolute decay (exp(-0.1*days)) would flatten to ~0 for all results.
+	// For temporal or update-intent queries, compute relative recency within
+	// the result set. This ensures meaningful differentiation even for old
+	// conversations where absolute decay would flatten to ~0 for all results.
 	var relRecency map[string]float64
-	if temporal && len(fused) > 0 {
+	if (temporal || hasUpdateIntent(p.Query)) && len(fused) > 0 {
 		relRecency = make(map[string]float64, len(fused))
 		// Find time range: oldest and newest in result set
 		var minTime, maxTime time.Time
@@ -271,9 +384,15 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 
 	// Pre-compute term overlap scores for reranking (B/G improvement)
 	termOverlaps := make(map[string]float64, len(fused))
+	userOverlaps := make(map[string]float64, len(fused))
 	for _, f := range fused {
 		termOverlaps[f.result.ID] = queryTermOverlap(p.Query, f.result.Content)
+		userOverlaps[f.result.ID] = userTermOverlap(p.Query, f.result.Content)
 	}
+
+	// Detect knowledge-update intent: queries about current/updated facts
+	// should prefer the most recent session that matches.
+	updateIntent := hasUpdateIntent(p.Query)
 
 	sort.Slice(fused, func(i, j int) bool {
 		si, sj := fused[i].rrfScore, fused[j].rrfScore
@@ -281,11 +400,15 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		// Rerank: blend RRF with term overlap for entity-specific queries
 		overlapI := termOverlaps[fused[i].result.ID]
 		overlapJ := termOverlaps[fused[j].result.ID]
-		// Blend: 70% RRF + 30% term overlap
-		si = si*0.7 + overlapI*0.3*si
-		sj = sj*0.7 + overlapJ*0.3*sj
+		// User-turn overlap: additive bonus for sessions where user mentioned relevant facts
+		uOverlapI := userOverlaps[fused[i].result.ID]
+		uOverlapJ := userOverlaps[fused[j].result.ID]
+		// Base: 70% RRF + 30% term overlap (unchanged from before)
+		// Then add user-turn bonus on top (up to 10% of base score)
+		si = si*0.7 + overlapI*0.3*si + uOverlapI*0.1*si
+		sj = sj*0.7 + overlapJ*0.3*sj + uOverlapJ*0.1*sj
 
-		if temporal {
+		if temporal || updateIntent {
 			kindBoostI, kindBoostJ := 0.0, 0.0
 			if fused[i].result.Kind == "episodic" {
 				kindBoostI = 0.3
@@ -293,11 +416,24 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 			if fused[j].result.Kind == "episodic" {
 				kindBoostJ = 0.3
 			}
-			// Blend: 40% base + 30% relative recency + 30% kind
-			recencyI := relRecency[fused[i].result.ID]
-			recencyJ := relRecency[fused[j].result.ID]
-			si = si*0.4 + recencyI*0.3 + kindBoostI
-			sj = sj*0.4 + recencyJ*0.3 + kindBoostJ
+
+			recencyI := 0.0
+			recencyJ := 0.0
+			if relRecency != nil {
+				recencyI = relRecency[fused[i].result.ID]
+				recencyJ = relRecency[fused[j].result.ID]
+			}
+
+			if updateIntent && !temporal {
+				// Knowledge-update: strong recency bias for topically relevant results
+				// 50% base + 40% recency + 10% kind
+				si = si*0.5 + recencyI*0.4 + kindBoostI*0.1
+				sj = sj*0.5 + recencyJ*0.4 + kindBoostJ*0.1
+			} else {
+				// Temporal: 40% base + 30% relative recency + 30% kind
+				si = si*0.4 + recencyI*0.3 + kindBoostI
+				sj = sj*0.4 + recencyJ*0.3 + kindBoostJ
+			}
 		}
 		if si != sj {
 			return si > sj

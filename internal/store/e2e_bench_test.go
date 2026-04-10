@@ -166,6 +166,147 @@ func TestE2ELongMemEval(t *testing.T) {
 	fmt.Fprintf(os.Stdout, "E2E_REPORT:%s\n", string(jsonReport))
 }
 
+// TestE2ELoCoMo runs the end-to-end benchmark on LoCoMo dataset.
+//
+// Usage:
+//
+//	GHOST_EMBED_PROVIDER=local \
+//	GHOST_BENCH_LOCOMO=testdata/locomo/locomo10.json \
+//	GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
+//	GHOST_BENCH_PER_CAT=5 \
+//	GHOST_BENCH_LLM_MODEL=haiku \
+//	  go test ./internal/store/ -run TestE2ELoCoMo -v -timeout 60m
+func TestE2ELoCoMo(t *testing.T) {
+	datasetPath := os.Getenv("GHOST_BENCH_LOCOMO")
+	if datasetPath == "" {
+		t.Skip("GHOST_BENCH_LOCOMO not set")
+	}
+	datasetPath = resolveRepoPath(datasetPath)
+
+	perCatLimit := 0
+	if s := os.Getenv("GHOST_BENCH_PER_CAT"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			perCatLimit = n
+		}
+	}
+
+	cachePath := os.Getenv("GHOST_BENCH_EMBED_CACHE")
+	if cachePath != "" {
+		cachePath = resolveRepoPath(cachePath)
+	}
+
+	var embedder embedding.Embedder
+	if base := embedding.NewFromEnv(); base != nil {
+		if cachePath != "" {
+			embedder = embedding.NewCachedEmbedder(base, cachePath)
+		} else {
+			embedder = base
+		}
+	}
+
+	llmModel := os.Getenv("GHOST_BENCH_LLM_MODEL")
+	var llm LLMClient
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		llm = NewAnthropicClient(llmModel)
+		t.Logf("Using Anthropic API: %s", llm.Name())
+	} else {
+		llm = NewClaudeCLIClient(llmModel)
+		t.Logf("Using Claude CLI: %s", llm.Name())
+	}
+
+	cfg := E2EConfig{
+		DatasetPath:  datasetPath,
+		PerTypeLimit: perCatLimit,
+		TopK:         5,
+		LLM:          llm,
+		Modes:        []string{"no-memory", "ghost", "oracle"},
+		ProgressFunc: func(done, total int) {
+			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
+		},
+	}
+
+	report, err := RunE2ELoCoMo(cfg, func() (*SQLiteStore, func(), error) {
+		dir := t.TempDir()
+		s, err := NewSQLiteStore(filepath.Join(dir, "bench.db"))
+		if err != nil {
+			return nil, nil, err
+		}
+		if embedder != nil {
+			s.SetEmbedder(embedder)
+		}
+		return s, func() { s.Close() }, nil
+	})
+	if err != nil {
+		t.Fatalf("E2E LoCoMo benchmark failed: %v", err)
+	}
+
+	// Print summary
+	t.Logf("\n=== E2E LoCoMo Results (LLM: %s) ===", report.LLM)
+	t.Logf("Dataset: %s, Questions: %d", report.Dataset, report.Total)
+
+	modes := []string{"no-memory", "ghost", "oracle"}
+
+	t.Logf("")
+	t.Logf("── Overall ──")
+	t.Logf("  %-14s %8s %8s %8s %8s", "Mode", "Score", "Contains", "TokRecall", "TokF1")
+	for _, mode := range modes {
+		if m, ok := report.Overall[mode]; ok {
+			t.Logf("  %-14s %8.3f %8.1f%% %8.3f %8.3f",
+				mode, m["score"], m["flexible_contains"]*100, m["token_recall"], m["token_f1"])
+		}
+	}
+
+	// Ghost value metrics
+	if ghost, ok := report.Overall["ghost"]; ok {
+		if nomem, ok2 := report.Overall["no-memory"]; ok2 {
+			t.Logf("")
+			t.Logf("── Ghost Value ──")
+			t.Logf("  Ghost vs No-Memory: +%.1f%% score", (ghost["score"]-nomem["score"])*100)
+		}
+		if oracle, ok3 := report.Overall["oracle"]; ok3 {
+			t.Logf("  Ghost vs Oracle:    %.1f%% of ceiling", ghost["score"]/oracle["score"]*100)
+		}
+	}
+
+	// By category
+	cats := []string{"single-hop", "temporal", "multi-hop", "open-domain"}
+	for _, cat := range cats {
+		agg, ok := report.ByType[cat]
+		if !ok {
+			continue
+		}
+		t.Logf("")
+		t.Logf("── %s (n=%d) ──", cat, agg.Count)
+		for _, mode := range modes {
+			if m, ok := agg.Metrics[mode]; ok {
+				t.Logf("  %-14s score=%.3f contains=%.0f%% recall=%.3f",
+					mode, m["score"], m["flexible_contains"]*100, m["token_recall"])
+			}
+		}
+	}
+
+	// Sample results
+	t.Logf("\n── Sample Results ──")
+	for i, r := range report.Results {
+		if i >= 5 {
+			break
+		}
+		t.Logf("Q: %s", r.Question)
+		t.Logf("  Gold: %s", r.GoldAnswer)
+		for _, mode := range modes {
+			answer := r.Answers[mode]
+			if len(answer) > 120 {
+				answer = answer[:120] + "..."
+			}
+			t.Logf("  %-14s (%.2f) %s", mode, r.Scores[mode], answer)
+		}
+		t.Logf("")
+	}
+
+	jsonReport, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Fprintf(os.Stdout, "E2E_LOCOMO_REPORT:%s\n", string(jsonReport))
+}
+
 func TestScoreAnswer(t *testing.T) {
 	tests := []struct {
 		answer, gold string

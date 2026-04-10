@@ -287,6 +287,82 @@ func (s *SQLiteStore) BenchInsert(ctx context.Context, ns, key, content string, 
 	return tx.Commit()
 }
 
+// BenchSession holds one session for batch insertion.
+type BenchSession struct {
+	Key       string
+	Content   string
+	CreatedAt time.Time
+}
+
+// BatchBenchInsert inserts multiple sessions in a single transaction with batched embeddings.
+// This is much faster than calling BenchInsert per session, especially for _M datasets
+// with ~500 sessions per question.
+func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions []BenchSession) error {
+	// Batch embed all sessions first
+	var texts []string
+	for _, sess := range sessions {
+		texts = append(texts, sess.Content)
+	}
+
+	var embeddings []embedding.Vector
+	if s.embedder != nil {
+		vecs, err := embedding.EmbedBatch(ctx, s.embedder, texts)
+		if err == nil {
+			embeddings = vecs
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	memStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, est_tokens, tier, pinned)
+		 VALUES (?, ?, ?, ?, 'episodic', 1, ?, 'normal', 0, 0.5, ?, 'stm', 0)`)
+	if err != nil {
+		return err
+	}
+	defer memStmt.Close()
+
+	chunkStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO chunks (id, memory_id, seq, text, start_line, end_line, embedding)
+		 VALUES (?, ?, 0, ?, 1, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer chunkStmt.Close()
+
+	for i, sess := range sessions {
+		now := sess.CreatedAt
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		id := s.newID()
+		chunkID := s.newID()
+
+		var embJSON *string
+		if embeddings != nil && i < len(embeddings) && len(embeddings[i]) > 0 {
+			b, _ := json.Marshal(embeddings[i])
+			str := string(b)
+			embJSON = &str
+		}
+
+		if _, err := memStmt.ExecContext(ctx,
+			id, ns, sess.Key, sess.Content, now.Format(time.RFC3339), estimateTokens(sess.Content)); err != nil {
+			return fmt.Errorf("insert memory %s: %w", sess.Key, err)
+		}
+
+		if _, err := chunkStmt.ExecContext(ctx,
+			chunkID, id, sess.Content, strings.Count(sess.Content, "\n")+1, embJSON); err != nil {
+			return fmt.Errorf("insert chunk %s: %w", sess.Key, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // BenchBuildEdges builds edges between memories in a namespace using three signals:
 //   1. Embedding cosine similarity (semantic relatedness)
 //   2. Named entity co-occurrence (shared people, places, things)
