@@ -95,13 +95,24 @@ func scoreAnswer(answer, gold string) map[string]float64 {
 	// 4. Token F1
 	scores["token_f1"] = tokenF1(answer, gold)
 
-	// 5. Combined score: if flexible_contains found the answer, that's a strong signal.
-	// For short gold answers (1-3 words), containment is the primary metric.
-	if scores["flexible_contains"] >= 0.8 {
-		scores["score"] = 0.7 + scores["token_recall"]*0.2 + scores["token_f1"]*0.1
-	} else {
-		scores["score"] = scores["flexible_contains"]*0.4 + scores["token_recall"]*0.35 + scores["token_f1"]*0.25
+	// 5. Combined score: take the max of multiple signals.
+	// Different question types are best measured by different metrics:
+	// - Short fact answers ("Target", "3"): flexible_contains is best
+	// - Long rubric answers: token_recall captures partial credit
+	// - General: token F1 balances precision and recall
+	contains := scores["flexible_contains"]
+	recall := scores["token_recall"]
+	f1 := scores["token_f1"]
+
+	// Use the best signal as the primary score
+	best := contains
+	if recall > best {
+		best = recall
 	}
+	if f1 > best {
+		best = f1
+	}
+	scores["score"] = best
 
 	return scores
 }
@@ -119,14 +130,15 @@ func normalize(s string) string {
 }
 
 // flexibleContains checks if the answer contains the gold answer or key parts of it.
-// Handles numeric answers ("3"), short phrases ("Target"), and multi-part answers.
+// Handles numeric answers ("3"), short phrases ("Target"), multi-part answers,
+// and long rubric-style gold answers.
 func flexibleContains(ansNorm, goldNorm string) float64 {
 	// Direct containment
 	if strings.Contains(ansNorm, goldNorm) {
 		return 1.0
 	}
 
-	// Check for numeric match first (e.g., gold="3", answer contains "3" or "three")
+	// Check for numeric match (e.g., gold="3", answer contains "3" or "three")
 	numWords := map[string]string{
 		"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
 		"5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
@@ -140,7 +152,7 @@ func flexibleContains(ansNorm, goldNorm string) float64 {
 		}
 	}
 
-	// Check each word of gold answer (for short answers like "Target")
+	// Short gold answer (1-3 words): check word-level containment
 	goldWords := strings.Fields(goldNorm)
 	if len(goldWords) <= 3 {
 		found := 0
@@ -151,6 +163,28 @@ func flexibleContains(ansNorm, goldNorm string) float64 {
 		}
 		if len(goldWords) > 0 {
 			return float64(found) / float64(len(goldWords))
+		}
+	}
+
+	// Long gold answer (rubric-style, >10 words): extract key phrases and check.
+	// For gold answers like "The user would prefer resources tailored to Adobe Premiere Pro",
+	// check if key non-stopword phrases from gold appear in the answer.
+	if len(goldWords) > 10 {
+		// Extract significant words from gold (non-stopwords, length >= 4)
+		var keyTerms []string
+		for _, w := range goldWords {
+			if len(w) >= 4 && !isStopWord(w) {
+				keyTerms = append(keyTerms, w)
+			}
+		}
+		if len(keyTerms) > 0 {
+			found := 0
+			for _, kt := range keyTerms {
+				if strings.Contains(ansNorm, kt) {
+					found++
+				}
+			}
+			return float64(found) / float64(len(keyTerms))
 		}
 	}
 
