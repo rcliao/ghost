@@ -294,16 +294,56 @@ type BenchSession struct {
 	CreatedAt time.Time
 }
 
+// extractUserTurns extracts substantial user-spoken lines from a session transcript.
+// Returns concatenated user turns if they're substantial enough to be useful for search.
+// Minimum 50 chars to avoid trivial "user: yes" or "user: ok" turns.
+func extractUserTurns(content string) string {
+	lines := strings.Split(content, "\n")
+	var userLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "user:") || strings.HasPrefix(lower, "human:") {
+			userLines = append(userLines, trimmed)
+		}
+	}
+	if len(userLines) == 0 {
+		return ""
+	}
+	joined := strings.Join(userLines, "\n")
+	if len(joined) < 50 {
+		return "" // too short to be useful
+	}
+	return joined
+}
+
 // BatchBenchInsert inserts multiple sessions in a single transaction with batched embeddings.
 // This is much faster than calling BenchInsert per session, especially for _M datasets
 // with ~500 sessions per question.
+//
+// In addition to the full session chunk (seq=0), it also stores user-turn-only chunks
+// (seq=1) when substantial user speech is detected. This improves retrieval for
+// "single-session-user" questions where the answer was spoken by the user.
 func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions []BenchSession) error {
-	// Batch embed all sessions first
-	var texts []string
-	for _, sess := range sessions {
-		texts = append(texts, sess.Content)
+	// Collect all texts to embed: full sessions + user-turn extracts
+	type chunkInfo struct {
+		sessionIdx int
+		seq        int
+		text       string
+	}
+	var allChunks []chunkInfo
+	for i, sess := range sessions {
+		allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: 0, text: sess.Content})
+		if userTurns := extractUserTurns(sess.Content); userTurns != "" {
+			allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: 1, text: userTurns})
+		}
 	}
 
+	// Batch embed all chunks
+	var texts []string
+	for _, c := range allChunks {
+		texts = append(texts, c.text)
+	}
 	var embeddings []embedding.Vector
 	if s.embedder != nil {
 		vecs, err := embedding.EmbedBatch(ctx, s.embedder, texts)
@@ -328,35 +368,42 @@ func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions 
 
 	chunkStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO chunks (id, memory_id, seq, text, start_line, end_line, embedding)
-		 VALUES (?, ?, 0, ?, 1, ?, ?)`)
+		 VALUES (?, ?, ?, ?, 1, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer chunkStmt.Close()
 
+	// Insert memories first, collect IDs
+	memIDs := make([]string, len(sessions))
 	for i, sess := range sessions {
 		now := sess.CreatedAt
 		if now.IsZero() {
 			now = time.Now().UTC()
 		}
-		id := s.newID()
+		memIDs[i] = s.newID()
+
+		if _, err := memStmt.ExecContext(ctx,
+			memIDs[i], ns, sess.Key, sess.Content, now.Format(time.RFC3339), estimateTokens(sess.Content)); err != nil {
+			return fmt.Errorf("insert memory %s: %w", sess.Key, err)
+		}
+	}
+
+	// Insert all chunks (full session seq=0 + user-turns seq=1)
+	for ci, chunk := range allChunks {
 		chunkID := s.newID()
+		memID := memIDs[chunk.sessionIdx]
 
 		var embJSON *string
-		if embeddings != nil && i < len(embeddings) && len(embeddings[i]) > 0 {
-			b, _ := json.Marshal(embeddings[i])
+		if embeddings != nil && ci < len(embeddings) && len(embeddings[ci]) > 0 {
+			b, _ := json.Marshal(embeddings[ci])
 			str := string(b)
 			embJSON = &str
 		}
 
-		if _, err := memStmt.ExecContext(ctx,
-			id, ns, sess.Key, sess.Content, now.Format(time.RFC3339), estimateTokens(sess.Content)); err != nil {
-			return fmt.Errorf("insert memory %s: %w", sess.Key, err)
-		}
-
 		if _, err := chunkStmt.ExecContext(ctx,
-			chunkID, id, sess.Content, strings.Count(sess.Content, "\n")+1, embJSON); err != nil {
-			return fmt.Errorf("insert chunk %s: %w", sess.Key, err)
+			chunkID, memID, chunk.seq, chunk.text, strings.Count(chunk.text, "\n")+1, embJSON); err != nil {
+			return fmt.Errorf("insert chunk %s seq=%d: %w", sessions[chunk.sessionIdx].Key, chunk.seq, err)
 		}
 	}
 
