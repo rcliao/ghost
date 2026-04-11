@@ -117,6 +117,10 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 	if err == nil {
 		version = prevVersion + 1
 		supersedes = &prevID
+		// Soft-delete ALL old versions of this key so only the latest survives.
+		_, _ = tx.ExecContext(ctx,
+			`UPDATE memories SET deleted_at = ? WHERE ns = ? AND key = ? AND deleted_at IS NULL`,
+			now.Format(time.RFC3339), p.NS, p.Key)
 	}
 
 	importance := p.Importance
@@ -610,18 +614,23 @@ func (s *SQLiteStore) Get(ctx context.Context, p GetParams) ([]model.Memory, err
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if p.History {
-		// History shows all versions including expired (for audit)
+		// History shows all versions when the latest version is still alive.
+		// If the latest version has been Rm'd, no versions are shown.
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
 				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
 				        importance, utility_count, tier, est_tokens, pinned
-				 FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
+				 FROM memories WHERE ns = ? AND key = ?
+				   AND EXISTS (SELECT 1 FROM memories m2
+				               WHERE m2.ns = memories.ns AND m2.key = memories.key
+				                 AND m2.deleted_at IS NULL)
 				 ORDER BY version DESC`
 		args = []interface{}{p.NS, p.Key}
 	} else if p.Version > 0 {
+		// Specific version lookup includes superseded (soft-deleted) versions
 		query = `SELECT id, ns, key, content, kind, tags, version, supersedes,
 				        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
 				        importance, utility_count, tier, est_tokens, pinned
-				 FROM memories WHERE ns = ? AND key = ? AND version = ? AND deleted_at IS NULL
+				 FROM memories WHERE ns = ? AND key = ? AND version = ?
 				   AND (expires_at IS NULL OR expires_at > ?)
 				 LIMIT 1`
 		args = []interface{}{p.NS, p.Key, p.Version, now}
