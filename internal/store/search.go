@@ -137,6 +137,53 @@ func hasUpdateIntent(query string) bool {
 	return false
 }
 
+// preferenceQueryKeywords signal the user wants recommendations/suggestions.
+// These queries benefit from sessions where preferences were explicitly stated.
+var preferenceQueryKeywords = map[string]bool{
+	"recommend": true, "recommendation": true, "recommendations": true,
+	"suggest": true, "suggestion": true, "suggestions": true,
+	"advice": true, "advise": true, "tips": true, "tip": true,
+}
+
+// preferenceMarkers are phrases that signal a user is stating a preference.
+// Sessions containing these markers are more likely to contain facts useful
+// for answering preference-style queries.
+var preferenceMarkers = []string{
+	"i like", "i love", "i hate", "i dislike", "i prefer", "i enjoy",
+	"i don't like", "i dont like", "my favorite", "my favourite",
+	"i always", "i usually", "i never", "i tend to",
+	"i use", "i'm using", "i own", "my ", // "my Sony camera", "my Adobe setup"
+}
+
+// hasPreferenceIntent returns true if the query asks for recommendations/suggestions.
+func hasPreferenceIntent(query string) bool {
+	words := strings.Fields(strings.ToLower(query))
+	for _, w := range words {
+		w = strings.Trim(w, "?.,!\"'")
+		if preferenceQueryKeywords[w] {
+			return true
+		}
+	}
+	return false
+}
+
+// preferenceMarkerScore counts preference markers in content (normalized 0-1).
+func preferenceMarkerScore(content string) float64 {
+	lower := strings.ToLower(content)
+	hits := 0
+	for _, marker := range preferenceMarkers {
+		if strings.Contains(lower, marker) {
+			hits++
+		}
+	}
+	// Cap at 5 markers = 1.0 (most preference sessions have 1-3)
+	score := float64(hits) / 5.0
+	if score > 1.0 {
+		score = 1.0
+	}
+	return score
+}
+
 // userTermOverlap computes query term overlap against only user-spoken lines.
 // This helps surface sessions where the USER (not the assistant) mentioned relevant facts.
 func userTermOverlap(query, content string) float64 {
@@ -385,14 +432,20 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	// Pre-compute term overlap scores for reranking (B/G improvement)
 	termOverlaps := make(map[string]float64, len(fused))
 	userOverlaps := make(map[string]float64, len(fused))
-	for _, f := range fused {
-		termOverlaps[f.result.ID] = queryTermOverlap(p.Query, f.result.Content)
-		userOverlaps[f.result.ID] = userTermOverlap(p.Query, f.result.Content)
-	}
+	preferenceScores := make(map[string]float64, len(fused))
 
 	// Detect knowledge-update intent: queries about current/updated facts
 	// should prefer the most recent session that matches.
 	updateIntent := hasUpdateIntent(p.Query)
+	preferenceIntent := hasPreferenceIntent(p.Query)
+
+	for _, f := range fused {
+		termOverlaps[f.result.ID] = queryTermOverlap(p.Query, f.result.Content)
+		userOverlaps[f.result.ID] = userTermOverlap(p.Query, f.result.Content)
+		if preferenceIntent {
+			preferenceScores[f.result.ID] = preferenceMarkerScore(f.result.Content)
+		}
+	}
 
 	sort.Slice(fused, func(i, j int) bool {
 		si, sj := fused[i].rrfScore, fused[j].rrfScore
@@ -407,6 +460,15 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		// Then add user-turn bonus on top (up to 10% of base score)
 		si = si*0.7 + overlapI*0.3*si + uOverlapI*0.1*si
 		sj = sj*0.7 + overlapJ*0.3*sj + uOverlapJ*0.1*sj
+
+		// Preference queries: boost sessions that contain preference markers
+		// (I like, I love, my favorite, etc.) — these are where preferences were stated
+		if preferenceIntent {
+			prefI := preferenceScores[fused[i].result.ID]
+			prefJ := preferenceScores[fused[j].result.ID]
+			si += prefI * 0.2 * si
+			sj += prefJ * 0.2 * sj
+		}
 
 		if temporal || updateIntent {
 			kindBoostI, kindBoostJ := 0.0, 0.0
