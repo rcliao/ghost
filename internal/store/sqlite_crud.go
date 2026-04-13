@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -294,27 +295,77 @@ type BenchSession struct {
 	CreatedAt time.Time
 }
 
-// extractUserTurns extracts substantial user-spoken lines from a session transcript.
-// Returns concatenated user turns if they're substantial enough to be useful for search.
-// Minimum 50 chars to avoid trivial "user: yes" or "user: ok" turns.
-func extractUserTurns(content string) string {
+// skipSpeakers are generic AI/narrator roles whose speech is not worth indexing
+// separately — they're generated output, not source memories.
+var skipSpeakers = map[string]bool{
+	"assistant": true, "ai": true, "bot": true, "model": true,
+	"system": true, "narrator": true,
+}
+
+// extractSpeakerTurns groups lines by speaker prefix (e.g., "user:", "Caroline:").
+// Returns a map of speaker → concatenated turn text. Speakers with <50 chars of
+// speech are excluded (too trivial to index as a separate chunk).
+//
+// AI/system speakers (assistant, ai, bot, system) are skipped — their output
+// isn't a source memory and indexing it adds noise + embedding cost.
+//
+// Format detection: a line starts with "Word:" (or "Word Name:") where the prefix
+// is <25 chars and contains only letters/digits/underscores/spaces. Handles
+// "user:"/"assistant:" transcripts and named-peer dialogues ("Caroline:"/"Melanie:").
+func extractSpeakerTurns(content string) map[string]string {
+	speakerLines := make(map[string][]string)
 	lines := strings.Split(content, "\n")
-	var userLines []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "user:") || strings.HasPrefix(lower, "human:") {
-			userLines = append(userLines, trimmed)
+		if trimmed == "" {
+			continue
+		}
+		// Find speaker prefix: "SpeakerName: text"
+		idx := strings.Index(trimmed, ": ")
+		if idx <= 0 || idx >= 25 {
+			continue
+		}
+		prefix := trimmed[:idx]
+		// Only letters, digits, spaces, underscores in speaker name
+		valid := true
+		for _, r := range prefix {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') || r == '_' || r == ' ') {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		speaker := strings.ToLower(prefix)
+		if skipSpeakers[speaker] {
+			continue
+		}
+		speakerLines[speaker] = append(speakerLines[speaker], trimmed)
+	}
+
+	result := make(map[string]string)
+	for speaker, turns := range speakerLines {
+		joined := strings.Join(turns, "\n")
+		if len(joined) >= 50 {
+			result[speaker] = joined
 		}
 	}
-	if len(userLines) == 0 {
-		return ""
+	return result
+}
+
+// extractUserTurns extracts substantial user-spoken lines from a session transcript.
+// Kept for backwards compatibility; new code uses extractSpeakerTurns.
+func extractUserTurns(content string) string {
+	turns := extractSpeakerTurns(content)
+	if s, ok := turns["user"]; ok {
+		return s
 	}
-	joined := strings.Join(userLines, "\n")
-	if len(joined) < 50 {
-		return "" // too short to be useful
+	if s, ok := turns["human"]; ok {
+		return s
 	}
-	return joined
+	return ""
 }
 
 // BatchBenchInsert inserts multiple sessions in a single transaction with batched embeddings.
@@ -325,7 +376,9 @@ func extractUserTurns(content string) string {
 // (seq=1) when substantial user speech is detected. This improves retrieval for
 // "single-session-user" questions where the answer was spoken by the user.
 func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions []BenchSession) error {
-	// Collect all texts to embed: full sessions + user-turn extracts
+	// Collect all texts to embed: full sessions + per-speaker turn extracts.
+	// Each speaker with substantial speech gets its own chunk (seq >= 1),
+	// which lets vector search match on just that speaker's statements.
 	type chunkInfo struct {
 		sessionIdx int
 		seq        int
@@ -334,8 +387,15 @@ func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions 
 	var allChunks []chunkInfo
 	for i, sess := range sessions {
 		allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: 0, text: sess.Content})
-		if userTurns := extractUserTurns(sess.Content); userTurns != "" {
-			allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: 1, text: userTurns})
+		speakerTurns := extractSpeakerTurns(sess.Content)
+		// Sort speaker names for deterministic seq assignment
+		speakers := make([]string, 0, len(speakerTurns))
+		for sp := range speakerTurns {
+			speakers = append(speakers, sp)
+		}
+		sort.Strings(speakers)
+		for si, sp := range speakers {
+			allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: si + 1, text: speakerTurns[sp]})
 		}
 	}
 

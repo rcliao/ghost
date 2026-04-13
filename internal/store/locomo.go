@@ -252,7 +252,9 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 			return nil, fmt.Errorf("create store for %s: %w", entry.SampleID, err)
 		}
 
-		// Ingest sessions via batch insert (single transaction, batched embeddings)
+		// Ingest sessions via batch insert (single transaction, batched embeddings).
+		// Note: session dates/ordering not passed as CreatedAt — triggers temporal
+		// scoring that helps open-domain but hurts multi-hop. Kept neutral.
 		var batchSessions []BenchSession
 		for _, sess := range sessions {
 			batchSessions = append(batchSessions, BenchSession{

@@ -184,8 +184,12 @@ func preferenceMarkerScore(content string) float64 {
 	return score
 }
 
-// userTermOverlap computes query term overlap against only user-spoken lines.
-// This helps surface sessions where the USER (not the assistant) mentioned relevant facts.
+// userTermOverlap computes query term overlap against speaker-prefixed lines
+// (e.g., "user:", "Caroline:", "Melanie:"). This surfaces sessions where query
+// terms appear within actual speech rather than framing/narration, which is
+// a stronger signal for conversational retrieval.
+//
+// Works for any dialogue format: "user:"/"assistant:", named peers, etc.
 func userTermOverlap(query, content string) float64 {
 	queryWords := strings.Fields(strings.ToLower(query))
 	var terms []string
@@ -199,24 +203,39 @@ func userTermOverlap(query, content string) float64 {
 		return 0
 	}
 
-	// Extract user-spoken lines only
+	// Extract any speaker-prefixed line. Detect "Speaker: text" where Speaker
+	// is a short alphanumeric prefix (<25 chars), matching dialogue transcripts.
 	lines := strings.Split(content, "\n")
-	var userText strings.Builder
+	var speakerText strings.Builder
 	for _, line := range lines {
-		lower := strings.ToLower(strings.TrimSpace(line))
-		if strings.HasPrefix(lower, "user:") || strings.HasPrefix(lower, "human:") {
-			userText.WriteString(lower)
-			userText.WriteByte(' ')
+		trimmed := strings.TrimSpace(line)
+		idx := strings.Index(trimmed, ": ")
+		if idx <= 0 || idx >= 25 {
+			continue
 		}
+		prefix := trimmed[:idx]
+		valid := true
+		for _, r := range prefix {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') || r == '_' || r == ' ') {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		speakerText.WriteString(strings.ToLower(trimmed[idx+2:]))
+		speakerText.WriteByte(' ')
 	}
-	userContent := userText.String()
-	if userContent == "" {
+	speech := speakerText.String()
+	if speech == "" {
 		return 0
 	}
 
 	hits := 0
 	for _, t := range terms {
-		if strings.Contains(userContent, t) {
+		if strings.Contains(speech, t) {
 			hits++
 		}
 	}

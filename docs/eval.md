@@ -346,15 +346,19 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 - single-session-assistant R@5: 0.982 → **1.000** (perfect recall)
 - Overall R@5: 0.849 → **0.876** (+2.7%) — beats prior best even without cross-encoder
 
-**LoCoMo per-category (gte-small + term overlap reranking):**
+**LoCoMo per-category (gte-small + speaker-agnostic turn indexing):**
 
 | Category | n | Recall@5 | MRR | NDCG@10 |
 |---|---|---|---|---|
-| **Overall** | **1,532** | **0.501** | **0.398** | **0.437** |
-| temporal | 321 | 0.606 | 0.462 | 0.521 |
-| open-domain | 841 | 0.498 | 0.344 | 0.403 |
-| single-hop | 281 | 0.427 | 0.510 | 0.467 |
-| multi-hop | 89 | 0.378 | 0.330 | 0.362 |
+| **Overall** | **1,532** | **0.547** | **0.433** | **0.472** |
+| temporal | 321 | **0.649** | 0.455 | 0.517 |
+| open-domain | 841 | **0.554** | **0.399** | **0.462** |
+| single-hop | 281 | 0.446 | **0.537** | 0.486 |
+| multi-hop | 89 | **0.430** | 0.355 | 0.352 |
+
+Speaker-agnostic turn indexing: stores each non-AI speaker's turns as separate
+chunks. LongMemEval gains +25% on single-session-user; LoCoMo gains +15% MRR
+across the board (both speakers' turns become independently searchable).
 
 **Key findings:**
 - Ghost significantly exceeds published BM25 and Contriever baselines (on easier _S dataset)
