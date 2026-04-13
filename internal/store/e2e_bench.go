@@ -569,8 +569,11 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 
 			answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
 			if err != nil {
-				cleanup()
-				return nil, fmt.Errorf("llm %s q%d: %w", mode, i, err)
+				// Log and skip LLM failures instead of aborting the whole benchmark.
+				// Rate limits, timeouts, and transient errors shouldn't lose partial results.
+				result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
+				result.Scores[mode] = 0
+				continue
 			}
 
 			result.Answers[mode] = answer
@@ -787,8 +790,9 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 
 				answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
 				if err != nil {
-					cleanup()
-					return nil, fmt.Errorf("llm %s %s: %w", mode, entry.SampleID, err)
+					result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
+					result.Scores[mode] = 0
+					continue
 				}
 
 				result.Answers[mode] = answer

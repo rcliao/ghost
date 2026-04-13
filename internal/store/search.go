@@ -587,8 +587,14 @@ func (s *SQLiteStore) getMemoryByID(ctx context.Context, id string) (*model.Memo
 // For each document, it chunks the content, scores each chunk, and uses
 // the max score. This handles long sessions where the relevant passage
 // may not be at the beginning.
+//
+// Scaling note: cross-encoder is CPU-bound and expensive. We cap:
+//   - chunk size at 1024 chars (fewer chunks per doc)
+//   - max 8 chunks per doc (prevents blowup on very long conversations)
+//   - total work capped at ~80 cross-encoder calls per query
 func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []SearchResult) []SearchResult {
-	const maxChunkLen = 512
+	const maxChunkLen = 1024
+	const maxChunksPerDoc = 8
 
 	// Build a flat list of all chunks with their document index
 	type chunkRef struct {
@@ -602,6 +608,9 @@ func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []Se
 		chunks := chunkForReranking(r.Content, maxChunkLen)
 		if len(chunks) == 0 {
 			chunks = []string{r.Content}
+		}
+		if len(chunks) > maxChunksPerDoc {
+			chunks = chunks[:maxChunksPerDoc]
 		}
 		for ci, c := range chunks {
 			allChunks = append(allChunks, c)
