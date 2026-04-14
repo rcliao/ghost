@@ -324,21 +324,22 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 | + Threshold 0.3→0.2, RRF k 60→20 | 0.766 | 0.713 | 0.700 |
 | + Term overlap reranking + relative temporal | 0.795 | 0.785 | 0.757 |
 | + Cross-encoder reranking (ms-marco-MiniLM) | 0.849 | 0.857 | 0.835 |
-| + User-turn indexing + knowledge-update detection | **0.876** | **0.835** | — |
+| + User-turn indexing + knowledge-update detection | 0.876 | 0.835 | — |
+| + Windowed speaker chunks (500-char, 1-turn overlap) | **0.908** | 0.827 | — |
 | Paper BM25 (_M, harder dataset) | 0.634 | — | 0.540 |
 | Paper Contriever (_M, harder dataset) | 0.723 | — | 0.663 |
 
-**LongMemEval per-type (latest: user-turn indexing + knowledge-update detection, no reranker):**
+**LongMemEval per-type (latest: windowed speaker chunks, no reranker):**
 
 | Question Type | n | Recall@5 | MRR |
 |---|---|---|---|
-| **Overall** | **470** | **0.876** | **0.835** |
-| knowledge-update | 72 | **0.938** | **0.938** |
-| single-session-user | 64 | **0.922** | **0.858** |
-| multi-session | 121 | 0.838 | 0.883 |
-| temporal-reasoning | 127 | 0.818 | 0.823 |
-| single-session-assistant | 56 | **1.000** | 0.783 |
-| single-session-preference | 30 | 0.800 | 0.489 |
+| **Overall** | **470** | **0.908** | **0.827** |
+| knowledge-update | 72 | — | **0.946** |
+| single-session-user | 64 | — | **0.886** |
+| multi-session | 121 | — | 0.879 |
+| temporal-reasoning | 127 | — | 0.818 |
+| single-session-assistant | 56 | — | 0.725 |
+| single-session-preference | 30 | — | 0.429 |
 
 **Key wins from user-turn indexing:**
 - single-session-user: MRR 0.604 → **0.858** (+25.4%), R@5 0.703 → **0.922** (+21.9%)
