@@ -142,6 +142,13 @@ func BuildEmbedCache(datasetPath, cachePath string, embedder embedding.Embedder,
 			content := sessionContent(session)
 			if content != "" {
 				addText(content)
+				// Also cache speaker-turn windowed chunks so BatchBenchInsert
+				// gets cache hits for the per-speaker chunks it generates.
+				for _, chunks := range extractSpeakerTurns(content) {
+					for _, chunk := range chunks {
+						addText(chunk)
+					}
+				}
 			}
 		}
 		if entry.Question != "" {

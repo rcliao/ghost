@@ -178,6 +178,16 @@ func TestLoCoMoBuildCache(t *testing.T) {
 				seen[h] = true
 				allTexts = append(allTexts, s.content)
 			}
+			// Also cache speaker-turn windowed chunks
+			for _, chunks := range extractSpeakerTurns(s.content) {
+				for _, chunk := range chunks {
+					ch := embedding.ContentHash(chunk)
+					if !seen[ch] {
+						seen[ch] = true
+						allTexts = append(allTexts, chunk)
+					}
+				}
+			}
 		}
 		for _, qa := range entry.QA {
 			h := embedding.ContentHash(qa.Question)

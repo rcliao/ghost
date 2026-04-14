@@ -303,8 +303,9 @@ var skipSpeakers = map[string]bool{
 }
 
 // extractSpeakerTurns groups lines by speaker prefix (e.g., "user:", "Caroline:").
-// Returns a map of speaker → concatenated turn text. Speakers with <50 chars of
-// speech are excluded (too trivial to index as a separate chunk).
+// Returns a map of speaker → slice of windowed chunk texts. Long speaker turns
+// are split into ~500-char windows (with 2-turn overlap) so each chunk stays
+// topically focused. Speakers with <50 chars of speech are excluded.
 //
 // AI/system speakers (assistant, ai, bot, system) are skipped — their output
 // isn't a source memory and indexing it adds noise + embedding cost.
@@ -312,7 +313,10 @@ var skipSpeakers = map[string]bool{
 // Format detection: a line starts with "Word:" (or "Word Name:") where the prefix
 // is <25 chars and contains only letters/digits/underscores/spaces. Handles
 // "user:"/"assistant:" transcripts and named-peer dialogues ("Caroline:"/"Melanie:").
-func extractSpeakerTurns(content string) map[string]string {
+func extractSpeakerTurns(content string) map[string][]string {
+	const maxChunkLen = 500
+	const overlapTurns = 1
+
 	speakerLines := make(map[string][]string)
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
@@ -320,13 +324,11 @@ func extractSpeakerTurns(content string) map[string]string {
 		if trimmed == "" {
 			continue
 		}
-		// Find speaker prefix: "SpeakerName: text"
 		idx := strings.Index(trimmed, ": ")
 		if idx <= 0 || idx >= 25 {
 			continue
 		}
 		prefix := trimmed[:idx]
-		// Only letters, digits, spaces, underscores in speaker name
 		valid := true
 		for _, r := range prefix {
 			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
@@ -345,12 +347,45 @@ func extractSpeakerTurns(content string) map[string]string {
 		speakerLines[speaker] = append(speakerLines[speaker], trimmed)
 	}
 
-	result := make(map[string]string)
+	result := make(map[string][]string)
 	for speaker, turns := range speakerLines {
+		// If all turns fit in one chunk, return as single chunk
 		joined := strings.Join(turns, "\n")
-		if len(joined) >= 50 {
-			result[speaker] = joined
+		if len(joined) < 50 {
+			continue
 		}
+		if len(joined) <= maxChunkLen {
+			result[speaker] = []string{joined}
+			continue
+		}
+
+		// Split into windowed chunks with overlap
+		var chunks []string
+		var current []string
+		currentLen := 0
+		for _, turn := range turns {
+			turnLen := len(turn) + 1
+			if currentLen+turnLen > maxChunkLen && len(current) > 0 {
+				chunks = append(chunks, strings.Join(current, "\n"))
+				// Keep last N turns for overlap
+				keep := overlapTurns
+				if keep > len(current) {
+					keep = len(current)
+				}
+				overlap := current[len(current)-keep:]
+				current = append([]string(nil), overlap...)
+				currentLen = 0
+				for _, c := range current {
+					currentLen += len(c) + 1
+				}
+			}
+			current = append(current, turn)
+			currentLen += turnLen
+		}
+		if len(current) > 0 {
+			chunks = append(chunks, strings.Join(current, "\n"))
+		}
+		result[speaker] = chunks
 	}
 	return result
 }
@@ -359,11 +394,11 @@ func extractSpeakerTurns(content string) map[string]string {
 // Kept for backwards compatibility; new code uses extractSpeakerTurns.
 func extractUserTurns(content string) string {
 	turns := extractSpeakerTurns(content)
-	if s, ok := turns["user"]; ok {
-		return s
+	if chunks, ok := turns["user"]; ok && len(chunks) > 0 {
+		return strings.Join(chunks, "\n")
 	}
-	if s, ok := turns["human"]; ok {
-		return s
+	if chunks, ok := turns["human"]; ok && len(chunks) > 0 {
+		return strings.Join(chunks, "\n")
 	}
 	return ""
 }
@@ -388,14 +423,17 @@ func (s *SQLiteStore) BatchBenchInsert(ctx context.Context, ns string, sessions 
 	for i, sess := range sessions {
 		allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: 0, text: sess.Content})
 		speakerTurns := extractSpeakerTurns(sess.Content)
-		// Sort speaker names for deterministic seq assignment
 		speakers := make([]string, 0, len(speakerTurns))
 		for sp := range speakerTurns {
 			speakers = append(speakers, sp)
 		}
 		sort.Strings(speakers)
-		for si, sp := range speakers {
-			allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: si + 1, text: speakerTurns[sp]})
+		seq := 1
+		for _, sp := range speakers {
+			for _, chunk := range speakerTurns[sp] {
+				allChunks = append(allChunks, chunkInfo{sessionIdx: i, seq: seq, text: chunk})
+				seq++
+			}
 		}
 	}
 

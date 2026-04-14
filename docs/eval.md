@@ -346,19 +346,31 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 - single-session-assistant R@5: 0.982 → **1.000** (perfect recall)
 - Overall R@5: 0.849 → **0.876** (+2.7%) — beats prior best even without cross-encoder
 
-**LoCoMo per-category (gte-small + speaker-agnostic turn indexing):**
+**LoCoMo per-category (best: windowed speaker chunks + edges + multi-query):**
 
 | Category | n | Recall@5 | MRR | NDCG@10 |
 |---|---|---|---|---|
-| **Overall** | **1,532** | **0.547** | **0.433** | **0.472** |
-| temporal | 321 | **0.649** | 0.455 | 0.517 |
-| open-domain | 841 | **0.554** | **0.399** | **0.462** |
-| single-hop | 281 | 0.446 | **0.537** | 0.486 |
-| multi-hop | 89 | **0.430** | 0.355 | 0.352 |
+| **Overall** | **1,532** | **0.750** | **0.595** | **0.642** |
+| single-hop | 281 | — | **0.630** | 0.583 |
+| multi-hop | 89 | — | **0.497** | 0.544 |
+| open-domain | 841 | — | **0.600** | 0.672 |
+| temporal | 321 | — | **0.576** | 0.644 |
 
-Speaker-agnostic turn indexing: stores each non-AI speaker's turns as separate
-chunks. LongMemEval gains +25% on single-session-user; LoCoMo gains +15% MRR
-across the board (both speakers' turns become independently searchable).
+**LoCoMo improvement journey (session-over-session):**
+- Baseline (session-only chunks): MRR 0.398, R@5 0.501
+- + speaker-agnostic turn indexing: MRR 0.433, R@5 0.547
+- + windowed speaker chunks (500-char windows, 2-turn overlap): MRR **0.595**, R@5 **0.750** (+49.5%)
+- + edge expansion (entity co-occurrence) and multi-query decomposition
+
+**Run with best config:**
+```bash
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LOCOMO=testdata/locomo/locomo10.json \
+GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
+GHOST_BENCH_EXPAND_EDGES=1 \
+GHOST_BENCH_MULTI_QUERY=1 \
+  go test ./internal/store/ -run TestLoCoMo -v -timeout 30m
+```
 
 **Key findings:**
 - Ghost significantly exceeds published BM25 and Contriever baselines (on easier _S dataset)
