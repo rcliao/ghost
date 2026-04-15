@@ -53,6 +53,20 @@ func TestLoCoMoPlus(t *testing.T) {
 
 	expandEdges := os.Getenv("GHOST_BENCH_EXPAND_EDGES") == "1"
 	multiQuery := os.Getenv("GHOST_BENCH_MULTI_QUERY") == "1"
+	llmHyde := os.Getenv("GHOST_BENCH_LLM_HYDE") == "1"
+	llmRewrite := os.Getenv("GHOST_BENCH_LLM_REWRITE") == "1"
+
+	var llm LLMClient
+	if llmHyde || llmRewrite {
+		llmModel := os.Getenv("GHOST_BENCH_LLM_MODEL")
+		if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+			llm = NewAnthropicClient(llmModel)
+			t.Logf("Using LLM for query transformation: %s", llm.Name())
+		} else {
+			llm = NewClaudeCLIClient(llmModel)
+			t.Logf("Using claude CLI for query transformation: %s", llm.Name())
+		}
+	}
 
 	cfg := LoCoMoPlusConfig{
 		DatasetPath:    datasetPath,
@@ -61,6 +75,9 @@ func TestLoCoMoPlus(t *testing.T) {
 		EmbedCachePath: cachePath,
 		ExpandEdges:    expandEdges,
 		MultiQuery:     multiQuery,
+		LLMHyde:        llmHyde,
+		LLMRewrite:     llmRewrite,
+		LLM:            llm,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},

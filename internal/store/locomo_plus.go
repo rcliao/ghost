@@ -47,7 +47,12 @@ type LoCoMoPlusConfig struct {
 	EmbedCachePath string
 	ExpandEdges    bool
 	MultiQuery     bool
-	ProgressFunc   func(done, total int)
+	// LLM-assisted retrieval: transform trigger query via LLM before searching.
+	// Ghost itself remains LLM-free — LLM runs in the benchmark orchestrator.
+	LLMHyde    bool      // if true, LLM writes hypothetical answer as search query
+	LLMRewrite bool      // if true, LLM rewrites query with synonyms/concepts
+	LLM        LLMClient // client used when LLMHyde or LLMRewrite is true
+	ProgressFunc func(done, total int)
 }
 
 // LoCoMoPlusReport holds aggregate results.
@@ -150,9 +155,18 @@ func RunLoCoMoPlus(cfg LoCoMoPlusConfig, newStore func() (*SQLiteStore, func(), 
 	// Run retrieval per trigger
 	for i, e := range entries {
 		expected := fmt.Sprintf("cue-%d", i)
+		query := e.TriggerQuery
+		// Optional LLM-assisted transformation (Ghost itself stays LLM-free)
+		if cfg.LLM != nil {
+			if cfg.LLMHyde {
+				query = hydeQuery(ctx, cfg.LLM, e.TriggerQuery)
+			} else if cfg.LLMRewrite {
+				query = rewriteQuery(ctx, cfg.LLM, e.TriggerQuery)
+			}
+		}
 		results, err := store.Search(ctx, SearchParams{
 			NS:          cfg.NS,
-			Query:       e.TriggerQuery,
+			Query:       query,
 			Limit:       searchLimit,
 			IncludeAll:  true,
 			ExpandEdges: cfg.ExpandEdges,
