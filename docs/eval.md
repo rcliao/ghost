@@ -315,6 +315,17 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache_plus.json \
 
 **Key finding**: LLM-assisted query transformation **10× retrieval quality** on cognitive memory. Ghost itself stays LLM-free — the LLM runs only in benchmark orchestration to transform the query string before calling Ghost's search API. This validates the architecture: **Ghost as LLM-free infrastructure + LLM-at-edge for cognitive reasoning**.
 
+**E2E LoCoMo-Plus with cognitive judge** (12-question sample, Haiku):
+
+| Mode | Overall | causal | state | goal | value |
+|------|---------|--------|-------|------|-------|
+| no-memory | 0.500 | 0.500 | 0.500 | 0.500 | 0.500 |
+| **ghost** | **0.750** | 1.000 | 0.500 | 0.667 | 0.833 |
+| ghost-rewrite | 0.708 | 0.667 | 0.667 | 0.667 | 0.833 |
+| oracle | 0.958 | 1.000 | 1.000 | 0.833 | 1.000 |
+
+**Counterintuitive insight**: E2E judges the response, not the retrieval rank. Even though `ghost-rewrite` won retrieval 10× over `ghost`, plain `ghost` wins E2E (0.75 vs 0.71). The LLM compensates for merely-related cues; rewrite's different retrievals sometimes hurt response quality. **Retrieval precision matters most when the LLM is rigid**; when the LLM adapts, good-enough retrieval suffices.
+
 **Usage:**
 ```bash
 # Baseline (pure retrieval)
