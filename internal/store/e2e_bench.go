@@ -551,6 +551,51 @@ func rewriteQuery(ctx context.Context, llm LLMClient, query string) string {
 	return strings.TrimSpace(out)
 }
 
+// compressSystemPrompt asks the LLM to extract the minimal set of facts
+// from retrieved memories that are relevant to the query. Outputs a compact
+// query-focused summary for the answering call to consume.
+//
+// Purpose: raw session chunks contain much off-topic conversation. Compressing
+// to query-relevant facts reduces context tokens and focuses the answerer.
+const compressSystemPrompt = `You are a helpful assistant extracting the most relevant facts from conversation memories for a specific question.
+
+You will see:
+- A user's QUESTION
+- Several conversation MEMORIES retrieved from past sessions
+
+Extract only the facts from the memories that are directly relevant to answering the question. Preserve specific details: names, dates, places, numbers, preferences. Omit unrelated content.
+
+Output format: a compact bulleted summary (1-5 bullets, 10-25 words each). If no memory is relevant, output "No relevant facts found."
+
+Do NOT answer the question yourself — just extract facts the memories contain.`
+
+// compressContext asks the LLM to extract query-relevant facts from memories.
+// Returns compressed text, or the original on LLM error.
+func compressContext(ctx context.Context, llm LLMClient, query string, memories []SearchResult) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("QUESTION: ")
+	sb.WriteString(query)
+	sb.WriteString("\n\nMEMORIES:\n")
+	for i, m := range memories {
+		content := m.Content
+		if len(content) > 3000 {
+			content = content[:3000] + "..."
+		}
+		fmt.Fprintf(&sb, "\n### Memory %d\n%s\n", i+1, content)
+	}
+
+	compressed, err := llm.Generate(ctx, compressSystemPrompt, sb.String())
+	if err != nil || len(strings.TrimSpace(compressed)) < 10 {
+		// Fallback to default formatting
+		return formatMemoryForLLM(query, memories, 30000)
+	}
+	// Wrap in the expected format
+	return "[Memories from previous conversations — compressed]\n\n" + strings.TrimSpace(compressed) + "\n\n[End of memories]\n\n"
+}
+
 // agentSearchSystemPrompt asks the LLM to inspect retrieval results and decide
 // whether to search again with a refined query, or stop. Enables iterative
 // multi-hop retrieval where each round builds on what was found.
@@ -799,6 +844,17 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 					showN = len(results)
 				}
 				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 50000) + entry.Question
+			case "ghost-compress":
+				// Ghost retrieves → LLM compresses to query-focused summary → LLM answers
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: entry.Question,
+					Limit: cfg.TopK, IncludeAll: true,
+				})
+				showN := 5
+				if showN > len(results) {
+					showN = len(results)
+				}
+				userMsg = compressContext(ctx, cfg.LLM, entry.Question, results[:showN]) + entry.Question
 			case "oracle":
 				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
@@ -1058,6 +1114,16 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 						showN = len(results)
 					}
 					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
+				case "ghost-compress":
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: qa.Question,
+						Limit: cfg.TopK, IncludeAll: true,
+					})
+					showN := 5
+					if showN > len(results) {
+						showN = len(results)
+					}
+					userMsg = compressContext(ctx, cfg.LLM, qa.Question, results[:showN]) + qa.Question
 				case "oracle":
 					evidenceSessions := evidenceToSessions(qa.Evidence)
 					var oracleResults []SearchResult

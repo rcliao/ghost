@@ -354,6 +354,11 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 			case "ghost-agent":
 				results := agentSearch(ctx, store, cfg.LLM, cfg.NS, e.TriggerQuery, cfg.TopK, 3)
 				userMsg = formatMemoryForLLM(e.TriggerQuery, capResults(results, 5), 30000) + e.TriggerQuery
+			case "ghost-compress":
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: e.TriggerQuery, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
 			case "oracle":
 				oracleResults := []SearchResult{{Memory: model.Memory{Content: e.CueDialogue}}}
 				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery

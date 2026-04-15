@@ -452,6 +452,8 @@ End-to-end evaluation: Ghost retrieves memories → LLM answers questions. Modes
 | `ghost` | Ghost retrieves → LLM answers | 1 call (answer) |
 | `ghost-hyde` | LLM writes hypothetical answer → Ghost searches with it → LLM answers | 2 calls (hyde + answer) |
 | `ghost-rewrite` | LLM rewrites query with synonyms/concepts → Ghost searches → LLM answers | 2 calls (rewrite + answer) |
+| `ghost-compress` | Ghost retrieves → LLM compresses to query-focused facts → LLM answers | 2 calls (compress + answer) |
+| `ghost-agent` | LLM iteratively refines search query (up to 3 rounds) → LLM answers | 4-7 calls |
 | `oracle` | Perfect evidence → LLM answers | 1 call (answer) |
 
 **Ghost stays LLM-free** — hyde/rewrite modes invoke the LLM from benchmark orchestration. The `Store.Search` API accepts pre-transformed query strings with no coupling to an LLM. This lets us test integration patterns cleanly.

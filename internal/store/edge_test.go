@@ -126,6 +126,42 @@ func TestEdgeInvalidRel(t *testing.T) {
 	}
 }
 
+// TestEdgeReasoningRels verifies the new reasoning edge types work end-to-end.
+func TestEdgeReasoningRels(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, PutParams{NS: "test", Key: "deadline", Content: "Big deadline Friday"})
+	s.Put(ctx, PutParams{NS: "test", Key: "anxiety", Content: "Feeling anxious"})
+	s.Put(ctx, PutParams{NS: "test", Key: "vegan", Content: "I am vegan"})
+	s.Put(ctx, PutParams{NS: "test", Key: "cheese", Content: "No cheese for me"})
+
+	tests := []struct {
+		rel     string
+		wantW   float64
+		fromKey string
+		toKey   string
+	}{
+		{"caused_by", 0.75, "anxiety", "deadline"},
+		{"implies", 0.8, "vegan", "cheese"},
+		{"prevents", 0.7, "vegan", "cheese"},
+	}
+	for _, tt := range tests {
+		edge, err := s.CreateEdge(ctx, EdgeParams{
+			FromNS: "test", FromKey: tt.fromKey,
+			ToNS: "test", ToKey: tt.toKey,
+			Rel: tt.rel,
+		})
+		if err != nil {
+			t.Errorf("%s: %v", tt.rel, err)
+			continue
+		}
+		if float64(edge.Weight) != tt.wantW {
+			t.Errorf("%s: weight=%f want %f", tt.rel, edge.Weight, tt.wantW)
+		}
+	}
+}
+
 func TestEdgeGetByNSKey(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

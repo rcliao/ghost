@@ -12,6 +12,8 @@ import (
 var validEdgeRels = map[string]bool{
 	"relates_to": true, "contradicts": true, "depends_on": true,
 	"refines": true, "contains": true, "merged_into": true,
+	// Reasoning relations
+	"caused_by": true, "prevents": true, "implies": true,
 }
 
 func init() {
@@ -27,7 +29,7 @@ func init() {
 	cmd.Flags().String("from-key", "", "Source key")
 	cmd.Flags().String("to-ns", "", "Target namespace (overrides --ns for target)")
 	cmd.Flags().String("to-key", "", "Target key")
-	cmd.Flags().StringP("rel", "r", "", "Relation: relates_to, contradicts, depends_on, refines, contains, merged_into")
+	cmd.Flags().StringP("rel", "r", "", "Relation: relates_to, contradicts, depends_on, refines, contains, merged_into, caused_by, prevents, implies")
 	cmd.Flags().Float64P("weight", "w", 0, "Edge weight (0.0-1.0, 0 means use default for rel type)")
 	cmd.Flags().Bool("rm", false, "Remove the edge")
 	cmd.Flags().Bool("list", false, "List all edges for a memory (requires --ns and --from-key)")
@@ -80,7 +82,7 @@ func runEdge(cmd *cobra.Command, args []string) error {
 	}
 
 	if !validEdgeRels[rel] {
-		return fmt.Errorf("invalid --rel %q — must be one of: relates_to, contradicts, depends_on, refines, contains, merged_into", rel)
+		return fmt.Errorf("invalid --rel %q — must be one of: relates_to, contradicts, depends_on, refines, contains, merged_into, caused_by, prevents, implies", rel)
 	}
 
 	if rm {

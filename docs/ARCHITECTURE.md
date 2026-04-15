@@ -88,14 +88,16 @@ Weighted, typed associations between memories for graph-based retrieval (spreadi
 Edge {
   FromID         string     // source memory ID
   ToID           string     // target memory ID
-  Rel            string     // relates_to | contradicts | depends_on | refines | contains | merged_into
+  Rel            string     // relates_to | contradicts | depends_on | refines | contains | merged_into | caused_by | prevents | implies
   Weight         float64    // 0.0–1.0, strength of association
   AccessCount    int        // incremented on co-retrieval
   LastAccessedAt *time.Time // for future decay calculation
 }
 ```
 
-Default weights by relation type: contradicts=0.9, refines=0.8, depends_on=0.7, contains=0.6, relates_to=0.5, merged_into=0.0 (audit trail only).
+Default weights by relation type:
+- **Core**: contradicts=0.9, refines=0.8, depends_on=0.7, contains=0.6, relates_to=0.5, merged_into=0.0 (audit trail only)
+- **Reasoning**: implies=0.8, caused_by=0.75, prevents=0.7 (for cognitive-memory traversal; not auto-linked, require explicit creation)
 
 **Auto-linking**: On `put`, Ghost computes embedding similarity against existing memories in the same namespace. Memories above the threshold (default 0.80, configurable via `GHOST_EDGE_THRESHOLD`) automatically get `relates_to` edges.
 

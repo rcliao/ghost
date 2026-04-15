@@ -99,6 +99,22 @@ type PutResult struct {
 }
 
 // validEdgeRels lists the accepted edge relation types.
+//
+// Core relations:
+//   - relates_to:  generic semantic similarity (auto-linked)
+//   - contradicts: conflicting fact (force-include during retrieval)
+//   - depends_on:  prerequisite memory (traverse before accessing the dependent)
+//   - refines:     later memory improves an earlier one
+//   - contains:    parent summary over children (LCM compression)
+//   - merged_into: audit trail for dedup merges
+//
+// Reasoning relations (for cognitive-memory traversal):
+//   - caused_by:   B is the cause of A ("I'm anxious" caused_by "deadline Friday")
+//   - prevents:    B prevents A ("I avoid gluten" prevents "I ate bread")
+//   - implies:     A implies B ("I'm a vegan" implies "I don't eat cheese")
+//
+// Reasoning edges are NOT auto-linked (require explicit curation or LLM-assisted
+// inference). Edge expansion traverses them with the same damping as core edges.
 var validEdgeRels = map[string]bool{
 	"relates_to":  true,
 	"contradicts": true,
@@ -106,16 +122,27 @@ var validEdgeRels = map[string]bool{
 	"refines":     true,
 	"contains":    true,
 	"merged_into": true,
+	// Reasoning relations
+	"caused_by": true,
+	"prevents":  true,
+	"implies":   true,
 }
 
 // defaultEdgeWeight returns the default weight for a given relation type.
+// Higher weight = stronger pull during edge expansion.
 func defaultEdgeWeight(rel string) float64 {
 	switch rel {
 	case "contradicts":
 		return 0.9
 	case "refines":
 		return 0.8
+	case "implies":
+		return 0.8 // strong logical link
+	case "caused_by":
+		return 0.75
 	case "depends_on":
+		return 0.7
+	case "prevents":
 		return 0.7
 	case "contains":
 		return 0.6
@@ -142,7 +169,7 @@ func edgeAutoLinkThreshold() float64 {
 // CreateEdge creates a weighted edge between two memories.
 func (s *SQLiteStore) CreateEdge(ctx context.Context, p EdgeParams) (*Edge, error) {
 	if !validEdgeRels[p.Rel] {
-		return nil, fmt.Errorf("invalid relation %q (valid: relates_to, contradicts, depends_on, refines, contains, merged_into)", p.Rel)
+		return nil, fmt.Errorf("invalid relation %q (valid: relates_to, contradicts, depends_on, refines, contains, merged_into, caused_by, prevents, implies)", p.Rel)
 	}
 
 	fromID, err := s.resolveMemoryID(ctx, p.FromNS, p.FromKey)

@@ -287,7 +287,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"ns":       prop("string", "Namespace (used for both from and to)"),
 			"from_key": prop("string", "Source memory key"),
 			"to_key":   prop("string", "Target memory key (required for create/remove)"),
-			"rel":      prop("string", "Relation type: relates_to, contradicts, depends_on, refines, contains, merged_into"),
+			"rel":      prop("string", "Relation type: relates_to, contradicts, depends_on, refines, contains, merged_into, caused_by, prevents, implies"),
 			"weight":   prop("number", "Edge weight 0.0-1.0 (0 = use default for rel type)"),
 			"op":       prop("string", "Operation: create (default), remove, list"),
 		}),
