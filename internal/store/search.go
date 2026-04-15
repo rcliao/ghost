@@ -186,6 +186,77 @@ func preferenceMarkerScore(content string) float64 {
 	return score
 }
 
+// extractQueryNames extracts likely person names from a query. Heuristic:
+// capitalized words that aren't at sentence start and aren't stopwords.
+// "Would Caroline pursue writing?" → ["caroline"]
+func extractQueryNames(query string) []string {
+	words := strings.Fields(query)
+	var names []string
+	seen := make(map[string]bool)
+	for i, w := range words {
+		w = strings.Trim(w, "?.,!\"'()[]{}:;")
+		if len(w) < 3 {
+			continue
+		}
+		// Must start with uppercase
+		first := w[0]
+		if first < 'A' || first > 'Z' {
+			continue
+		}
+		// Skip first word (could just be sentence start)
+		if i == 0 {
+			continue
+		}
+		lower := strings.ToLower(w)
+		if englishStopWords[lower] {
+			continue
+		}
+		if !seen[lower] {
+			seen[lower] = true
+			names = append(names, lower)
+		}
+	}
+	return names
+}
+
+// personMentionScore counts how many of a session's lines are spoken by
+// someone whose name matches one of the query's named entities. Returns
+// a normalized score (0-1) based on what fraction of speaker-prefixed lines
+// are from matching speakers.
+func personMentionScore(queryNames []string, content string) float64 {
+	if len(queryNames) == 0 {
+		return 0
+	}
+	nameSet := make(map[string]bool)
+	for _, n := range queryNames {
+		nameSet[n] = true
+	}
+
+	totalSpeaker := 0
+	matching := 0
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		idx := strings.Index(trimmed, ": ")
+		if idx <= 0 || idx >= 25 {
+			continue
+		}
+		prefix := strings.ToLower(trimmed[:idx])
+		totalSpeaker++
+		// Check if any of the query names appears in the speaker prefix
+		for name := range nameSet {
+			if strings.Contains(prefix, name) {
+				matching++
+				break
+			}
+		}
+	}
+	if totalSpeaker == 0 {
+		return 0
+	}
+	return float64(matching) / float64(totalSpeaker)
+}
+
 // userTermOverlap computes query term overlap against speaker-prefixed lines
 // (e.g., "user:", "Caroline:", "Melanie:"). This surfaces sessions where query
 // terms appear within actual speech rather than framing/narration, which is
@@ -453,6 +524,7 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	// Pre-compute term overlap scores for reranking (B/G improvement)
 	termOverlaps := make(map[string]float64, len(fused))
 	userOverlaps := make(map[string]float64, len(fused))
+	personScores := make(map[string]float64, len(fused))
 	preferenceScores := make(map[string]float64, len(fused))
 
 	// Detect knowledge-update intent: queries about current/updated facts
@@ -460,11 +532,19 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	updateIntent := hasUpdateIntent(p.Query)
 	preferenceIntent := hasPreferenceIntent(p.Query)
 
+	// Person-focused boost: when query mentions named entities, prefer
+	// sessions where those people speak. Helps multi-hop inferential queries.
+	queryNames := extractQueryNames(p.Query)
+	personIntent := len(queryNames) > 0
+
 	for _, f := range fused {
 		termOverlaps[f.result.ID] = queryTermOverlap(p.Query, f.result.Content)
 		userOverlaps[f.result.ID] = userTermOverlap(p.Query, f.result.Content)
 		if preferenceIntent {
 			preferenceScores[f.result.ID] = preferenceMarkerScore(f.result.Content)
+		}
+		if personIntent {
+			personScores[f.result.ID] = personMentionScore(queryNames, f.result.Content)
 		}
 	}
 
@@ -489,6 +569,15 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 			prefJ := preferenceScores[fused[j].result.ID]
 			si += prefI * 0.2 * si
 			sj += prefJ * 0.2 * sj
+		}
+
+		// Person-focused queries: boost sessions where the named person(s) speak.
+		// Critical for multi-hop inferential queries about specific people.
+		if personIntent {
+			pI := personScores[fused[i].result.ID]
+			pJ := personScores[fused[j].result.ID]
+			si += pI * 0.3 * si
+			sj += pJ * 0.3 * sj
 		}
 
 		if temporal || updateIntent {
