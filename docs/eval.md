@@ -326,6 +326,20 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache_plus.json \
 
 **Counterintuitive insight**: E2E judges the response, not the retrieval rank. Even though `ghost-rewrite` won retrieval 10× over `ghost`, plain `ghost` wins E2E (0.75 vs 0.71). The LLM compensates for merely-related cues; rewrite's different retrievals sometimes hurt response quality. **Retrieval precision matters most when the LLM is rigid**; when the LLM adapts, good-enough retrieval suffices.
 
+**Expanded 5-mode comparison** (12-question sample, Haiku):
+
+| Mode | Overall | causal | state | goal | value | LLM calls |
+|------|---------|--------|-------|------|-------|-----------|
+| no-memory | 0.542 | 0.500 | 0.500 | 0.500 | 0.667 | 1 |
+| **ghost** | **0.792** | 1.000 | 0.667 | 0.667 | 0.833 | 1 |
+| ghost-compress | 0.708 | 1.000 | 0.500 | 0.500 | 0.833 | 2 |
+| ghost-rewrite | 0.625 | 0.500 | 0.500 | 0.667 | 0.833 | 2 |
+| oracle | 0.875 | 1.000 | 1.000 | 0.667 | 0.833 | 1 |
+
+**Design principle validated**: Ghost's formatted retrieval (full sessions + query-relevant line highlighting with >>> prefix) is already well-tuned for LLM consumption. Pre-processing modes (rewrite, compress) that add extra LLM calls often hurt response quality by diverging from the user's original question intent.
+
+Plain `ghost` achieves **90% of oracle** (0.792 / 0.875) at the same LLM cost as `no-memory`.
+
 **Usage:**
 ```bash
 # Baseline (pure retrieval)
