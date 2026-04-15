@@ -49,6 +49,8 @@ type LoCoMoConfig struct {
 	EmbedCachePath string
 	ExpandEdges    bool // if true, build entity edges and expand during search
 	MultiQuery     bool // if true, decompose complex queries into sub-queries
+	PRF            bool // if true, run pseudo-relevance feedback for multi-hop
+	MMR            bool // if true, diversify top results via MMR
 	ProgressFunc   func(done, total int)
 }
 
@@ -296,6 +298,8 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 				IncludeAll:  true,
 				ExpandEdges: cfg.ExpandEdges,
 				MultiQuery:  cfg.MultiQuery,
+				PRF:         cfg.PRF,
+				MMR:         cfg.MMR,
 			})
 			if err != nil {
 				cleanup()

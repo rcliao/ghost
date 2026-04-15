@@ -28,6 +28,8 @@ type SearchParams struct {
 	Before        time.Time // if set, only return memories created before this time
 	MultiQuery    bool      // if true, decompose query into sub-queries for multi-hop retrieval
 	ExpandEdges   bool      // if true, expand results via 1-hop graph edges for multi-hop retrieval
+	PRF           bool      // if true, run pseudo-relevance feedback (re-query with expanded terms)
+	MMR           bool      // if true, diversify top results via Maximal Marginal Relevance
 }
 
 // SearchResult wraps a memory with optional match info.
@@ -537,6 +539,26 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 		results = s.expandSearchEdges(ctx, p, results, limit)
 	}
 
+	// Pseudo-relevance feedback: take top-3 results, extract distinctive terms,
+	// re-run search with expanded query. Helps inferential multi-hop queries
+	// where the answer is in sessions that don't directly share query terms
+	// (e.g., "What's Caroline's political leaning?" finds sessions discussing
+	// her views on taxes/welfare by expanding with those terms).
+	//
+	// Note: empirically PRF adds noise on LoCoMo (regressed -7% MRR) when top-3
+	// seeds are unreliable. Prefer MMR diversification for multi-hop.
+	if p.PRF && len(results) >= 3 {
+		results = s.pseudoRelevanceFeedback(ctx, p, results, limit)
+	}
+
+	// MMR diversification: re-rank top candidates to favor diversity.
+	// Note: empirically MMR hurts LoCoMo retrieval (-42% MRR) because it
+	// reorders the full list and pushes relevant near-duplicates far down.
+	// Kept behind flag as experimental infrastructure for future refinement.
+	if p.MMR && len(results) > 1 && s.embedder != nil {
+		results = s.mmrDiversify(ctx, p.Query, results)
+	}
+
 	// Cross-encoder reranking with MaxP (max passage) scoring:
 	// Rerank the top-N candidates using cross-encoder with chunked scoring.
 	// Only rerank top candidates to keep latency reasonable.
@@ -556,6 +578,198 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 // to find connected memories that might be missed by keyword/vector search.
 // This helps multi-hop queries where the answer spans multiple sessions
 // connected by relates_to, depends_on, or refines edges.
+// mmrDiversify re-orders results using Maximal Marginal Relevance (MMR).
+// Carbonell & Goldstein 1998: MMR = λ·sim(d, q) - (1-λ)·max_sim(d, picked).
+// Favors diversity in top-k when multi-hop queries need different evidence.
+//
+// λ = 0.7 (moderate diversity bias). Uses query and candidate embeddings.
+// Only re-orders the top-N candidates where N=min(limit*2, len(results)).
+func (s *SQLiteStore) mmrDiversify(ctx context.Context, query string, results []SearchResult) []SearchResult {
+	const lambda = 0.7
+	rerankN := len(results)
+	if rerankN < 2 {
+		return results
+	}
+
+	queryVec, err := s.embedder.Embed(ctx, query)
+	if err != nil {
+		return results
+	}
+
+	// Need content embeddings for MMR. Embed result contents (batch).
+	texts := make([]string, rerankN)
+	for i, r := range results[:rerankN] {
+		texts[i] = r.Content
+	}
+	vecs, err := embedding.EmbedBatch(ctx, s.embedder, texts)
+	if err != nil || len(vecs) != rerankN {
+		return results
+	}
+
+	// Query similarity for each candidate (the "relevance" term)
+	qSim := make([]float64, rerankN)
+	for i, v := range vecs {
+		qSim[i] = embedding.CosineSimilarity(queryVec, v)
+	}
+
+	// Greedy MMR selection
+	picked := make([]int, 0, rerankN)
+	pickedSet := make(map[int]bool, rerankN)
+	// Pick first result (highest relevance)
+	best := 0
+	for i := 1; i < rerankN; i++ {
+		if qSim[i] > qSim[best] {
+			best = i
+		}
+	}
+	picked = append(picked, best)
+	pickedSet[best] = true
+
+	for len(picked) < rerankN {
+		bestScore := -1e9
+		bestIdx := -1
+		for i := 0; i < rerankN; i++ {
+			if pickedSet[i] {
+				continue
+			}
+			// max similarity to already-picked
+			maxSim := -1e9
+			for _, p := range picked {
+				sim := embedding.CosineSimilarity(vecs[i], vecs[p])
+				if sim > maxSim {
+					maxSim = sim
+				}
+			}
+			mmr := lambda*qSim[i] - (1-lambda)*maxSim
+			if mmr > bestScore {
+				bestScore = mmr
+				bestIdx = i
+			}
+		}
+		if bestIdx == -1 {
+			break
+		}
+		picked = append(picked, bestIdx)
+		pickedSet[bestIdx] = true
+	}
+
+	out := make([]SearchResult, len(picked))
+	for i, idx := range picked {
+		out[i] = results[idx]
+	}
+	return out
+}
+
+// pseudoRelevanceFeedback extracts distinctive terms from top-3 results and
+// re-runs search with an expanded query. Uses simple term frequency: terms
+// that appear in all top-3 results but aren't in the query are likely
+// relevant. Merges original and expanded results via RRF.
+func (s *SQLiteStore) pseudoRelevanceFeedback(ctx context.Context, p SearchParams, initial []SearchResult, limit int) []SearchResult {
+	// Collect query terms (to exclude from expansion)
+	queryTerms := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(p.Query)) {
+		w = strings.Trim(w, "?.,!\"'()[]{}:;")
+		if len(w) > 2 {
+			queryTerms[w] = true
+		}
+	}
+
+	// Count term frequency across top-3 results (only substantive terms)
+	topN := 3
+	if topN > len(initial) {
+		topN = len(initial)
+	}
+	termCounts := make(map[string]int)
+	for i := 0; i < topN; i++ {
+		// Use per-result term set to count document frequency, not total mentions
+		seenInDoc := make(map[string]bool)
+		for _, w := range strings.Fields(strings.ToLower(initial[i].Content)) {
+			w = strings.Trim(w, "?.,!\"'()[]{}:;")
+			if len(w) < 4 || englishStopWords[w] || queryTerms[w] {
+				continue
+			}
+			if !seenInDoc[w] {
+				seenInDoc[w] = true
+				termCounts[w]++
+			}
+		}
+	}
+
+	// Keep terms that appear in ≥2 of top-3 (strong signal of shared topic)
+	type termScore struct {
+		term  string
+		count int
+	}
+	var candidates []termScore
+	for term, cnt := range termCounts {
+		if cnt >= 2 {
+			candidates = append(candidates, termScore{term: term, count: cnt})
+		}
+	}
+	// Sort by count descending, take top 5
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].count > candidates[j].count
+	})
+	if len(candidates) > 5 {
+		candidates = candidates[:5]
+	}
+	if len(candidates) == 0 {
+		return initial
+	}
+
+	// Build expanded query: original + top expansion terms
+	expansion := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		expansion = append(expansion, c.term)
+	}
+	expandedQuery := p.Query + " " + strings.Join(expansion, " ")
+
+	// Re-run search with expanded query (no recursion)
+	subP := p
+	subP.Query = expandedQuery
+	subP.PRF = false
+	subP.ExpandEdges = false // already done in initial pass
+	subP.MultiQuery = false
+
+	expanded, err := s.Search(ctx, subP)
+	if err != nil {
+		return initial
+	}
+
+	// Merge via RRF: original retrieval signal + expanded signal
+	ranks := make(map[string][]int)
+	memByID := make(map[string]SearchResult)
+	for i, r := range initial {
+		ranks[r.ID] = append(ranks[r.ID], i+1)
+		memByID[r.ID] = r
+	}
+	for i, r := range expanded {
+		ranks[r.ID] = append(ranks[r.ID], i+1)
+		if _, ok := memByID[r.ID]; !ok {
+			memByID[r.ID] = r
+		}
+	}
+
+	type fused struct {
+		result SearchResult
+		score  float64
+	}
+	var out []fused
+	for id, rs := range ranks {
+		out = append(out, fused{result: memByID[id], score: rrfScore(rs, 20)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].score > out[j].score })
+
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	results := make([]SearchResult, len(out))
+	for i, f := range out {
+		results[i] = f.result
+	}
+	return results
+}
+
 func (s *SQLiteStore) expandSearchEdges(ctx context.Context, p SearchParams, results []SearchResult, limit int) []SearchResult {
 	// Only expand from top-5 seeds to keep it fast
 	seedN := 5
