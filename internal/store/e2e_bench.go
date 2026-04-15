@@ -38,7 +38,9 @@ type E2EConfig struct {
 	TopK         int    // number of memories to retrieve (default 5)
 	NS           string
 	LLM          LLMClient
-	Modes        []string // subset of: "no-memory", "ghost", "oracle"
+	Modes        []string // subset of: "no-memory", "ghost", "ghost-hyde", "ghost-rewrite", "oracle"
+	LLMJudge     bool     // if true, use LLM-as-judge scoring (correct=1, partial=0.5, wrong=0)
+	Judge        LLMClient // judge LLM (defaults to LLM if unset)
 	ProgressFunc func(done, total int)
 }
 
@@ -426,6 +428,84 @@ var stopWords = map[string]bool{
 
 func isStopWord(w string) bool { return stopWords[w] }
 
+// ── LLM-as-judge scorer ───────────────────────────────────────────
+//
+// Alternative to token-F1 scoring: an LLM judges whether the prediction
+// is correct/partial/wrong given the gold answer. Scoring rule from
+// LoCoMo-Plus: correct=1.0, partial=0.5, wrong=0.0.
+//
+// Opt-in via cfg.LLMJudge = true. Uses the same LLM client as generation
+// but with a deterministic, evaluation-focused system prompt.
+
+const llmJudgeSystemPrompt = `You are an evaluator judging whether a prediction answers a question correctly, given the gold answer. Reply with ONE word only:
+- "correct" if the prediction fully contains the gold answer or its equivalent meaning
+- "partial" if the prediction contains some but not all of the gold information, or is close but imprecise
+- "wrong" if the prediction is incorrect, refuses to answer, or omits the gold fact entirely
+
+Output ONLY one word: correct, partial, or wrong.`
+
+// llmJudgeScore asks the LLM to classify prediction vs gold as correct/partial/wrong.
+// Returns 1.0 / 0.5 / 0.0 respectively. On error, returns -1 (caller falls back).
+func llmJudgeScore(ctx context.Context, llm LLMClient, question, prediction, gold string) float64 {
+	msg := fmt.Sprintf("Question: %s\n\nGold answer: %s\n\nPrediction: %s\n\nLabel:", question, gold, prediction)
+	out, err := llm.Generate(ctx, llmJudgeSystemPrompt, msg)
+	if err != nil {
+		return -1
+	}
+	out = strings.ToLower(strings.TrimSpace(out))
+	// Be lenient with punctuation/leading words
+	switch {
+	case strings.HasPrefix(out, "correct"):
+		return 1.0
+	case strings.HasPrefix(out, "partial"):
+		return 0.5
+	case strings.HasPrefix(out, "wrong"):
+		return 0.0
+	}
+	// Scan for keyword anywhere
+	if strings.Contains(out, "correct") {
+		return 1.0
+	}
+	if strings.Contains(out, "partial") {
+		return 0.5
+	}
+	if strings.Contains(out, "wrong") {
+		return 0.0
+	}
+	return -1
+}
+
+// ── LLM-assisted retrieval helpers ───────────────────────────────
+//
+// These helpers use an LLM *outside* Ghost to transform queries before
+// searching. Ghost itself stays LLM-free — it's the caller's orchestration
+// layer that optionally invokes the LLM. This lets us benchmark integration
+// patterns (HyDE, query rewriting) without coupling Ghost to any LLM.
+
+const hydeSystemPrompt = `You are a helpful assistant generating a hypothetical response to a user's question. The response will be used as a search query to retrieve relevant memories. Write a 2-3 sentence direct answer as if you already knew the answer. Use specific details, names, and concepts. Do NOT say "I don't know" — invent plausible specifics. Output ONLY the hypothetical answer, no preamble.`
+
+const rewriteSystemPrompt = `You are a helpful assistant rewriting a user's question to maximize retrieval from a memory system. Expand the query with synonyms, related concepts, and likely topics the answer would discuss. Keep important names and entities. Output a single line of 20-40 words. No preamble, no bullet points.`
+
+// hydeQuery calls the LLM to generate a hypothetical answer for retrieval.
+// Falls back to the original query on error.
+func hydeQuery(ctx context.Context, llm LLMClient, query string) string {
+	out, err := llm.Generate(ctx, hydeSystemPrompt, query)
+	if err != nil || len(strings.TrimSpace(out)) < 10 {
+		return query
+	}
+	// Combine original query with hypothetical for best of both worlds
+	return query + " " + strings.TrimSpace(out)
+}
+
+// rewriteQuery calls the LLM to expand the query with related terms.
+func rewriteQuery(ctx context.Context, llm LLMClient, query string) string {
+	out, err := llm.Generate(ctx, rewriteSystemPrompt, query)
+	if err != nil || len(strings.TrimSpace(out)) < 10 {
+		return query
+	}
+	return strings.TrimSpace(out)
+}
+
 // ── System Prompt (#5) ────────────────────────────────────────────
 
 const e2eSystemPrompt = `You are a personal assistant answering questions from a user's conversation history. Memories from previous conversations are provided below.
@@ -555,6 +635,30 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 					showN = len(results)
 				}
 				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 50000) + entry.Question
+			case "ghost-hyde":
+				// LLM generates hypothetical answer, Ghost searches with it
+				searchQuery := hydeQuery(ctx, cfg.LLM, entry.Question)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: searchQuery,
+					Limit: cfg.TopK, IncludeAll: true,
+				})
+				showN := 5
+				if showN > len(results) {
+					showN = len(results)
+				}
+				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 50000) + entry.Question
+			case "ghost-rewrite":
+				// LLM rewrites query with synonyms/concepts, Ghost searches
+				searchQuery := rewriteQuery(ctx, cfg.LLM, entry.Question)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: searchQuery,
+					Limit: cfg.TopK, IncludeAll: true,
+				})
+				showN := 5
+				if showN > len(results) {
+					showN = len(results)
+				}
+				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 50000) + entry.Question
 			case "oracle":
 				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
@@ -578,6 +682,16 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 
 			result.Answers[mode] = answer
 			answerScores := scoreAnswer(answer, entry.Answer)
+			if cfg.LLMJudge {
+				judge := cfg.Judge
+				if judge == nil {
+					judge = cfg.LLM
+				}
+				if js := llmJudgeScore(ctx, judge, entry.Question, answer, entry.Answer); js >= 0 {
+					answerScores["llm_judge"] = js
+					answerScores["score"] = js // judge takes precedence
+				}
+			}
 			result.Scores[mode] = answerScores["score"]
 
 			// Aggregate all metrics
@@ -775,6 +889,28 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 						showN = len(results)
 					}
 					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
+				case "ghost-hyde":
+					searchQuery := hydeQuery(ctx, cfg.LLM, qa.Question)
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: searchQuery,
+						Limit: cfg.TopK, IncludeAll: true,
+					})
+					showN := 5
+					if showN > len(results) {
+						showN = len(results)
+					}
+					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
+				case "ghost-rewrite":
+					searchQuery := rewriteQuery(ctx, cfg.LLM, qa.Question)
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: searchQuery,
+						Limit: cfg.TopK, IncludeAll: true,
+					})
+					showN := 5
+					if showN > len(results) {
+						showN = len(results)
+					}
+					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
 				case "oracle":
 					evidenceSessions := evidenceToSessions(qa.Evidence)
 					var oracleResults []SearchResult
@@ -797,6 +933,16 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 
 				result.Answers[mode] = answer
 				answerScores := scoreAnswer(answer, qa.Answer)
+				if cfg.LLMJudge {
+					judge := cfg.Judge
+					if judge == nil {
+						judge = cfg.LLM
+					}
+					if js := llmJudgeScore(ctx, judge, qa.Question, answer, qa.Answer); js >= 0 {
+						answerScores["llm_judge"] = js
+						answerScores["score"] = js
+					}
+				}
 				result.Scores[mode] = answerScores["score"]
 
 				// Aggregate metrics

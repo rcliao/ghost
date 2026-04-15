@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/rcliao/ghost/internal/embedding"
@@ -69,13 +70,20 @@ func TestE2ELongMemEval(t *testing.T) {
 		t.Logf("Using Claude CLI: %s", llm.Name())
 	}
 
+	modes := []string{"no-memory", "ghost", "oracle"}
+	if s := os.Getenv("GHOST_BENCH_MODES"); s != "" {
+		modes = strings.Split(s, ",")
+	}
+	llmJudge := os.Getenv("GHOST_BENCH_LLM_JUDGE") == "1"
+
 	cfg := E2EConfig{
 		DatasetPath:  datasetPath,
 		Limit:        limit,
 		PerTypeLimit: perTypeLimit,
 		TopK:         5,
 		LLM:          llm,
-		Modes:        []string{"no-memory", "ghost", "oracle"},
+		LLMJudge:     llmJudge,
+		Modes:        modes,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},
@@ -99,8 +107,6 @@ func TestE2ELongMemEval(t *testing.T) {
 	// Print summary
 	t.Logf("\n=== E2E Benchmark Results (LLM: %s) ===", report.LLM)
 	t.Logf("Dataset: %s, Questions: %d", report.Dataset, report.Total)
-
-	modes := []string{"no-memory", "ghost", "oracle"}
 
 	// Overall
 	t.Logf("")
@@ -214,12 +220,19 @@ func TestE2ELoCoMo(t *testing.T) {
 		t.Logf("Using Claude CLI: %s", llm.Name())
 	}
 
+	modes := []string{"no-memory", "ghost", "oracle"}
+	if s := os.Getenv("GHOST_BENCH_MODES"); s != "" {
+		modes = strings.Split(s, ",")
+	}
+	llmJudge := os.Getenv("GHOST_BENCH_LLM_JUDGE") == "1"
+
 	cfg := E2EConfig{
 		DatasetPath:  datasetPath,
 		PerTypeLimit: perCatLimit,
 		TopK:         5,
 		LLM:          llm,
-		Modes:        []string{"no-memory", "ghost", "oracle"},
+		LLMJudge:     llmJudge,
+		Modes:        modes,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},
@@ -243,8 +256,6 @@ func TestE2ELoCoMo(t *testing.T) {
 	// Print summary
 	t.Logf("\n=== E2E LoCoMo Results (LLM: %s) ===", report.LLM)
 	t.Logf("Dataset: %s, Questions: %d", report.Dataset, report.Total)
-
-	modes := []string{"no-memory", "ghost", "oracle"}
 
 	t.Logf("")
 	t.Logf("── Overall ──")

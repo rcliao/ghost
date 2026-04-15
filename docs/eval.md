@@ -289,6 +289,34 @@ GHOST_BENCH_QUESTION=42 \
 
 **Protocol:** For each question, ingests ~50 timestamped chat sessions via `BenchInsert()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
 
+### LoCoMo-Plus (2026)
+
+[LoCoMo-Plus](https://arxiv.org/abs/2602.10715v1) is a 2026 extension of LoCoMo that adds a "Cognitive" category: 401 cue-trigger pairs across four relation types (causal, state, goal, value). The benchmark tests whether a memory system can retrieve a semantically-disconnected cue given a later trigger — e.g., cue "I'm learning to say no" retrieved from trigger "I volunteered for that project and now I'm overwhelmed".
+
+**Setup:**
+
+```bash
+curl -L https://raw.githubusercontent.com/xjtuleeyf/Locomo-Plus/main/data/locomo_plus.json \
+  -o testdata/locomo/locomo_plus.json
+
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_LOCOMO_PLUS=testdata/locomo/locomo_plus.json \
+GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache_plus.json \
+  go test ./internal/store/ -run TestLoCoMoPlus -v -timeout 30m
+```
+
+**Baseline results (retrieval only, no LLM assistance):**
+
+| Relation Type | n | MRR | R@5 | R@10 |
+|---|---|---|---|---|
+| **Overall** | **401** | **0.029** | low | low |
+| causal | 101 | 0.080 | ~10% | ~16% |
+| state | 100 | 0.012 | ~1% | ~2% |
+| goal | 100 | 0.016 | ~2% | ~3% |
+| value | 100 | 0.010 | ~1% | ~2% |
+
+Pure retrieval fails at cognitive memory — cues and triggers are designed to be semantically disconnected. This is the **natural proving ground for LLM-assisted retrieval** (hyde/rewrite modes).
+
 ### LoCoMo (Snap Research, 2024)
 
 Benchmark for long-term conversational memory: 10 conversations (~27 sessions each, ~300 turns), 1,986 QA pairs across 5 categories.
@@ -392,10 +420,21 @@ GHOST_BENCH_MULTI_QUERY=1 \
 
 ### E2E Benchmark (Ghost + LLM)
 
-End-to-end evaluation: Ghost retrieves memories → LLM answers questions. Three modes compared:
-- **no-memory**: LLM answers with no context (baseline)
-- **ghost**: LLM answers with Ghost-retrieved top-5 sessions + highlighting
-- **oracle**: LLM answers with ground-truth evidence sessions (upper bound)
+End-to-end evaluation: Ghost retrieves memories → LLM answers questions. Modes compared (select via `GHOST_BENCH_MODES=mode1,mode2,...`):
+
+| Mode | Description | LLM usage |
+|------|-------------|-----------|
+| `no-memory` | LLM alone, no Ghost | 1 call (answer) |
+| `ghost` | Ghost retrieves → LLM answers | 1 call (answer) |
+| `ghost-hyde` | LLM writes hypothetical answer → Ghost searches with it → LLM answers | 2 calls (hyde + answer) |
+| `ghost-rewrite` | LLM rewrites query with synonyms/concepts → Ghost searches → LLM answers | 2 calls (rewrite + answer) |
+| `oracle` | Perfect evidence → LLM answers | 1 call (answer) |
+
+**Ghost stays LLM-free** — hyde/rewrite modes invoke the LLM from benchmark orchestration. The `Store.Search` API accepts pre-transformed query strings with no coupling to an LLM. This lets us test integration patterns cleanly.
+
+**Scoring options:**
+- Default: token-F1 + flexible contains + token recall (max-signal)
+- `GHOST_BENCH_LLM_JUDGE=1`: LLM-as-judge (correct=1.0, partial=0.5, wrong=0.0) — matches LoCoMo-Plus evaluation methodology
 
 **LongMemEval E2E:**
 ```bash
