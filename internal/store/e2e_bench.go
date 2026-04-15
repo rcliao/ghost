@@ -444,6 +444,51 @@ const llmJudgeSystemPrompt = `You are an evaluator judging whether a prediction 
 
 Output ONLY one word: correct, partial, or wrong.`
 
+// cognitiveJudgeSystemPrompt judges whether an LLM's response demonstrates
+// awareness of the latent constraint revealed by an earlier cue dialogue
+// (LoCoMo-Plus cognitive memory evaluation).
+const cognitiveJudgeSystemPrompt = `You are evaluating whether an assistant's response reflects awareness of a latent constraint the user expressed earlier in their conversation history.
+
+You will see:
+- A CUE: An earlier exchange revealing the user's value, goal, state, or causal link
+- A TRIGGER: A later message from the user that seems to conflict with or build on the cue
+- A RESPONSE: The assistant's response to the trigger
+
+Classify the response as:
+- "correct" if it explicitly connects to the cue, references the earlier context, or shows memory awareness
+- "partial" if it addresses the trigger appropriately but doesn't reference the cue
+- "wrong" if it ignores both the cue and the user's situation, or gives a generic answer unrelated to context
+
+Output ONE word: correct, partial, or wrong.`
+
+// cognitiveJudge scores whether a response reflects awareness of the cue.
+func cognitiveJudge(ctx context.Context, judge LLMClient, cue, trigger, response string) float64 {
+	msg := fmt.Sprintf("CUE:\n%s\n\nTRIGGER:\n%s\n\nRESPONSE:\n%s\n\nLabel:", cue, trigger, response)
+	out, err := judge.Generate(ctx, cognitiveJudgeSystemPrompt, msg)
+	if err != nil {
+		return -1
+	}
+	out = strings.ToLower(strings.TrimSpace(out))
+	switch {
+	case strings.HasPrefix(out, "correct"):
+		return 1.0
+	case strings.HasPrefix(out, "partial"):
+		return 0.5
+	case strings.HasPrefix(out, "wrong"):
+		return 0.0
+	}
+	if strings.Contains(out, "correct") {
+		return 1.0
+	}
+	if strings.Contains(out, "partial") {
+		return 0.5
+	}
+	if strings.Contains(out, "wrong") {
+		return 0.0
+	}
+	return -1
+}
+
 // llmJudgeScore asks the LLM to classify prediction vs gold as correct/partial/wrong.
 // Returns 1.0 / 0.5 / 0.0 respectively. On error, returns -1 (caller falls back).
 func llmJudgeScore(ctx context.Context, llm LLMClient, question, prediction, gold string) float64 {
@@ -504,6 +549,93 @@ func rewriteQuery(ctx context.Context, llm LLMClient, query string) string {
 		return query
 	}
 	return strings.TrimSpace(out)
+}
+
+// agentSearchSystemPrompt asks the LLM to inspect retrieval results and decide
+// whether to search again with a refined query, or stop. Enables iterative
+// multi-hop retrieval where each round builds on what was found.
+const agentSearchSystemPrompt = `You are a search agent inspecting retrieved memories and deciding whether more retrieval is needed.
+
+Given:
+- The user's question
+- Memories retrieved so far (possibly incomplete)
+
+Output ONE of these two lines:
+1. "STOP" if the memories contain enough information to answer the question
+2. "SEARCH: <refined query>" if more memories are needed (refined query should use different terms/concepts than the original)
+
+Do not explain. Output exactly one line.`
+
+// agentSearch runs up to maxRounds of iterative retrieval with LLM-driven
+// query refinement. Returns the combined deduplicated result set.
+//
+// Each round: LLM sees retrieved-so-far and decides STOP or refines the query.
+// Ghost's Search stays LLM-free — LLM only guides the orchestrator.
+func agentSearch(ctx context.Context, store *SQLiteStore, llm LLMClient, ns, initialQuery string, topK, maxRounds int) []SearchResult {
+	if maxRounds <= 0 {
+		maxRounds = 3
+	}
+	seen := make(map[string]bool)
+	var combined []SearchResult
+	query := initialQuery
+
+	for round := 0; round < maxRounds; round++ {
+		results, err := store.Search(ctx, SearchParams{
+			NS: ns, Query: query, Limit: topK, IncludeAll: true,
+		})
+		if err != nil {
+			break
+		}
+		// Merge results deduplicated by key
+		for _, r := range results {
+			if !seen[r.Key] {
+				seen[r.Key] = true
+				combined = append(combined, r)
+			}
+		}
+
+		// Last round: no need to ask LLM if we should stop
+		if round == maxRounds-1 {
+			break
+		}
+
+		// Build prompt summarizing retrieval state
+		var sb strings.Builder
+		sb.WriteString("Question: ")
+		sb.WriteString(initialQuery)
+		sb.WriteString("\n\nMemories retrieved so far:\n")
+		showN := 3
+		if showN > len(combined) {
+			showN = len(combined)
+		}
+		for i := 0; i < showN; i++ {
+			snippet := combined[i].Content
+			if len(snippet) > 300 {
+				snippet = snippet[:300] + "..."
+			}
+			fmt.Fprintf(&sb, "[%d] %s\n", i+1, snippet)
+		}
+		decision, err := llm.Generate(ctx, agentSearchSystemPrompt, sb.String())
+		if err != nil {
+			break
+		}
+		decision = strings.TrimSpace(decision)
+		if strings.HasPrefix(strings.ToUpper(decision), "STOP") {
+			break
+		}
+		if strings.HasPrefix(strings.ToUpper(decision), "SEARCH:") {
+			refined := strings.TrimSpace(decision[len("SEARCH:"):])
+			if len(refined) < 5 {
+				break
+			}
+			query = refined
+			continue
+		}
+		// If LLM output doesn't match format, stop
+		break
+	}
+
+	return combined
 }
 
 // ── System Prompt (#5) ────────────────────────────────────────────
@@ -654,6 +786,14 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 					NS: cfg.NS, Query: searchQuery,
 					Limit: cfg.TopK, IncludeAll: true,
 				})
+				showN := 5
+				if showN > len(results) {
+					showN = len(results)
+				}
+				userMsg = formatMemoryForLLM(entry.Question, results[:showN], 50000) + entry.Question
+			case "ghost-agent":
+				// Iterative LLM-driven retrieval (up to 3 rounds)
+				results := agentSearch(ctx, store, cfg.LLM, cfg.NS, entry.Question, cfg.TopK, 3)
 				showN := 5
 				if showN > len(results) {
 					showN = len(results)
@@ -906,6 +1046,13 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 						NS: cfg.NS, Query: searchQuery,
 						Limit: cfg.TopK, IncludeAll: true,
 					})
+					showN := 5
+					if showN > len(results) {
+						showN = len(results)
+					}
+					userMsg = formatMemoryForLLM(qa.Question, results[:showN], 50000) + qa.Question
+				case "ghost-agent":
+					results := agentSearch(ctx, store, cfg.LLM, cfg.NS, qa.Question, cfg.TopK, 3)
 					showN := 5
 					if showN > len(results) {
 						showN = len(results)

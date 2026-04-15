@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // ── LoCoMo-Plus dataset (2026) ────────────────────────────────────
@@ -225,4 +227,196 @@ func RunLoCoMoPlus(cfg LoCoMoPlusConfig, newStore func() (*SQLiteStore, func(), 
 	// Keep types sorted in iteration downstream (stable output)
 	_ = sort.StringsAreSorted
 	return report, nil
+}
+
+// ── LoCoMo-Plus E2E ──────────────────────────────────────────────
+//
+// Full pipeline: Ghost retrieves cue from trigger → LLM generates response →
+// cognitive judge scores whether response reflects awareness of the latent
+// constraint. Measures Ghost+LLM integration on cognitive memory, which is
+// LoCoMo-Plus's novel contribution.
+
+// LoCoMoPlusE2EReport holds E2E results.
+type LoCoMoPlusE2EReport struct {
+	Timestamp time.Time                     `json:"timestamp"`
+	Dataset   string                        `json:"dataset"`
+	LLM       string                        `json:"llm"`
+	Total     int                           `json:"total"`
+	ByType    map[string]*E2ETypeAgg        `json:"by_type"`
+	Overall   map[string]map[string]float64 `json:"overall"` // mode → metric → value
+	Results   []E2EResult                   `json:"results,omitempty"`
+}
+
+const cognitiveResponderPrompt = `You are a personal assistant with access to the user's conversation history. The user just sent you a message. Memories from earlier conversations are provided to help you respond with awareness of the user's context, values, and goals.
+
+Respond to the user directly. If memories reveal something important about their situation (e.g., a stated value, ongoing struggle, or earlier goal), reference it naturally. Keep responses concise (2-3 sentences).`
+
+// RunE2ELoCoMoPlus runs the full cognitive-memory E2E pipeline.
+// Modes: "no-memory", "ghost", "ghost-hyde", "ghost-rewrite", "ghost-agent", "oracle"
+func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) (*LoCoMoPlusE2EReport, error) {
+	entries, err := LoadLoCoMoPlus(cfg.DatasetPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.NS == "" {
+		cfg.NS = "bench:e2e-locomo-plus"
+	}
+	if cfg.TopK == 0 {
+		cfg.TopK = 5
+	}
+	if len(cfg.Modes) == 0 {
+		cfg.Modes = []string{"no-memory", "ghost", "oracle"}
+	}
+	if cfg.PerTypeLimit > 0 {
+		typeCounts := make(map[string]int)
+		var sampled []LoCoMoPlusEntry
+		for _, e := range entries {
+			if typeCounts[e.RelationType] < cfg.PerTypeLimit {
+				sampled = append(sampled, e)
+				typeCounts[e.RelationType]++
+			}
+		}
+		entries = sampled
+	}
+	if cfg.Limit > 0 && cfg.Limit < len(entries) {
+		entries = entries[:cfg.Limit]
+	}
+
+	report := &LoCoMoPlusE2EReport{
+		Timestamp: time.Now(),
+		Dataset:   filepath.Base(cfg.DatasetPath),
+		LLM:       cfg.LLM.Name(),
+		ByType:    make(map[string]*E2ETypeAgg),
+		Overall:   make(map[string]map[string]float64),
+	}
+	for _, mode := range cfg.Modes {
+		report.Overall[mode] = make(map[string]float64)
+	}
+
+	ctx := context.Background()
+
+	// Single shared store: all cues form the haystack
+	store, cleanup, err := newStore()
+	if err != nil {
+		return nil, fmt.Errorf("create store: %w", err)
+	}
+	defer cleanup()
+
+	batchSessions := make([]BenchSession, 0, len(entries))
+	cueByKey := make(map[string]string, len(entries))
+	for i, e := range entries {
+		key := fmt.Sprintf("cue-%d", i)
+		batchSessions = append(batchSessions, BenchSession{Key: key, Content: e.CueDialogue})
+		cueByKey[key] = e.CueDialogue
+	}
+	if err := store.BatchBenchInsert(ctx, cfg.NS, batchSessions); err != nil {
+		return nil, fmt.Errorf("ingest: %w", err)
+	}
+
+	judge := cfg.Judge
+	if judge == nil {
+		judge = cfg.LLM
+	}
+
+	for i, e := range entries {
+		result := E2EResult{
+			QuestionID:   fmt.Sprintf("cog-%d", i),
+			QuestionType: e.RelationType,
+			Question:     e.TriggerQuery,
+			GoldAnswer:   e.CueDialogue, // the cue is the "gold context" to reference
+			Answers:      make(map[string]string),
+			Scores:       make(map[string]float64),
+		}
+
+		for _, mode := range cfg.Modes {
+			var userMsg string
+			switch mode {
+			case "no-memory":
+				userMsg = e.TriggerQuery
+			case "ghost":
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: e.TriggerQuery, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = formatMemoryForLLM(e.TriggerQuery, capResults(results, 5), 30000) + e.TriggerQuery
+			case "ghost-hyde":
+				q := hydeQuery(ctx, cfg.LLM, e.TriggerQuery)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = formatMemoryForLLM(e.TriggerQuery, capResults(results, 5), 30000) + e.TriggerQuery
+			case "ghost-rewrite":
+				q := rewriteQuery(ctx, cfg.LLM, e.TriggerQuery)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = formatMemoryForLLM(e.TriggerQuery, capResults(results, 5), 30000) + e.TriggerQuery
+			case "ghost-agent":
+				results := agentSearch(ctx, store, cfg.LLM, cfg.NS, e.TriggerQuery, cfg.TopK, 3)
+				userMsg = formatMemoryForLLM(e.TriggerQuery, capResults(results, 5), 30000) + e.TriggerQuery
+			case "oracle":
+				oracleResults := []SearchResult{{Memory: model.Memory{Content: e.CueDialogue}}}
+				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery
+			}
+
+			response, err := cfg.LLM.Generate(ctx, cognitiveResponderPrompt, userMsg)
+			if err != nil {
+				result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
+				result.Scores[mode] = 0
+				continue
+			}
+			result.Answers[mode] = response
+
+			// Cognitive judge: did response reflect awareness of the cue?
+			score := cognitiveJudge(ctx, judge, e.CueDialogue, e.TriggerQuery, response)
+			if score < 0 {
+				score = 0
+			}
+			result.Scores[mode] = score
+
+			if _, ok := report.ByType[e.RelationType]; !ok {
+				report.ByType[e.RelationType] = &E2ETypeAgg{Metrics: make(map[string]map[string]float64)}
+				for _, m := range cfg.Modes {
+					report.ByType[e.RelationType].Metrics[m] = make(map[string]float64)
+				}
+			}
+			report.ByType[e.RelationType].Metrics[mode]["score"] += score
+			report.Overall[mode]["score"] += score
+		}
+
+		report.Results = append(report.Results, result)
+		report.ByType[e.RelationType].Count++
+		report.Total++
+
+		if cfg.ProgressFunc != nil && (report.Total%10 == 0 || report.Total == len(entries)) {
+			cfg.ProgressFunc(report.Total, len(entries))
+		}
+	}
+
+	// Average metrics
+	if report.Total > 0 {
+		for _, mode := range cfg.Modes {
+			for k := range report.Overall[mode] {
+				report.Overall[mode][k] /= float64(report.Total)
+			}
+		}
+	}
+	for _, agg := range report.ByType {
+		if agg.Count > 0 {
+			for _, mode := range cfg.Modes {
+				for k := range agg.Metrics[mode] {
+					agg.Metrics[mode][k] /= float64(agg.Count)
+				}
+			}
+		}
+	}
+	return report, nil
+}
+
+// capResults caps a slice to n without panicking.
+func capResults(results []SearchResult, n int) []SearchResult {
+	if n > len(results) {
+		return results
+	}
+	return results[:n]
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/rcliao/ghost/internal/embedding"
@@ -120,6 +121,122 @@ func TestLoCoMoPlus(t *testing.T) {
 
 	jsonReport, _ := json.MarshalIndent(report, "", "  ")
 	t.Logf("\nLOCOMO_PLUS_REPORT:%s", string(jsonReport))
+}
+
+// TestE2ELoCoMoPlus runs the full cognitive-memory E2E pipeline on LoCoMo-Plus.
+//
+// Usage:
+//
+//	GHOST_EMBED_PROVIDER=local \
+//	GHOST_BENCH_LOCOMO_PLUS=testdata/locomo/locomo_plus.json \
+//	GHOST_BENCH_PER_TYPE=5 \
+//	GHOST_BENCH_LLM_MODEL=haiku \
+//	GHOST_BENCH_MODES=no-memory,ghost,ghost-rewrite,oracle \
+//	  go test ./internal/store/ -run TestE2ELoCoMoPlus -v -timeout 60m
+func TestE2ELoCoMoPlus(t *testing.T) {
+	datasetPath := os.Getenv("GHOST_BENCH_LOCOMO_PLUS")
+	if datasetPath == "" {
+		t.Skip("GHOST_BENCH_LOCOMO_PLUS not set")
+	}
+	datasetPath = resolveRepoPath(datasetPath)
+
+	perTypeLimit := 0
+	if s := os.Getenv("GHOST_BENCH_PER_TYPE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			perTypeLimit = n
+		}
+	}
+
+	cachePath := os.Getenv("GHOST_BENCH_EMBED_CACHE")
+	if cachePath != "" {
+		cachePath = resolveRepoPath(cachePath)
+	}
+
+	var embedder embedding.Embedder
+	if base := embedding.NewFromEnv(); base != nil {
+		if cachePath != "" {
+			embedder = embedding.NewCachedEmbedder(base, cachePath)
+		} else {
+			embedder = base
+		}
+	}
+
+	llmModel := os.Getenv("GHOST_BENCH_LLM_MODEL")
+	var llm LLMClient
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		llm = NewAnthropicClient(llmModel)
+	} else {
+		llm = NewClaudeCLIClient(llmModel)
+	}
+	t.Logf("Using LLM: %s", llm.Name())
+
+	modes := []string{"no-memory", "ghost", "ghost-rewrite", "oracle"}
+	if s := os.Getenv("GHOST_BENCH_MODES"); s != "" {
+		modes = splitCSV(s)
+	}
+
+	cfg := E2EConfig{
+		DatasetPath:  datasetPath,
+		PerTypeLimit: perTypeLimit,
+		TopK:         5,
+		LLM:          llm,
+		Modes:        modes,
+		ProgressFunc: func(done, total int) {
+			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
+		},
+	}
+
+	report, err := RunE2ELoCoMoPlus(cfg, func() (*SQLiteStore, func(), error) {
+		dir := t.TempDir()
+		s, err := NewSQLiteStore(filepath.Join(dir, "bench.db"))
+		if err != nil {
+			return nil, nil, err
+		}
+		if embedder != nil {
+			s.SetEmbedder(embedder)
+		}
+		return s, func() { s.Close() }, nil
+	})
+	if err != nil {
+		t.Fatalf("E2E LoCoMo-Plus failed: %v", err)
+	}
+
+	t.Logf("\n=== E2E LoCoMo-Plus Results (LLM: %s) ===", report.LLM)
+	t.Logf("Entries: %d  (cognitive judge: correct=1.0, partial=0.5, wrong=0.0)", report.Total)
+	t.Logf("")
+	t.Logf("── Overall ──")
+	for _, mode := range modes {
+		if m, ok := report.Overall[mode]; ok {
+			t.Logf("  %-14s score=%.3f", mode, m["score"])
+		}
+	}
+	types := []string{"causal", "state", "goal", "value"}
+	for _, typ := range types {
+		agg, ok := report.ByType[typ]
+		if !ok {
+			continue
+		}
+		t.Logf("")
+		t.Logf("── %s (n=%d) ──", typ, agg.Count)
+		for _, mode := range modes {
+			if m, ok := agg.Metrics[mode]; ok {
+				t.Logf("  %-14s score=%.3f", mode, m["score"])
+			}
+		}
+	}
+
+	jsonReport, _ := json.MarshalIndent(report, "", "  ")
+	t.Logf("\nLOCOMO_PLUS_E2E_REPORT:%s", string(jsonReport))
+}
+
+func splitCSV(s string) []string {
+	parts := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return parts
 }
 
 // TestLoCoMoPlusBuildCache pre-computes embeddings for all cues + triggers.
