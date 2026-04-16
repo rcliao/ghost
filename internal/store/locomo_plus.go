@@ -331,6 +331,9 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 
 		for _, mode := range cfg.Modes {
 			var userMsg string
+			// Time the full pipeline including prep-call LLM (hyde/rewrite/compress/agent)
+			// so multi-call modes reflect their true end-to-end latency.
+			modeStart := time.Now()
 			switch mode {
 			case "no-memory":
 				userMsg = e.TriggerQuery
@@ -364,9 +367,8 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery
 			}
 
-			answerStart := time.Now()
 			response, err := cfg.LLM.Generate(ctx, cognitiveResponderPrompt, userMsg)
-			answerLatency := time.Since(answerStart).Seconds()
+			answerLatency := time.Since(modeStart).Seconds()
 			if err != nil {
 				result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
 				result.Scores[mode] = 0
