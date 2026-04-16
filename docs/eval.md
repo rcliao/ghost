@@ -289,6 +289,16 @@ GHOST_BENCH_QUESTION=42 \
 
 **Protocol:** For each question, ingests ~50 timestamped chat sessions via `BenchInsert()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
 
+### HaluMem (2025, scaffold only)
+
+[HaluMem](https://arxiv.org/abs/2511.03506) ([repo](https://github.com/MemTensor/HaluMem)) is the first operation-level hallucination benchmark for agent memory systems. Three tasks: Memory Extraction, Memory Updating, Question Answering. Each measures accuracy, hallucination rate, and omission rate.
+
+**Status**: loader scaffold only (`halumem.go`). Full integration is non-trivial — HaluMem's evaluation harness is Python-based and adapts to each memory system (Mem0, Zep, MemOS, Supermemory, Memobase) via `eval_*.py` scripts. To add Ghost:
+- Option A: Expose Ghost via HTTP API + write `eval_ghost.py` upstream
+- Option B: Port their evaluation tasks to Go (~3 tasks × hallucination metrics)
+
+See `internal/store/halumem.go` for integration plan.
+
 ### LoCoMo-Plus (2026)
 
 [LoCoMo-Plus](https://arxiv.org/abs/2602.10715v1) is a 2026 extension of LoCoMo that adds a "Cognitive" category: 401 cue-trigger pairs across four relation types (causal, state, goal, value). The benchmark tests whether a memory system can retrieve a semantically-disconnected cue given a later trigger — e.g., cue "I'm learning to say no" retrieved from trigger "I volunteered for that project and now I'm overwhelmed".
