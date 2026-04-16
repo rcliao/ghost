@@ -404,6 +404,14 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 		if cfg.ProgressFunc != nil && (report.Total%10 == 0 || report.Total == len(entries)) {
 			cfg.ProgressFunc(report.Total, len(entries))
 		}
+
+		// Checkpoint every 25 questions so long runs produce usable partial data
+		if report.Total%25 == 0 && os.Getenv("GHOST_BENCH_CHECKPOINT") != "" {
+			checkpointPath := os.Getenv("GHOST_BENCH_CHECKPOINT")
+			if buf, err := json.MarshalIndent(report, "", "  "); err == nil {
+				_ = os.WriteFile(checkpointPath, buf, 0644)
+			}
+		}
 	}
 
 	// Average metrics
