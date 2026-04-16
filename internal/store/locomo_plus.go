@@ -364,7 +364,9 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery
 			}
 
+			answerStart := time.Now()
 			response, err := cfg.LLM.Generate(ctx, cognitiveResponderPrompt, userMsg)
+			answerLatency := time.Since(answerStart).Seconds()
 			if err != nil {
 				result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
 				result.Scores[mode] = 0
@@ -386,7 +388,13 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 				}
 			}
 			report.ByType[e.RelationType].Metrics[mode]["score"] += score
+			report.ByType[e.RelationType].Metrics[mode]["input_tokens"] += float64(estimateTokensFromChars(userMsg) + estimateTokensFromChars(cognitiveResponderPrompt))
+			report.ByType[e.RelationType].Metrics[mode]["output_tokens"] += float64(estimateTokensFromChars(response))
+			report.ByType[e.RelationType].Metrics[mode]["latency_sec"] += answerLatency
 			report.Overall[mode]["score"] += score
+			report.Overall[mode]["input_tokens"] += float64(estimateTokensFromChars(userMsg) + estimateTokensFromChars(cognitiveResponderPrompt))
+			report.Overall[mode]["output_tokens"] += float64(estimateTokensFromChars(response))
+			report.Overall[mode]["latency_sec"] += answerLatency
 		}
 
 		report.Results = append(report.Results, result)

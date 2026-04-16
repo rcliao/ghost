@@ -71,6 +71,11 @@ type E2ETypeAgg struct {
 	Metrics map[string]map[string]float64 `json:"metrics"` // mode → metric → value
 }
 
+// estimateTokensFromChars approximates tokens as chars/4 (standard rule of thumb).
+func estimateTokensFromChars(s string) int {
+	return (len(s) + 3) / 4
+}
+
 // ── Smarter Scoring (#2) ──────────────────────────────────────────
 
 // scoreAnswer computes multiple objective metrics between LLM answer and gold.
@@ -867,10 +872,10 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 				userMsg = formatMemoryForLLM(entry.Question, oracleResults, 50000) + entry.Question
 			}
 
+			answerStart := time.Now()
 			answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
+			answerLatency := time.Since(answerStart).Seconds()
 			if err != nil {
-				// Log and skip LLM failures instead of aborting the whole benchmark.
-				// Rate limits, timeouts, and transient errors shouldn't lose partial results.
 				result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
 				result.Scores[mode] = 0
 				continue
@@ -878,6 +883,10 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 
 			result.Answers[mode] = answer
 			answerScores := scoreAnswer(answer, entry.Answer)
+			// Cost-quality-latency instrumentation
+			answerScores["input_tokens"] = float64(estimateTokensFromChars(userMsg) + estimateTokensFromChars(e2eSystemPrompt))
+			answerScores["output_tokens"] = float64(estimateTokensFromChars(answer))
+			answerScores["latency_sec"] = answerLatency
 			if cfg.LLMJudge {
 				judge := cfg.Judge
 				if judge == nil {
@@ -1137,7 +1146,9 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 					userMsg = formatMemoryForLLM(qa.Question, oracleResults, 50000) + qa.Question
 				}
 
+				answerStart := time.Now()
 				answer, err := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
+				answerLatency := time.Since(answerStart).Seconds()
 				if err != nil {
 					result.Answers[mode] = fmt.Sprintf("[ERROR: %v]", err)
 					result.Scores[mode] = 0
@@ -1146,6 +1157,9 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 
 				result.Answers[mode] = answer
 				answerScores := scoreAnswer(answer, qa.Answer)
+				answerScores["input_tokens"] = float64(estimateTokensFromChars(userMsg) + estimateTokensFromChars(e2eSystemPrompt))
+				answerScores["output_tokens"] = float64(estimateTokensFromChars(answer))
+				answerScores["latency_sec"] = answerLatency
 				if cfg.LLMJudge {
 					judge := cfg.Judge
 					if judge == nil {

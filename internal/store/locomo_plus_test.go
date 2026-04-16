@@ -205,9 +205,11 @@ func TestE2ELoCoMoPlus(t *testing.T) {
 	t.Logf("Entries: %d  (cognitive judge: correct=1.0, partial=0.5, wrong=0.0)", report.Total)
 	t.Logf("")
 	t.Logf("── Overall ──")
+	t.Logf("  %-15s %6s %10s %10s %10s", "Mode", "Score", "In-Tok", "Out-Tok", "Latency")
 	for _, mode := range modes {
 		if m, ok := report.Overall[mode]; ok {
-			t.Logf("  %-14s score=%.3f", mode, m["score"])
+			t.Logf("  %-15s %6.3f %10.0f %10.0f %10.2fs",
+				mode, m["score"], m["input_tokens"], m["output_tokens"], m["latency_sec"])
 		}
 	}
 	types := []string{"causal", "state", "goal", "value"}
