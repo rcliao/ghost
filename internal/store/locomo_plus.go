@@ -382,6 +382,15 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
 				})
 				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
+			case "ghost-compress-edges":
+				// Search with 1-hop edge expansion, then compress.
+				// Tests whether spreading-activation recall helps the compressor
+				// find latent cues that direct search missed.
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: e.TriggerQuery, Limit: cfg.TopK,
+					IncludeAll: true, ExpandEdges: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 10)) + e.TriggerQuery
 			case "oracle":
 				oracleResults := []SearchResult{{Memory: model.Memory{Content: e.CueDialogue}}}
 				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery

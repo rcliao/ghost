@@ -346,18 +346,24 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache_plus.json \
 | ghost-rewrite | 0.625 | 0.500 | 0.500 | 0.667 | 0.833 | 2 |
 | oracle | 0.875 | 1.000 | 1.000 | 0.667 | 0.833 | 1 |
 
-**Cost-quality-latency analysis** (25-question checkpoint, Haiku 4.5, $1/M in + $5/M out):
+**Cost-quality-latency analysis** (50-question checkpoint, 25 causal + 25 state, Haiku 4.5, $1/M in + $5/M out):
 
 | Mode | Score | In-Tok | Out-Tok | Latency | $/question |
 |------|-------|--------|---------|---------|-----------|
-| no-memory | 0.520 | 145 | 80 | 7.93s | $545μ |
-| ghost | 0.560 | 393 | 92 | 8.38s | $852μ |
-| **ghost-compress** | **0.620** | **238** | 95 | 7.59s | $714μ |
-| oracle | 0.900 | 203 | 91 | 8.04s | $659μ |
+| no-memory | 0.540 | 147 | 72 | 7.63s | $507μ |
+| ghost | 0.580 | 392 | 88 | 8.58s | $832μ |
+| ghost-compress | 0.610 | 320 | 94 | 20.6s | $790μ |
+| **ghost-compress-wide** | **0.660** | 362 | 99 | 24.2s | $857μ |
+| oracle | 0.870 | 204 | 81 | 7.99s | $609μ |
 
-**Larger-sample finding** (25q checkpoint vs 12q sample): ghost-compress **actually wins** at scale (0.620 vs ghost 0.560), and uses **40% fewer input tokens** with similar output + latency. The 12q sample's ghost-advantage was variance noise.
+**Larger-sample finding** (50q checkpoint): `ghost-compress-wide` (top-15 → compress) pulls ahead of plain `ghost-compress` by ~8% — wider recall feeds the compressor more candidates without polluting the answering prompt. At 25q they were tied; the gap emerges with more data.
 
-**Revised takeaway**: `ghost-compress` is the best Pareto point for cognitive-memory queries — comparable cost to plain `ghost` (extra compress call offset by smaller answer input), higher score, and oracle-close context efficiency. **Ghost-as-infrastructure + LLM-compression-at-edge** is the pattern to recommend.
+**Revised takeaway**: For cognitive-memory / latent-cue queries, **recall matters more than precision** once compression is in play. The compressor filters noise, so the right pattern is:
+- Wide retrieval (top-15+)
+- LLM compression to query-focused bullets
+- Small, focused answering prompt
+
+**ghost-compress-wide** is the current Pareto leader at $857μ/q — ~40% of oracle's quality gap closed versus no-memory, at a cost premium of ~$350μ over the baseline.
 
 **Design principle validated**: Ghost's formatted retrieval (full sessions + query-relevant line highlighting with >>> prefix) is already well-tuned for LLM consumption. Pre-processing modes (rewrite, compress) that add extra LLM calls often hurt response quality by diverging from the user's original question intent.
 
