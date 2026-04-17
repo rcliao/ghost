@@ -268,6 +268,10 @@ type Store interface {
 	// RuleDelete removes a rule by ID.
 	RuleDelete(ctx context.Context, id string) error
 
+	// InferEdges uses an LLM to classify reasoning relationships between related
+	// memory pairs and creates typed edges (caused_by, prevents, implies).
+	InferEdges(ctx context.Context, p InferEdgesParams) (*InferResult, error)
+
 	// Close closes the store.
 	Close() error
 }

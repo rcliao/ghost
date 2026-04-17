@@ -1287,6 +1287,10 @@ func (m *MockStore) Consolidate(ctx context.Context, p ConsolidateParams) (*Cons
 	return &ConsolidateResult{Summary: mem, Edges: edges}, nil
 }
 
+func (m *MockStore) InferEdges(_ context.Context, _ InferEdgesParams) (*InferResult, error) {
+	return &InferResult{}, nil
+}
+
 // hasAllTags returns true if memTags contains all of the required tags.
 func hasAllTags(memTags, required []string) bool {
 	set := map[string]bool{}
