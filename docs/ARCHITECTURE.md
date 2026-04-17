@@ -105,7 +105,7 @@ Default weights by relation type:
 
 ### Link (legacy)
 
-Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`. Migrated to `memory_edges` table on startup.
+Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`, `contains`, `merged_into`. Reasoning relations: `caused_by`, `prevents`, `implies` (populated via `ghost infer-edges` CLI — LLM-assisted, offline). Migrated to `memory_edges` table on startup.
 
 ## Storage Layer
 
