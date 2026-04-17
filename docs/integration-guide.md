@@ -234,6 +234,59 @@ When `ghost_context` returns `compaction_suggested: true`:
 2. Optionally run `ghost gc` to hard-delete expired memories
 3. Re-query context — it should now fit better within budget
 
+### Contextual Compression (recommended for question-answering agents)
+
+Ghost returns full session chunks optimized for grep-style retrieval. For a
+question-answering agent, an LLM between Ghost and the answering call
+consistently improves quality by compressing retrieved context into a
+bullet list of query-relevant facts. This is the pattern that wins the
+LoCoMo-Plus cognitive-memory benchmark (see `docs/eval.md`).
+
+**Pipeline**:
+1. `ghost search -q "<user question>" -n <ns> --limit 15` — wider recall than
+   you'd normally show, since compression filters noise.
+2. Feed the JSON results to an LLM with a short prompt:
+   > *"Extract every fact from the memories that could inform the question.
+   > Preserve specific details (names, dates, preferences). Output 1-8
+   > bullets. Do not answer — just extract."*
+3. Prepend the compressed bullets to the user's question and send to the
+   answering model.
+
+```python
+# Pseudocode — adapt to your LLM client
+mems = ghost_cli(["search", "-q", question, "-n", ns, "--limit", "15"])
+bullets = llm_call(system=COMPRESS_PROMPT,
+                   user=f"QUESTION: {question}\n\nMEMORIES:\n{mems}")
+answer  = llm_call(system=ANSWER_PROMPT,
+                   user=f"{bullets}\n\n{question}")
+```
+
+**Why it works**: Raw chunks contain off-topic conversation. The compression
+step surfaces the latent signal (user values, past decisions, emotional
+context) that the answering model would otherwise drown out. Wider recall
+(top-15 vs top-5) gives the compressor more candidates; because its output
+is short, the answering prompt stays small.
+
+**Cost**: ~2× the LLM calls of a direct answer, but typically fewer
+*answering* input tokens because the bullets are shorter than raw chunks.
+
+### Reasoning Edge Inference
+
+`relates_to` edges are created automatically by embedding similarity, but
+they don't distinguish topical similarity from causal reasoning. To enrich
+the graph with typed reasoning edges (`caused_by`, `prevents`, `implies`):
+
+```bash
+# Uses claude -p by default; ANTHROPIC_API_KEY overrides to API
+ghost infer-edges --ns agent:mybot --max-pairs 100 --dry-run
+
+# When happy with the proposals, re-run without --dry-run
+ghost infer-edges --ns agent:mybot --max-pairs 100
+```
+
+This is an offline batch step — Ghost's hot path (Search, Context) remains
+LLM-free. Idempotent: pairs that already have a reasoning edge are skipped.
+
 ### Consolidation Workflow
 
 When many memories accumulate on a topic:
