@@ -362,6 +362,26 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 					NS: cfg.NS, Query: e.TriggerQuery, Limit: cfg.TopK, IncludeAll: true,
 				})
 				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
+			case "ghost-compress-wide":
+				// Feed top-15 to the compressor so it has more candidates
+				// to extract from. Compression filters noise, so wider recall
+				// shouldn't pollute the answering prompt.
+				wideLimit := cfg.TopK * 3
+				if wideLimit < 15 {
+					wideLimit = 15
+				}
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: e.TriggerQuery, Limit: wideLimit, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, wideLimit)) + e.TriggerQuery
+			case "ghost-rewrite-compress":
+				// LLM rewrites the query, searches with it, then compresses.
+				// Tests whether stacking rewrite + compress compounds gains.
+				q := rewriteQuery(ctx, cfg.LLM, e.TriggerQuery)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
 			case "oracle":
 				oracleResults := []SearchResult{{Memory: model.Memory{Content: e.CueDialogue}}}
 				userMsg = formatMemoryForLLM(e.TriggerQuery, oracleResults, 30000) + e.TriggerQuery

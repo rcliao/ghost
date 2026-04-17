@@ -568,9 +568,15 @@ You will see:
 - A user's QUESTION
 - Several conversation MEMORIES retrieved from past sessions
 
-Extract only the facts from the memories that are directly relevant to answering the question. Preserve specific details: names, dates, places, numbers, preferences. Omit unrelated content.
+Extract every fact that could plausibly inform the question, including:
+- Stated preferences, values, or constraints the user has voiced
+- Prior decisions, commitments, or goals the user has declared
+- Emotional reactions or patterns (e.g., "felt stressed when...", "learned to say no")
+- Recent life states (job, location, health, schedule) that shape current choices
 
-Output format: a compact bulleted summary (1-5 bullets, 10-25 words each). If no memory is relevant, output "No relevant facts found."
+Preserve specific details: names, dates, places, numbers, exact phrasing of preferences. Omit unrelated chit-chat.
+
+Output format: a compact bulleted summary (1-8 bullets, 10-30 words each). If no memory is relevant, output "No relevant facts found."
 
 Do NOT answer the question yourself — just extract facts the memories contain.`
 
