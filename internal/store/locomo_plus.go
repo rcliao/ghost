@@ -314,6 +314,21 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 		return nil, fmt.Errorf("ingest: %w", err)
 	}
 
+	// Build edges between cues so ghost-compress-edges has something to
+	// expand. Uses semantic similarity + entity co-occurrence + topic overlap.
+	needsEdges := false
+	for _, m := range cfg.Modes {
+		if m == "ghost-compress-edges" {
+			needsEdges = true
+			break
+		}
+	}
+	if needsEdges {
+		if _, err := store.BenchBuildEdges(ctx, cfg.NS); err != nil {
+			return nil, fmt.Errorf("build edges: %w", err)
+		}
+	}
+
 	judge := cfg.Judge
 	if judge == nil {
 		judge = cfg.LLM
