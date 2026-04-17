@@ -866,6 +866,17 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 					showN = len(results)
 				}
 				userMsg = compressContext(ctx, cfg.LLM, entry.Question, results[:showN]) + entry.Question
+			case "ghost-compress-wide":
+				// Retrieve wider (top-15) → compress noise out → answer
+				wideLimit := cfg.TopK * 3
+				if wideLimit < 15 {
+					wideLimit = 15
+				}
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: entry.Question,
+					Limit: wideLimit, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, entry.Question, results) + entry.Question
 			case "oracle":
 				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
@@ -1139,6 +1150,16 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 						showN = len(results)
 					}
 					userMsg = compressContext(ctx, cfg.LLM, qa.Question, results[:showN]) + qa.Question
+				case "ghost-compress-wide":
+					wideLimit := cfg.TopK * 3
+					if wideLimit < 15 {
+						wideLimit = 15
+					}
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: qa.Question,
+						Limit: wideLimit, IncludeAll: true,
+					})
+					userMsg = compressContext(ctx, cfg.LLM, qa.Question, results) + qa.Question
 				case "oracle":
 					evidenceSessions := evidenceToSessions(qa.Evidence)
 					var oracleResults []SearchResult
