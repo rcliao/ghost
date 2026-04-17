@@ -498,6 +498,8 @@ End-to-end evaluation: Ghost retrieves memories → LLM answers questions. Modes
 | `ghost-compress` | Ghost retrieves top-5 → LLM compresses to query-focused facts → LLM answers | 2 calls (compress + answer) |
 | `ghost-compress-wide` | Ghost retrieves top-15 → LLM compresses wider set → LLM answers | 2 calls |
 | `ghost-rewrite-compress` | LLM rewrites query → Ghost searches → LLM compresses → LLM answers | 3 calls |
+| `ghost-hyde-compress` | HyDE generates speculative cue → search with it → compress → answer | 3 calls |
+| `ghost-compress-edges` | Ghost searches with 1-hop edge expansion → compress → answer | 2 calls |
 | `ghost-agent` | LLM iteratively refines search query (up to 3 rounds) → LLM answers | 4-7 calls |
 | `oracle` | Perfect evidence → LLM answers | 1 call (answer) |
 

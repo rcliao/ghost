@@ -382,6 +382,15 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
 				})
 				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
+			case "ghost-hyde-compress":
+				// HyDE generates a hypothetical cue (speculating what memory
+				// might contain), searches with it, then compresses top-5.
+				// Tests whether HyDE's theme-expansion helps the compressor.
+				q := hydeQuery(ctx, cfg.LLM, e.TriggerQuery)
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: q, Limit: cfg.TopK, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, 5)) + e.TriggerQuery
 			case "ghost-compress-edges":
 				// Search with 1-hop edge expansion, then compress.
 				// Tests whether spreading-activation recall helps the compressor
