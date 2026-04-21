@@ -219,6 +219,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"tags":           {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tag filters"},
 			"budget":         prop("integer", "Max tokens in output (default 4000)"),
 			"exclude_pinned": prop("boolean", "Skip pinned memories, use full budget for search-ranked results"),
+			"min_score":      prop("number", "Absolute score floor (0-1). Drop candidates below this. 0 = no filter. Helpful at scale to suppress low-confidence retrievals."),
+			"min_spread":     prop("number", "If top-1 score minus top-5 score is less than this delta, collapse to top-1 only (flat-noise detection). 0 = no filter. ~0.15 is a good starting value."),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
@@ -228,6 +230,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Tags          []string `json:"tags"`
 			Budget        int      `json:"budget"`
 			ExcludePinned bool     `json:"exclude_pinned"`
+			MinScore      float64  `json:"min_score"`
+			MinSpread     float64  `json:"min_spread"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -242,6 +246,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Tags:          p.Tags,
 			Budget:        p.Budget,
 			ExcludePinned: p.ExcludePinned,
+			MinScore:      p.MinScore,
+			MinSpread:     p.MinSpread,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil

@@ -23,6 +23,8 @@ type ContextParams struct {
 	EdgeExpansion  *EdgeExpansionConfig // edge expansion config; nil means use defaults
 	ExcludePinned  bool             // skip Phase 1 pinned memories, use full budget for search
 	MaxMemoryTokens int             // max tokens per memory; larger memories get excerpted (default: 400, 0 = no limit)
+	MinScore       float64          // absolute score floor; candidates below this are dropped (0 = no filter)
+	MinSpread      float64          // top-1 must exceed top-N by this delta (0 = no filter). Catches "flat noise" queries where retrieval couldn't discriminate.
 }
 
 // ContextMemory is a scored memory for context output.
@@ -159,6 +161,33 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
+
+	// Confidence filter: drop low-score candidates and detect "flat noise"
+	// (top-1 too close to the tail — retrieval couldn't discriminate).
+	// Both filters are opt-in via zero defaults.
+	if len(candidates) > 0 && (p.MinScore > 0 || p.MinSpread > 0) {
+		if p.MinScore > 0 {
+			keep := candidates[:0]
+			for _, c := range candidates {
+				if c.score >= p.MinScore {
+					keep = append(keep, c)
+				}
+			}
+			candidates = keep
+		}
+		if p.MinSpread > 0 && len(candidates) >= 2 {
+			// Compare top-1 vs the smaller of (5th result, last result)
+			tailIdx := 4
+			if tailIdx >= len(candidates) {
+				tailIdx = len(candidates) - 1
+			}
+			spread := candidates[0].score - candidates[tailIdx].score
+			if spread < p.MinSpread {
+				// Flat distribution — likely all noise. Keep only the top candidate.
+				candidates = candidates[:1]
+			}
+		}
+	}
 
 	// Build containment map before packing: for each candidate, find if it's
 	// a child of another candidate (via 'contains' edges). If a parent summary

@@ -79,6 +79,65 @@ func TestContextEmpty(t *testing.T) {
 	}
 }
 
+func TestContextMinScoreFilter(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	s.Put(ctx, PutParams{NS: "test", Key: "foo", Content: "apple banana cherry"})
+	s.Put(ctx, PutParams{NS: "test", Key: "bar", Content: "something totally unrelated about cars"})
+
+	// No filter — should return candidates for any query since we have stored memories.
+	unfiltered, err := s.Context(ctx, ContextParams{
+		NS: "test", Query: "xyz123 nonsense zzz",
+		Budget: 4000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With a very high floor — nothing should pass.
+	filtered, err := s.Context(ctx, ContextParams{
+		NS: "test", Query: "xyz123 nonsense zzz",
+		Budget: 4000, MinScore: 99.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Memories) != 0 {
+		t.Errorf("expected zero memories with MinScore=99, got %d", len(filtered.Memories))
+	}
+	if len(unfiltered.Memories) <= len(filtered.Memories) {
+		// Sanity: with filter off we get ≥ same as with it on
+		t.Logf("unfiltered=%d filtered=%d", len(unfiltered.Memories), len(filtered.Memories))
+	}
+}
+
+func TestContextMinSpreadFilter(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// Multiple similar memories; all will match "language" roughly equally → flat spread
+	s.Put(ctx, PutParams{NS: "test", Key: "k1", Content: "Generic language mention 1"})
+	s.Put(ctx, PutParams{NS: "test", Key: "k2", Content: "Generic language mention 2"})
+	s.Put(ctx, PutParams{NS: "test", Key: "k3", Content: "Generic language mention 3"})
+	s.Put(ctx, PutParams{NS: "test", Key: "k4", Content: "Generic language mention 4"})
+	s.Put(ctx, PutParams{NS: "test", Key: "k5", Content: "Generic language mention 5"})
+
+	// Huge spread requirement collapses to just the top result.
+	result, err := s.Context(ctx, ContextParams{
+		NS: "test", Query: "language",
+		Budget: 4000, MinSpread: 10.0, // impossibly large
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Memories) > 1 {
+		t.Errorf("expected flat-noise detection to cap at 1 result, got %d", len(result.Memories))
+	}
+}
+
 func TestContextMaxMemoryTokensCap(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
