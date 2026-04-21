@@ -294,6 +294,30 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 		report.Overall[mode] = make(map[string]float64)
 	}
 
+	// Resume support: if GHOST_BENCH_RESUME=1 and a matching checkpoint exists,
+	// load accumulated metrics and skip ahead past completed questions.
+	resumeFrom := 0
+	if os.Getenv("GHOST_BENCH_RESUME") == "1" && os.Getenv("GHOST_BENCH_CHECKPOINT") != "" {
+		if buf, err := os.ReadFile(os.Getenv("GHOST_BENCH_CHECKPOINT")); err == nil {
+			var prev LoCoMoPlusE2EReport
+			if err := json.Unmarshal(buf, &prev); err == nil && prev.Total > 0 {
+				// Validate checkpoint matches current config — same modes and dataset
+				same := prev.Dataset == report.Dataset && len(prev.Overall) == len(report.Overall)
+				for _, m := range cfg.Modes {
+					if _, ok := prev.Overall[m]; !ok {
+						same = false
+						break
+					}
+				}
+				if same {
+					report = &prev
+					resumeFrom = prev.Total
+					fmt.Fprintf(os.Stderr, "Resuming from checkpoint: %d questions already done\n", resumeFrom)
+				}
+			}
+		}
+	}
+
 	ctx := context.Background()
 
 	// Single shared store: all cues form the haystack
@@ -335,6 +359,9 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 	}
 
 	for i, e := range entries {
+		if i < resumeFrom {
+			continue
+		}
 		result := E2EResult{
 			QuestionID:   fmt.Sprintf("cog-%d", i),
 			QuestionType: e.RelationType,
