@@ -574,9 +574,11 @@ Extract every fact that could plausibly inform the question, including:
 - Emotional reactions or patterns (e.g., "felt stressed when...", "learned to say no")
 - Recent life states (job, location, health, schedule) that shape current choices
 
+**Preserve distinct situations separately.** If multiple memories describe different incidents (e.g., a landlord dispute AND a work-boundaries conflict), keep each as its own bullet with concrete anchors (who/what/when). Do not blend them into a single abstract theme — the answering model will pick the right one.
+
 Preserve specific details: names, dates, places, numbers, exact phrasing of preferences. Omit unrelated chit-chat.
 
-Output format: a compact bulleted summary (1-8 bullets, 10-30 words each). If no memory is relevant, output "No relevant facts found."
+Output format: a compact bulleted summary (1-8 bullets, 10-30 words each). Each bullet should begin with a concrete anchor (e.g., "Landlord was unresponsive → started apartment hunt" not "Advocated for self in housing"). If no memory is relevant, output "No relevant facts found."
 
 Do NOT answer the question yourself — just extract facts the memories contain.`
 
