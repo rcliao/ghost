@@ -346,24 +346,34 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache_plus.json \
 | ghost-rewrite | 0.625 | 0.500 | 0.500 | 0.667 | 0.833 | 2 |
 | oracle | 0.875 | 1.000 | 1.000 | 0.667 | 0.833 | 1 |
 
-**Cost-quality-latency analysis** (50-question checkpoint, 25 causal + 25 state, Haiku 4.5, $1/M in + $5/M out):
+**Cost-quality-latency analysis** (full 100-question run, 25 per type — causal/goal/state/value, Haiku 4.5 via `claude -p`, $1/M in + $5/M out):
 
 | Mode | Score | In-Tok | Out-Tok | Latency | $/question |
 |------|-------|--------|---------|---------|-----------|
-| no-memory | 0.540 | 147 | 72 | 7.63s | $507μ |
-| ghost | 0.580 | 392 | 88 | 8.58s | $832μ |
-| ghost-compress | 0.610 | 320 | 94 | 20.6s | $790μ |
-| **ghost-compress-wide** | **0.660** | 362 | 99 | 24.2s | $857μ |
-| oracle | 0.870 | 204 | 81 | 7.99s | $609μ |
+| no-memory | 0.515 | 146 | 83 | 7.9s | $563μ |
+| ghost | 0.630 | 389 | 95 | 9.1s | $865μ |
+| ghost-compress | 0.660 | 303 | 103 | 21.4s | $818μ |
+| **ghost-compress-wide** | **0.670** | 359 | 107 | 24.3s | $894μ |
+| oracle | 0.885 | 203 | 92 | 8.1s | $663μ |
 
-**Larger-sample finding** (50q checkpoint): `ghost-compress-wide` (top-15 → compress) pulls ahead of plain `ghost-compress` by ~8% — wider recall feeds the compressor more candidates without polluting the answering prompt. At 25q they were tied; the gap emerges with more data.
+**Per-relation-type breakdown (100q):**
 
-**Revised takeaway**: For cognitive-memory / latent-cue queries, **recall matters more than precision** once compression is in play. The compressor filters noise, so the right pattern is:
-- Wide retrieval (top-15+)
-- LLM compression to query-focused bullets
-- Small, focused answering prompt
+| Type | no-memory | ghost | compress | compress-wide | oracle |
+|------|-----------|-------|----------|---------------|--------|
+| causal | 0.46 | 0.60 | **0.68** | **0.68** | 0.92 |
+| goal | 0.56 | 0.62 | 0.60 | **0.66** | 0.88 |
+| state | 0.56 | 0.58 | **0.68** | 0.60 | 0.84 |
+| value | 0.48 | 0.72 | 0.68 | **0.74** | 0.90 |
 
-**ghost-compress-wide** is the current Pareto leader at $857μ/q — ~40% of oracle's quality gap closed versus no-memory, at a cost premium of ~$350μ over the baseline.
+**Key findings:**
+- `ghost-compress-wide` is the overall winner (0.670), 4% better than plain `ghost` and closing **~42% of the oracle gap** over the no-memory baseline.
+- **Per-type contrast**: wider retrieval helps `goal`/`value` (structured latent facts) but *hurts* `state` queries — plain `compress` at top-5 wins `state` 0.68 → 0.60 for compress-wide. State cues are narrower; adding more candidates dilutes signal.
+- Compression modes cost **~2.7× latency** (extra LLM call), but input-token cost stays comparable to plain `ghost` because bullets are shorter than raw sessions.
+- Oracle still leads by **21.5 pts** — even perfect retrieval-plus-compression leaves a model-reasoning gap to close.
+
+**Revised takeaway**: For cognitive-memory / latent-cue queries, **recall matters more than precision** *only when the latent fact is broad*. Narrower cues (state) are better served by tight top-5. A future `ghost-compress-auto` mode could classify the query intent and choose the retrieval width adaptively.
+
+**ghost-compress-wide** is the current Pareto leader at $894μ/q — closes ~42% of oracle's quality gap at ~$330μ premium over the no-memory baseline. For latency-sensitive paths, plain `ghost` (no compression) is the 90%-of-best choice at no extra LLM cost.
 
 **Design principle validated**: Ghost's formatted retrieval (full sessions + query-relevant line highlighting with >>> prefix) is already well-tuned for LLM consumption. Pre-processing modes (rewrite, compress) that add extra LLM calls often hurt response quality by diverging from the user's original question intent.
 
