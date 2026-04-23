@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -66,7 +67,7 @@ When working with tool results, write down any important information you might n
 func Serve(ctx context.Context, st store.Store) error {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "ghost",
-		Version: "1.1.0",
+		Version: "1.2.0",
 	}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
 	})
@@ -451,6 +452,54 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Kind:       p.Kind,
 			Importance: p.Importance,
 			Tags:       p.Tags,
+		})
+		if err != nil {
+			return errResult(err.Error()), nil
+		}
+		return jsonResult(result)
+	})
+
+	server.AddTool(&mcp.Tool{
+		Name: "ghost_infer_edges",
+		Description: "Batch-infer reasoning edges (caused_by, prevents, implies) between already-related memory pairs. Scans existing relates_to pairs in a namespace and asks an LLM to classify whether a typed reasoning link holds; creates typed edges when confirmed. Out-of-band — call periodically (e.g. during hygiene reviews), NOT on the hot path. Idempotent: pairs that already have a reasoning edge are skipped. Uses ANTHROPIC_API_KEY if set, else 'claude -p'.",
+		InputSchema: schema([]string{"ns"}, map[string]map[string]any{
+			"ns":        prop("string", "Namespace to scan (required)"),
+			"max_pairs": prop("integer", "Max candidate pairs to examine (default 50, capped by cost)"),
+			"seed":      {"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional: only examine pairs touching these memory keys"},
+			"dry_run":   prop("boolean", "If true, classify but do not write edges — useful to preview cost and decisions"),
+			"model":     prop("string", "Optional LLM model override (e.g. 'haiku'). Default uses claude CLI default."),
+		}),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var p struct {
+			NS       string   `json:"ns"`
+			MaxPairs int      `json:"max_pairs"`
+			Seed     []string `json:"seed"`
+			DryRun   bool     `json:"dry_run"`
+			Model    string   `json:"model"`
+		}
+		if err := unmarshalArgs(req, &p); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if p.NS == "" {
+			return errResult("ns is required"), nil
+		}
+		if p.MaxPairs <= 0 {
+			p.MaxPairs = 50
+		}
+
+		var llm store.InferLLMClient
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			llm = store.NewAnthropicClient(p.Model)
+		} else {
+			llm = store.NewClaudeCLIClient(p.Model)
+		}
+
+		result, err := st.InferEdges(ctx, store.InferEdgesParams{
+			NS:       p.NS,
+			LLM:      llm,
+			MaxPairs: p.MaxPairs,
+			Seed:     p.Seed,
+			DryRun:   p.DryRun,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil
