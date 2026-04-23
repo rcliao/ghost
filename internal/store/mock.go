@@ -1291,6 +1291,10 @@ func (m *MockStore) InferEdges(_ context.Context, _ InferEdgesParams) (*InferRes
 	return &InferResult{}, nil
 }
 
+func (m *MockStore) ListReasoningCandidates(_ context.Context, _ ReasoningCandidatesParams) (*ReasoningCandidatesResult, error) {
+	return &ReasoningCandidatesResult{}, nil
+}
+
 // hasAllTags returns true if memTags contains all of the required tags.
 func hasAllTags(memTags, required []string) bool {
 	set := map[string]bool{}

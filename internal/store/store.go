@@ -270,7 +270,14 @@ type Store interface {
 
 	// InferEdges uses an LLM to classify reasoning relationships between related
 	// memory pairs and creates typed edges (caused_by, prevents, implies).
+	// Intended for the ghost infer-edges CLI / automated batch jobs. For
+	// agent-driven classification, prefer ListReasoningCandidates.
 	InferEdges(ctx context.Context, p InferEdgesParams) (*InferResult, error)
+
+	// ListReasoningCandidates returns relates_to pairs that do not yet have a
+	// typed reasoning edge, so the caller (an LLM agent) can classify them
+	// and commit edges via CreateEdge. Ghost does zero LLM work.
+	ListReasoningCandidates(ctx context.Context, p ReasoningCandidatesParams) (*ReasoningCandidatesResult, error)
 
 	// Close closes the store.
 	Close() error

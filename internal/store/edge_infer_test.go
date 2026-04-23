@@ -63,6 +63,48 @@ func TestInferEdges(t *testing.T) {
 	}
 }
 
+func TestListReasoningCandidates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, PutParams{NS: "test", Key: "deadline", Content: "Big deadline Friday"})
+	s.Put(ctx, PutParams{NS: "test", Key: "anxiety", Content: "Feeling anxious about work"})
+	s.Put(ctx, PutParams{NS: "test", Key: "vegan", Content: "I am vegan"})
+	s.Put(ctx, PutParams{NS: "test", Key: "cheese", Content: "I don't eat cheese"})
+	s.Put(ctx, PutParams{NS: "test", Key: "solo", Content: "Unconnected memory"})
+
+	// 2 candidate relates_to pairs
+	s.CreateEdge(ctx, EdgeParams{FromNS: "test", FromKey: "anxiety", ToNS: "test", ToKey: "deadline", Rel: "relates_to"})
+	s.CreateEdge(ctx, EdgeParams{FromNS: "test", FromKey: "vegan", ToNS: "test", ToKey: "cheese", Rel: "relates_to"})
+
+	res, err := s.ListReasoningCandidates(ctx, ReasoningCandidatesParams{NS: "test"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(res.Candidates) != 2 {
+		t.Fatalf("candidates=%d want 2", len(res.Candidates))
+	}
+	if res.SkippedExisting != 0 {
+		t.Errorf("skipped_existing=%d want 0", res.SkippedExisting)
+	}
+
+	// After adding a caused_by edge on one pair, that pair should be excluded
+	s.CreateEdge(ctx, EdgeParams{FromNS: "test", FromKey: "anxiety", ToNS: "test", ToKey: "deadline", Rel: "caused_by"})
+	res2, _ := s.ListReasoningCandidates(ctx, ReasoningCandidatesParams{NS: "test"})
+	if len(res2.Candidates) != 1 {
+		t.Errorf("candidates after reasoning edge=%d want 1", len(res2.Candidates))
+	}
+	if res2.SkippedExisting != 1 {
+		t.Errorf("skipped_existing=%d want 1", res2.SkippedExisting)
+	}
+
+	// Seed filter
+	res3, _ := s.ListReasoningCandidates(ctx, ReasoningCandidatesParams{NS: "test", Seed: []string{"vegan"}})
+	if len(res3.Candidates) != 1 || res3.Candidates[0].FromKey != "vegan" {
+		t.Errorf("seed filter failed: %+v", res3.Candidates)
+	}
+}
+
 func TestInferEdgesIdempotent(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

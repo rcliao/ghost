@@ -42,7 +42,7 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 | `internal/chunker` | Markdown-aware text splitting (~400 char targets) | 193 LOC |
 | `internal/embedding` | Pluggable vector embeddings (local/Ollama/OpenAI) | ~320 LOC |
 | `internal/ingest` | Markdown file parser (H2 → sections → memories) | 154 LOC |
-| `internal/mcpserver` | MCP server over stdio (10 tools: put, get, search, context, expand, consolidate, curate, reflect, edge, infer_edges) | ~520 LOC |
+| `internal/mcpserver` | MCP server over stdio (10 tools: put, get, search, context, expand, consolidate, curate, reflect, edge, edge_candidates) | ~520 LOC |
 | `memory.go` | Public library API — re-exports from internal packages | 102 LOC |
 
 ## Data Model
@@ -281,7 +281,7 @@ Exposes 10 tools over stdio transport using `github.com/modelcontextprotocol/go-
 - `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin)
 - `ghost_edge` — Create, remove, or list weighted edges between memories for DAG-based retrieval
 - `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar, edge decay)
-- `ghost_infer_edges` — Batch-infer reasoning edges (caused_by, prevents, implies) between related memory pairs via LLM classification. Out-of-band — not on the hot path.
+- `ghost_edge_candidates` — Return `relates_to` pairs that do not yet have a typed reasoning edge, so the calling agent (itself an LLM) can classify them and commit edges via `ghost_edge`. Ghost does zero LLM work — the hot path AND this hygiene path stay LLM-free. For fully-automated batch inference without an agent in the loop, use the `ghost infer-edges` CLI instead, which does spawn an LLM.
 
 Started via `ghost mcp-serve` subcommand. See [Claude Code Setup](quickstart-claude-code.md) or [Integration Guide](integration-guide.md) for usage patterns.
 

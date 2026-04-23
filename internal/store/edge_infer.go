@@ -51,6 +51,113 @@ type InferResult struct {
 	Inferences    []InferredEdge  `json:"inferences"`
 }
 
+// ReasoningCandidatesParams filters which relates_to pairs to surface for
+// agent-driven classification.
+type ReasoningCandidatesParams struct {
+	NS       string   // namespace to scan (required)
+	MaxPairs int      // max candidate pairs to return (default 50)
+	Seed     []string // optional: only return pairs touching these memory keys
+}
+
+// ReasoningCandidate is a relates_to pair with content, surfaced to the caller
+// so an LLM agent can classify whether a caused_by / prevents / implies edge
+// should replace or augment the relates_to link.
+type ReasoningCandidate struct {
+	FromKey        string  `json:"from_key"`
+	FromContent    string  `json:"from_content"`
+	ToKey          string  `json:"to_key"`
+	ToContent      string  `json:"to_content"`
+	RelatesWeight  float64 `json:"relates_weight"`
+}
+
+// ReasoningCandidatesResult is returned by ListReasoningCandidates.
+type ReasoningCandidatesResult struct {
+	Candidates      []ReasoningCandidate `json:"candidates"`
+	SkippedExisting int                  `json:"skipped_existing"` // pairs already with a reasoning edge
+}
+
+// ListReasoningCandidates returns relates_to pairs that do NOT yet have a
+// typed reasoning edge (caused_by / prevents / implies). This is the
+// agent-driven counterpart to InferEdges: Ghost does zero LLM work; the
+// caller (which is itself an LLM) classifies each pair in its own reasoning
+// and commits edges via CreateEdge.
+//
+// Ghost's hot path stays LLM-free AND this hygiene-time call also stays
+// LLM-free — the LLM loop is owned entirely by the agent.
+func (s *SQLiteStore) ListReasoningCandidates(ctx context.Context, p ReasoningCandidatesParams) (*ReasoningCandidatesResult, error) {
+	if p.MaxPairs <= 0 {
+		p.MaxPairs = 50
+	}
+	result := &ReasoningCandidatesResult{}
+
+	// Fetch relates_to pairs, skipping those that already have a reasoning edge.
+	// Using NOT EXISTS rather than post-filter to keep the database honest about
+	// the max_pairs limit — we return up to MaxPairs NEW candidates.
+	q := `
+		SELECT e.from_id, e.to_id, m1.key, m1.content, m2.key, m2.content, e.weight
+		FROM memory_edges e
+		INNER JOIN memories m1 ON m1.id = e.from_id
+		INNER JOIN memories m2 ON m2.id = e.to_id
+		WHERE e.rel = 'relates_to'
+		  AND m1.ns = ? AND m2.ns = ?
+		  AND m1.deleted_at IS NULL AND m2.deleted_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM memory_edges e2
+		    WHERE e2.from_id = e.from_id AND e2.to_id = e.to_id
+		      AND e2.rel IN ('caused_by','prevents','implies')
+		  )
+		ORDER BY e.weight DESC
+		LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, q, p.NS, p.NS, p.MaxPairs)
+	if err != nil {
+		return nil, fmt.Errorf("scan pairs: %w", err)
+	}
+	defer rows.Close()
+
+	seedSet := make(map[string]bool, len(p.Seed))
+	for _, k := range p.Seed {
+		seedSet[k] = true
+	}
+
+	for rows.Next() {
+		var fromID, toID, fromKey, fromContent, toKey, toContent string
+		var weight float64
+		if err := rows.Scan(&fromID, &toID, &fromKey, &fromContent, &toKey, &toContent, &weight); err != nil {
+			continue
+		}
+		if len(seedSet) > 0 && !seedSet[fromKey] && !seedSet[toKey] {
+			continue
+		}
+		// Truncate long content so the caller's prompt budget is predictable.
+		result.Candidates = append(result.Candidates, ReasoningCandidate{
+			FromKey:       fromKey,
+			FromContent:   truncStrN(fromContent, 1500),
+			ToKey:         toKey,
+			ToContent:     truncStrN(toContent, 1500),
+			RelatesWeight: weight,
+		})
+	}
+	rows.Close()
+
+	// Count how many pairs were skipped because they already have a reasoning edge.
+	countQ := `
+		SELECT COUNT(*)
+		FROM memory_edges e
+		INNER JOIN memories m1 ON m1.id = e.from_id
+		INNER JOIN memories m2 ON m2.id = e.to_id
+		WHERE e.rel = 'relates_to'
+		  AND m1.ns = ? AND m2.ns = ?
+		  AND m1.deleted_at IS NULL AND m2.deleted_at IS NULL
+		  AND EXISTS (
+		    SELECT 1 FROM memory_edges e2
+		    WHERE e2.from_id = e.from_id AND e2.to_id = e.to_id
+		      AND e2.rel IN ('caused_by','prevents','implies')
+		  )`
+	_ = s.db.QueryRowContext(ctx, countQ, p.NS, p.NS).Scan(&result.SkippedExisting)
+
+	return result, nil
+}
+
 const inferEdgeSystemPrompt = `You are an expert at identifying reasoning relationships between two pieces of text from a user's memory.
 
 Given two memories (A and B), decide if one of these reasoning relationships holds:
