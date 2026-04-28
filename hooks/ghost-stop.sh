@@ -170,8 +170,31 @@ STORED_KEYS=$(cat "$KEYS_FILE" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 # Consolidate under a session summary node if we have >= 2 learnings and a summary
 KEY_COUNT=$(cat "$KEYS_FILE" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$KEY_COUNT" -ge 2 ] && [ -n "$SUMMARY_CONTENT" ]; then
-  SUMMARY_KEY="session-${PROJECT_NAME}-${DATE}-${SESSION_ID:0:8}"
-  SUMMARY_TAGS="project:${PROJECT_NAME},${SESSION_TAG}"
+  # Key off session_id only — NOT cwd or date — so a single Claude conversation
+  # always lands on the same memory key even if the user changes directories
+  # mid-session or the session spans midnight UTC. Ghost versions repeat
+  # firings as v1 -> v2 -> ... under one key instead of creating N siblings.
+  # Project / date / cwd are preserved as tags so retrieval can still filter.
+  if [ -n "${SESSION_ID:-}" ]; then
+    SUMMARY_KEY="session-${SESSION_ID:0:8}"
+  else
+    # Fallback for hook firings without a session_id (rare): keep the legacy
+    # composite so we don't collide with another session under "session-".
+    SUMMARY_KEY="session-${PROJECT_NAME}-${DATE}-$(date +%s)"
+  fi
+  SUMMARY_TAGS="project:${PROJECT_NAME},date:${DATE},session-summary,${SESSION_TAG}"
+
+  # If the same SESSION_ID already produced a summary memory (e.g. earlier
+  # firing in the same conversation, possibly from a different cwd), merge
+  # its tags in so we don't drop project:A when the cwd switches to project:B.
+  EXISTING_TAGS=$($GHOST get -n "$AGENT_NS" -k "$SUMMARY_KEY" -f json 2>/dev/null \
+    | jq -r '.tags[]?' 2>/dev/null | sort -u)
+  if [ -n "$EXISTING_TAGS" ]; then
+    SUMMARY_TAGS=$( {
+      echo "$SUMMARY_TAGS" | tr ',' '\n'
+      echo "$EXISTING_TAGS"
+    } | sort -u | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+  fi
 
   echo "Consolidating $KEY_COUNT learnings under $SUMMARY_KEY" >> "$DEBUG_LOG"
   $GHOST consolidate -n "$AGENT_NS" \
