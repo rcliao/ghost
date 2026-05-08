@@ -270,8 +270,8 @@ func (s *SQLiteStore) applyMerge(ctx context.Context, group []model.Memory) (int
 		tagSet[t] = true
 	}
 	maxImportance := survivor.Importance
-	totalAccessCount := survivor.AccessCount
-	totalUtilityCount := survivor.UtilityCount
+	maxAccessCount := survivor.AccessCount
+	maxUtilityCount := survivor.UtilityCount
 	highestTier := survivor.Tier
 
 	for _, m := range group[1:] {
@@ -281,8 +281,12 @@ func (s *SQLiteStore) applyMerge(ctx context.Context, group []model.Memory) (int
 		if m.Importance > maxImportance {
 			maxImportance = m.Importance
 		}
-		totalAccessCount += m.AccessCount
-		totalUtilityCount += m.UtilityCount
+		if m.AccessCount > maxAccessCount {
+			maxAccessCount = m.AccessCount
+		}
+		if m.UtilityCount > maxUtilityCount {
+			maxUtilityCount = m.UtilityCount
+		}
 		if tierRank(m.Tier) > tierRank(highestTier) {
 			highestTier = m.Tier
 		}
@@ -314,7 +318,7 @@ func (s *SQLiteStore) applyMerge(ctx context.Context, group []model.Memory) (int
 	_, err = tx.ExecContext(ctx,
 		`UPDATE memories SET tags = ?, importance = ?, access_count = ?, utility_count = ?, tier = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		tagsJSON, maxImportance, totalAccessCount, totalUtilityCount, highestTier, survivor.ID)
+		tagsJSON, maxImportance, maxAccessCount, maxUtilityCount, highestTier, survivor.ID)
 	if err != nil {
 		return 0, fmt.Errorf("update survivor: %w", err)
 	}
@@ -379,9 +383,11 @@ func (s *SQLiteStore) applyDedup(ctx context.Context, group []model.Memory) (int
 	}
 	defer tx.Rollback()
 
-	// Transfer aggregate stats to canonical
-	totalAccess := canonical.AccessCount
-	totalUtility := canonical.UtilityCount
+	// Transfer aggregate stats to canonical (max, not sum: prevents pathological
+	// inflation across repeated reflect cycles — a memory's access_count tracks
+	// real usage, not cumulative-across-merges)
+	maxAccess := canonical.AccessCount
+	maxUtility := canonical.UtilityCount
 	tagSet := map[string]bool{}
 	for _, t := range canonical.Tags {
 		tagSet[t] = true
@@ -392,8 +398,12 @@ func (s *SQLiteStore) applyDedup(ctx context.Context, group []model.Memory) (int
 		if m.Pinned {
 			continue
 		}
-		totalAccess += m.AccessCount
-		totalUtility += m.UtilityCount
+		if m.AccessCount > maxAccess {
+			maxAccess = m.AccessCount
+		}
+		if m.UtilityCount > maxUtility {
+			maxUtility = m.UtilityCount
+		}
 		for _, t := range m.Tags {
 			tagSet[t] = true
 		}
@@ -432,7 +442,7 @@ func (s *SQLiteStore) applyDedup(ctx context.Context, group []model.Memory) (int
 	_, err = tx.ExecContext(ctx,
 		`UPDATE memories SET access_count = ?, utility_count = ?, tags = ?
 		 WHERE id = ? AND deleted_at IS NULL`,
-		totalAccess, totalUtility, tagsJSON, canonical.ID)
+		maxAccess, maxUtility, tagsJSON, canonical.ID)
 	if err != nil {
 		return archived, fmt.Errorf("update canonical: %w", err)
 	}
