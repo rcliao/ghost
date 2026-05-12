@@ -496,6 +496,17 @@ LongMemEval re-verified at R@5=0.9083, MRR=0.8277 (reranker not enabled in its
 best config; `GHOST_RERANK_TOP_N` is no-op when reranker is off). The change is
 purely additive — defaults preserve existing behavior.
 
+**Remaining multi-hop failure mode** (22/89 at rank 6+ even after rerank top-20):
+mostly inferential queries about specific people — "Would X be...?",
+"What's X's political leaning?", "Does X live near beaches?". The cross-encoder
+finds the right session within top-20 but doesn't lift it into top-5. Sessions
+fit fully in 8×1024-char chunk coverage (max 5871 chars in LoCoMo), so chunk
+truncation isn't the bottleneck. The reranker model (`ms-marco-MiniLM-L-6-v2`)
+is trained on MS-MARCO passage ranking — likely under-confident on conversational
+inference. Future levers to try: (a) score-blend cross-encoder with original
+dense+FTS score instead of full replacement; (b) entity-co-occurrence boost for
+queries that name a specific person; (c) stronger cross-encoder model.
+
 **Run with best config:**
 ```bash
 GHOST_EMBED_PROVIDER=local \
