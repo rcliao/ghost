@@ -623,11 +623,12 @@ func TestSimilarityMergeApplied(t *testing.T) {
 		t.Error("absorbed m3 should be soft-deleted")
 	}
 
-	// Survivor should have summed access counts
+	// Survivor should have the max member access_count (not sum — see
+	// commit 89d891b: sums inflated pathologically across repeated merges)
 	var accessCount int
 	s.db.QueryRow(`SELECT access_count FROM memories WHERE id = 'm1'`).Scan(&accessCount)
-	if accessCount != 3 {
-		t.Errorf("expected survivor access_count=3, got %d", accessCount)
+	if accessCount != 1 {
+		t.Errorf("expected survivor access_count=1 (max of [1,1,1]), got %d", accessCount)
 	}
 
 	// Survivor should have max importance

@@ -10,6 +10,52 @@ import (
 	"github.com/rcliao/ghost/internal/model"
 )
 
+// SessionScope biases scoring toward memories from the current session window
+// without filtering anything out. Memories that match either ScopeTags (any) or
+// were created at/after Since get their score multiplied by BoostFactor.
+// Designed for chat- and date-scoped recall (e.g. "today's meal memos in
+// chat:832881763") so same-day same-chat content reliably survives session
+// rotation packs and short-budget context assembly.
+type SessionScope struct {
+	Tags        []string  // e.g. ["chat:832881763", "date:2026-05-12"] — OR-matched against memory.Tags
+	Since       time.Time // optional: zero means ignore. Memories with CreatedAt >= Since also get boosted.
+	BoostFactor float64   // multiplier on score (default 2.5 when applied; <=1 disables the boost)
+}
+
+// matches reports whether the given memory falls inside this scope.
+func (s *SessionScope) matches(m model.Memory) bool {
+	if s == nil {
+		return false
+	}
+	if !s.Since.IsZero() && !m.CreatedAt.Before(s.Since) {
+		return true
+	}
+	if len(s.Tags) == 0 {
+		return false
+	}
+	mtags := map[string]bool{}
+	for _, t := range m.Tags {
+		mtags[t] = true
+	}
+	for _, t := range s.Tags {
+		if mtags[t] {
+			return true
+		}
+	}
+	return false
+}
+
+// boost returns the score multiplier to apply, or 1.0 if not in scope.
+func (s *SessionScope) boost(m model.Memory) float64 {
+	if s == nil || s.BoostFactor <= 1.0 {
+		return 1.0
+	}
+	if s.matches(m) {
+		return s.BoostFactor
+	}
+	return 1.0
+}
+
 // ContextParams holds parameters for context assembly.
 type ContextParams struct {
 	NS             string
@@ -25,6 +71,7 @@ type ContextParams struct {
 	MaxMemoryTokens int             // max tokens per memory; larger memories get excerpted (default: 400, 0 = no limit)
 	MinScore       float64          // absolute score floor; candidates below this are dropped (0 = no filter)
 	MinSpread      float64          // top-1 must exceed top-N by this delta (0 = no filter). Catches "flat noise" queries where retrieval couldn't discriminate.
+	Scope          *SessionScope    // optional: boost memories matching the current session window (chat tag, date tag, or since cutoff)
 }
 
 // ContextMemory is a scored memory for context output.
@@ -137,7 +184,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 			continue // already included from pinned tiers
 		}
 		m := r.Memory
-		score := computeContextScore(m, r.Similarity, now)
+		score := computeContextScore(m, r.Similarity, now, p.Scope)
 		scoreMap[m.ID] = &contextCandidate{memory: m, score: score}
 	}
 
@@ -476,7 +523,7 @@ func (s *SQLiteStore) countActiveMemories(ctx context.Context, ns string) (int, 
 }
 
 // computeContextScore calculates the composite context score for a memory.
-func computeContextScore(m model.Memory, similarity float64, now time.Time) float64 {
+func computeContextScore(m model.Memory, similarity float64, now time.Time, scope *SessionScope) float64 {
 	// Relevance: use vector cosine similarity when available (>= 0.3 threshold from
 	// vector search), otherwise use 0.5 base for FTS/LIKE matches. Values below 0.3
 	// are RRF fusion scores (not cosine), and would cripple relevance if used directly.
@@ -507,7 +554,7 @@ func computeContextScore(m model.Memory, similarity float64, now time.Time) floa
 	// Kind-specific composite weights, then apply tier as multiplicative modifier
 	w := kindWeights(m.Kind)
 	base := relevance*w.relevance + recency*w.recency + importance*w.importance + accessFreq*w.access
-	return base * tierMultiplier(m.Tier)
+	return base * tierMultiplier(m.Tier) * scope.boost(m)
 }
 
 // loadPinnedMemories loads memories with pinned=1, ordered by importance.
