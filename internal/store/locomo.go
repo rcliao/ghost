@@ -51,6 +51,7 @@ type LoCoMoConfig struct {
 	MultiQuery     bool // if true, decompose complex queries into sub-queries
 	PRF            bool // if true, run pseudo-relevance feedback for multi-hop
 	MMR            bool // if true, diversify top results via MMR
+	CatFilter      string // if non-empty, only evaluate this category name (e.g. "multi-hop")
 	ProgressFunc   func(done, total int)
 }
 
@@ -61,6 +62,20 @@ type LoCoMoReport struct {
 	Total     int                             `json:"total"`
 	ByCat     map[string]*LongMemEvalTypeAgg  `json:"by_category"` // reuse type agg
 	Overall   map[string]float64              `json:"overall"`
+	Results   []LoCoMoResult                  `json:"results,omitempty"`
+}
+
+// LoCoMoResult holds per-question retrieval outcome for offline analysis.
+type LoCoMoResult struct {
+	SampleID     string             `json:"sample_id"`
+	Category     string             `json:"category"`
+	Question     string             `json:"question"`
+	Answer       string             `json:"answer,omitempty"`
+	Evidence     []string           `json:"evidence"`      // raw dia_ids
+	Relevant     []string           `json:"relevant"`      // session keys
+	Retrieved    []string           `json:"retrieved"`     // top session keys (max 20)
+	GoldRank     int                `json:"gold_rank"`     // 1-based rank of first relevant, 0 if not found
+	Metrics      map[string]float64 `json:"metrics"`
 }
 
 var diaIDRe = regexp.MustCompile(`^D(\d+):(\d+)$`)
@@ -278,6 +293,9 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 			if qa.Category == 5 { // skip adversarial for retrieval eval
 				continue
 			}
+			if cfg.CatFilter != "" && categoryName(qa.Category) != cfg.CatFilter {
+				continue
+			}
 			if cfg.PerCatLimit > 0 && catCounts[qa.Category] >= cfg.PerCatLimit {
 				continue
 			}
@@ -335,6 +353,36 @@ func RunLoCoMo(cfg LoCoMoConfig, newStore func() (*SQLiteStore, func(), error)) 
 			mrr := MRR(retrieved, relSet)
 			report.ByCat[catName].Metrics["mrr"] += mrr
 			report.Overall["mrr"] += mrr
+
+			// Per-question record for offline failure analysis.
+			goldRank := 0
+			for ri, k := range retrieved {
+				if relSet[k] {
+					goldRank = ri + 1
+					break
+				}
+			}
+			topRet := retrieved
+			if len(topRet) > 20 {
+				topRet = topRet[:20]
+			}
+			perQ := LoCoMoResult{
+				SampleID:  entry.SampleID,
+				Category:  catName,
+				Question:  qa.Question,
+				Answer:    qa.Answer,
+				Evidence:  qa.Evidence,
+				Relevant:  evidenceSessions,
+				Retrieved: append([]string(nil), topRet...),
+				GoldRank:  goldRank,
+				Metrics: map[string]float64{
+					"mrr":       mrr,
+					"recall@5":  RecallAtK(retrieved, evidenceSessions, 5),
+					"recall@10": RecallAtK(retrieved, evidenceSessions, 10),
+					"ndcg@10":   NDCGAtK(retrieved, evidenceSessions, 10),
+				},
+			}
+			report.Results = append(report.Results, perQ)
 
 			report.ByCat[catName].Count++
 			catCounts[qa.Category]++

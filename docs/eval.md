@@ -467,6 +467,34 @@ GHOST_BENCH_EMBED_CACHE=testdata/locomo/embed_cache.json \
 - + speaker-agnostic turn indexing: MRR 0.433, R@5 0.547
 - + windowed speaker chunks (500-char windows, 2-turn overlap): MRR **0.595**, R@5 **0.750** (+49.5%)
 - + edge expansion (entity co-occurrence) and multi-query decomposition
+- + cross-encoder rerank top-20 (`GHOST_RERANKER=local GHOST_RERANK_TOP_N=20`): multi-hop MRR **0.503 → 0.620** (+23%), top-1 hits 28/89 → 45/89 — see breakdown below
+
+**Multi-hop rerank-window expansion (2026-05-11):**
+
+Baseline failure analysis showed 22/89 multi-hop questions had ground-truth at rank 6-15
+(findable but past the top-5 cutoff). Default reranker window was `min(10, candidates)`,
+so widening to top-20 lets the cross-encoder rescue these into top-5.
+
+| Rank bucket (multi-hop, n=89) | Baseline | Rerank top-20 |
+|---|---|---|
+| top-1 | 28 | **45** |
+| rank 2-5 | 35 | 22 |
+| rank 6-15 | 22 | **16** |
+| rank 16+ | 4 | 6 |
+
+| Metric (multi-hop, n=89) | Baseline | Rerank top-20 | Δ |
+|---|---|---|---|
+| MRR | 0.503 | **0.620** | +0.117 (+23%) |
+| R@5 | 0.610 | **0.632** | +0.022 |
+| NDCG@10 | 0.540 | **0.613** | +0.073 |
+
+Cross-category sanity check (PER_CAT=25, n=100, rerank top-20): Overall MRR 0.779,
+R@5 0.793. Other categories healthy (open-domain MRR 0.941, temporal 0.849,
+single-hop 0.773 — no regression vs full-baseline numbers reported above).
+
+LongMemEval re-verified at R@5=0.9083, MRR=0.8277 (reranker not enabled in its
+best config; `GHOST_RERANK_TOP_N` is no-op when reranker is off). The change is
+purely additive — defaults preserve existing behavior.
 
 **Run with best config:**
 ```bash
@@ -489,6 +517,7 @@ GHOST_BENCH_MULTI_QUERY=1 \
 
 **Optional features (env vars):**
 - `GHOST_RERANKER=local` — enables cross-encoder reranking (~42 min for 470 questions vs 21s without)
+- `GHOST_RERANK_TOP_N=N` — override default reranker window (10). Widening to 20 helps LoCoMo multi-hop (rescues evidence at rank 6-15 into top-5). Higher N → linearly more cross-encoder calls.
 - `GHOST_EMBED_MODEL_LOCAL=gte-small` — better embedding model (same 384 dims, +7% recall)
 - `GHOST_BENCH_EMBED_CACHE=path` — pre-computed embeddings for fast iteration
 - `GHOST_BENCH_EXPAND_EDGES=1` — build entity-based edges and use edge expansion during search (multi-hop)

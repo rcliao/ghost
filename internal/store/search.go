@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -651,8 +653,15 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	// Cross-encoder reranking with MaxP (max passage) scoring:
 	// Rerank the top-N candidates using cross-encoder with chunked scoring.
 	// Only rerank top candidates to keep latency reasonable.
+	// GHOST_RERANK_TOP_N overrides the default window (10) — useful for
+	// benchmarks where evidence routinely lands at rank 6-15 (LoCoMo multi-hop).
 	if s.reranker != nil && len(results) > 1 {
 		rerankN := 10
+		if v := os.Getenv("GHOST_RERANK_TOP_N"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 1 {
+				rerankN = n
+			}
+		}
 		if rerankN > len(results) {
 			rerankN = len(results)
 		}

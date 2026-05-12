@@ -61,6 +61,7 @@ func TestLoCoMo(t *testing.T) {
 	multiQuery := os.Getenv("GHOST_BENCH_MULTI_QUERY") == "1"
 	prf := os.Getenv("GHOST_BENCH_PRF") == "1"
 	mmr := os.Getenv("GHOST_BENCH_MMR") == "1"
+	catFilter := os.Getenv("GHOST_BENCH_LOCOMO_CAT") // e.g. "multi-hop"
 
 	cfg := LoCoMoConfig{
 		DatasetPath:    datasetPath,
@@ -71,6 +72,7 @@ func TestLoCoMo(t *testing.T) {
 		MultiQuery:     multiQuery,
 		PRF:            prf,
 		MMR:            mmr,
+		CatFilter:      catFilter,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},
