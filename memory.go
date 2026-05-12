@@ -42,6 +42,10 @@ type SearchResult = store.SearchResult
 // ContextParams holds parameters for context assembly.
 type ContextParams = store.ContextParams
 
+// SessionScope biases context scoring toward memories matching the current
+// session window (e.g. same chat, same date) without filtering anything out.
+type SessionScope = store.SessionScope
+
 // ContextMemory is a scored memory for context output.
 type ContextMemory = store.ContextMemory
 
