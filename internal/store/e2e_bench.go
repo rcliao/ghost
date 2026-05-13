@@ -582,6 +582,59 @@ Output format: a compact bulleted summary (1-8 bullets, 10-30 words each). Each 
 
 Do NOT answer the question yourself — just extract facts the memories contain.`
 
+// classifyQueryIntent returns "wide" or "narrow" — heuristic-only, no LLM call.
+//
+// "wide" queries are inferential/multi-fact: speculation, opinion, advice, or
+// queries spanning multiple sessions ("considering", "patterns", "advice").
+// They benefit from compress-wide (top-15) because the latent fact may be
+// distributed across multiple sessions.
+//
+// "narrow" queries are specific factual recalls ("which state?", "what date?",
+// "did X happen?"). They benefit from compress-narrow (top-5) because more
+// candidates dilute the signal.
+//
+// Default when no signal is present: narrow. The LoCoMo-Plus state-cue
+// regression from compress-wide showed wider retrieval *hurts* state queries.
+func classifyQueryIntent(query string) string {
+	q := strings.ToLower(query)
+	// Strong "wide" signals — speculation, inference, multi-fact synthesis.
+	wideTerms := []string{
+		"might", "would", "could", "should", "likely", "possibly",
+		"potentially", "probably", "consider", "considering", "advice",
+		"patterns", "describe", "attributes", "characteristics",
+		"open to", "leaning", "interested in", "personality",
+		"alternative", "instead", "after", "future",
+		"what kind of", "what type of",
+	}
+	for _, t := range wideTerms {
+		if strings.Contains(q, t) {
+			return "wide"
+		}
+	}
+	// Strong "narrow" signals — specific factual.
+	narrowTerms := []string{
+		"which state", "what state", "what date", "what time",
+		"how many", "how often", "how much", "what year",
+		"when did", "when does", "where did", "where does",
+		"specifically", "exactly", "exact",
+	}
+	for _, t := range narrowTerms {
+		if strings.Contains(q, t) {
+			return "narrow"
+		}
+	}
+	return "narrow"
+}
+
+// compressAutoTopK returns the retrieval width to use for ghost-compress-auto
+// given the query — 5 for narrow intent, 15 for wide intent.
+func compressAutoTopK(query string) int {
+	if classifyQueryIntent(query) == "wide" {
+		return 15
+	}
+	return 5
+}
+
 // compressContext asks the LLM to extract query-relevant facts from memories.
 // Returns compressed text, or the original on LLM error.
 func compressContext(ctx context.Context, llm LLMClient, query string, memories []SearchResult) string {
@@ -879,6 +932,25 @@ func RunE2ELongMemEval(cfg E2EConfig, newStore func() (*SQLiteStore, func(), err
 					Limit: wideLimit, IncludeAll: true,
 				})
 				userMsg = compressContext(ctx, cfg.LLM, entry.Question, results) + entry.Question
+			case "ghost-compress-auto":
+				// Heuristic classifier picks narrow (top-5) for specific factual
+				// queries, wide (top-15) for inferential/speculative queries.
+				autoK := compressAutoTopK(entry.Question)
+				searchLimit := cfg.TopK
+				if autoK > searchLimit {
+					searchLimit = autoK
+				}
+				if autoK > 5 && searchLimit < 15 {
+					searchLimit = 15
+				}
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: entry.Question,
+					Limit: searchLimit, IncludeAll: true,
+				})
+				if autoK > len(results) {
+					autoK = len(results)
+				}
+				userMsg = compressContext(ctx, cfg.LLM, entry.Question, results[:autoK]) + entry.Question
 			case "oracle":
 				var oracleResults []SearchResult
 				for _, sid := range entry.AnswerSessionIDs {
@@ -1162,6 +1234,23 @@ func RunE2ELoCoMo(cfg E2EConfig, newStore func() (*SQLiteStore, func(), error)) 
 						Limit: wideLimit, IncludeAll: true,
 					})
 					userMsg = compressContext(ctx, cfg.LLM, qa.Question, results) + qa.Question
+				case "ghost-compress-auto":
+					autoK := compressAutoTopK(qa.Question)
+					searchLimit := cfg.TopK
+					if autoK > searchLimit {
+						searchLimit = autoK
+					}
+					if autoK > 5 && searchLimit < 15 {
+						searchLimit = 15
+					}
+					results, _ := store.Search(ctx, SearchParams{
+						NS: cfg.NS, Query: qa.Question,
+						Limit: searchLimit, IncludeAll: true,
+					})
+					if autoK > len(results) {
+						autoK = len(results)
+					}
+					userMsg = compressContext(ctx, cfg.LLM, qa.Question, results[:autoK]) + qa.Question
 				case "oracle":
 					evidenceSessions := evidenceToSessions(qa.Evidence)
 					var oracleResults []SearchResult

@@ -342,3 +342,30 @@ func TestScoreAnswer(t *testing.T) {
 
 // Ensure model import is used (for oracle mode SearchResult construction)
 var _ = model.Memory{}
+
+func TestClassifyQueryIntent(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string
+	}{
+		// Inferential / multi-fact → wide
+		{"What might John's financial status be?", "wide"},
+		{"What advice might Evan and Sam give?", "wide"},
+		{"What attributes describe John?", "wide"},
+		{"What alternative career might Nate consider after gaming?", "wide"},
+		{"Would Caroline want to move back to her home country soon?", "wide"},
+		{"What personality traits might Melanie say Caroline has?", "wide"},
+		// Specific factual → narrow
+		{"What state did Nate visit?", "narrow"},
+		{"Which country was Evan visiting in May 2023?", "narrow"},
+		{"When did I last check my email?", "narrow"},
+		{"How many cups of coffee did I have yesterday?", "narrow"},
+		{"Does Deborah live close to the beach or the mountains?", "narrow"},
+	}
+	for _, tt := range cases {
+		got := classifyQueryIntent(tt.query)
+		if got != tt.want {
+			t.Errorf("classifyQueryIntent(%q) = %s, want %s", tt.query, got, tt.want)
+		}
+	}
+}

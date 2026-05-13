@@ -416,6 +416,19 @@ func RunE2ELoCoMoPlus(cfg E2EConfig, newStore func() (*SQLiteStore, func(), erro
 					NS: cfg.NS, Query: e.TriggerQuery, Limit: wideLimit, IncludeAll: true,
 				})
 				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, wideLimit)) + e.TriggerQuery
+			case "ghost-compress-auto":
+				autoK := compressAutoTopK(e.TriggerQuery)
+				searchLimit := cfg.TopK
+				if autoK > searchLimit {
+					searchLimit = autoK
+				}
+				if autoK > 5 && searchLimit < 15 {
+					searchLimit = 15
+				}
+				results, _ := store.Search(ctx, SearchParams{
+					NS: cfg.NS, Query: e.TriggerQuery, Limit: searchLimit, IncludeAll: true,
+				})
+				userMsg = compressContext(ctx, cfg.LLM, e.TriggerQuery, capResults(results, autoK)) + e.TriggerQuery
 			case "ghost-rewrite-compress":
 				// LLM rewrites the query, searches with it, then compresses.
 				// Tests whether stacking rewrite + compress compounds gains.
