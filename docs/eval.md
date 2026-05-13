@@ -289,15 +289,62 @@ GHOST_BENCH_QUESTION=42 \
 
 **Protocol:** For each question, ingests ~50 timestamped chat sessions via `BenchInsert()`, queries via `Search()`, and measures retrieval metrics against human-annotated evidence session IDs.
 
-### HaluMem (2025, scaffold only)
+### HaluMem (2025, retrieval-only harness implemented)
 
-[HaluMem](https://arxiv.org/abs/2511.03506) ([repo](https://github.com/MemTensor/HaluMem)) is the first operation-level hallucination benchmark for agent memory systems. Three tasks: Memory Extraction, Memory Updating, Question Answering. Each measures accuracy, hallucination rate, and omission rate.
+[HaluMem](https://arxiv.org/abs/2511.03506) ([repo](https://github.com/MemTensor/HaluMem),
+[dataset](https://huggingface.co/datasets/IAAR-Shanghai/HaluMem)) is the first
+operation-level hallucination benchmark for agent memory systems. The full
+benchmark scores Extraction / Update / QA with LLM judges. Ghost ships a
+**retrieval-only harness** (`internal/store/halumem.go`) for the QA task:
+ingest gold `memory_points` per user → `Search` per question → score retrieved
+keys against the question's evidence `memory_content`. No LLM in the Ghost loop.
 
-**Status**: loader scaffold only (`halumem.go`). Full integration is non-trivial — HaluMem's evaluation harness is Python-based and adapts to each memory system (Mem0, Zep, MemOS, Supermemory, Memobase) via `eval_*.py` scripts. To add Ghost:
-- Option A: Expose Ghost via HTTP API + write `eval_ghost.py` upstream
-- Option B: Port their evaluation tasks to Go (~3 tasks × hallucination metrics)
+**Setup:**
 
-See `internal/store/halumem.go` for integration plan.
+```bash
+mkdir -p testdata/halumem
+curl -L https://huggingface.co/datasets/IAAR-Shanghai/HaluMem/resolve/main/HaluMem-Medium.jsonl \
+  -o testdata/halumem/HaluMem-Medium.jsonl
+
+# Baseline (no reranker, ~few sec/user)
+GHOST_EMBED_PROVIDER=local \
+GHOST_BENCH_HALUMEM=testdata/halumem/HaluMem-Medium.jsonl \
+GHOST_BENCH_USER_LIMIT=5 \
+  go test ./internal/store/ -run TestHaluMemRetrieval -v -timeout 30m
+
+# With cross-encoder rerank top-20
+GHOST_EMBED_PROVIDER=local \
+GHOST_RERANKER=local \
+GHOST_RERANK_TOP_N=20 \
+GHOST_BENCH_HALUMEM=testdata/halumem/HaluMem-Medium.jsonl \
+GHOST_BENCH_USER_LIMIT=5 \
+  go test ./internal/store/ -run TestHaluMemRetrieval -v -timeout 60m
+```
+
+**Initial results (HaluMem-Medium, 5 users, 688 questions, retrieval only):**
+
+| Question type | n | Baseline MRR | + Rerank top-20 MRR | Δ |
+|---|---|---|---|---|
+| **Overall** | **688** | **0.349** | **0.571** | **+64%** |
+| Memory Conflict | 182 | 0.520 | 0.732 | +41% |
+| Basic Fact Recall | 190 | 0.301 | 0.566 | +88% |
+| Generalization & Application | 201 | 0.319 | 0.485 | +52% |
+| Multi-hop Inference | 65 | 0.283 | 0.509 | +80% |
+| Dynamic Update | 50 | 0.116 | 0.441 | +280% |
+
+R@5 overall: 0.381 → **0.572**. Cross-encoder rerank pays off heavily on Dynamic
+Update — Ghost stores all memory_point versions; the reranker picks the latest
+fact that actually answers the question. Memory Boundary questions
+(abstention test, evidence=0) are skipped by `SkipBoundary` since recall isn't
+meaningful for them.
+
+**Out-of-scope for this harness:**
+- Memory Extraction task — requires Ghost to extract memories from raw dialogue
+  (currently we ingest pre-extracted gold `memory_points` directly).
+- Hallucination / Omission rates — require an LLM judge on Ghost's QA answer,
+  not just on retrieval. Plug into the existing `ghost-compress*` E2E modes.
+
+See `internal/store/halumem.go` for the loader + harness.
 
 ### LoCoMo-Plus (2026)
 
