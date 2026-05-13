@@ -1032,6 +1032,30 @@ func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []Se
 		}
 	}
 
+	// Optional entity-name boost: for inferential queries that mention specific
+	// proper nouns (people, places), candidates that explicitly contain those
+	// names get a small additive score bonus. Helps the LoCoMo multi-hop
+	// failure class where the cross-encoder under-promotes the right session.
+	// Tunable via GHOST_RERANK_ENTITY_BOOST (default 0 = disabled).
+	var entityBoost float32
+	if v := os.Getenv("GHOST_RERANK_ENTITY_BOOST"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil && f > 0 {
+			entityBoost = float32(f)
+		}
+	}
+	if entityBoost > 0 {
+		names := extractProperNouns(query)
+		if len(names) > 0 {
+			for i, r := range results {
+				overlap := countNameMatches(r.Content, names)
+				if overlap > 0 {
+					frac := float32(overlap) / float32(len(names))
+					docMaxScore[i] += entityBoost * frac
+				}
+			}
+		}
+	}
+
 	// Sort by max chunk score descending
 	type docScore struct {
 		idx   int
@@ -1085,6 +1109,94 @@ func chunkForReranking(content string, maxLen int) []string {
 		chunks = append(chunks, strings.Join(current, "\n"))
 	}
 	return chunks
+}
+
+// extractProperNouns picks out capitalized tokens from the query that are
+// likely proper nouns (names of people, places). Filters out leading
+// question-words ("What", "Where", ...) and other stop-uppercases so we
+// don't boost every candidate just because the query started with "What".
+func extractProperNouns(query string) []string {
+	words := strings.FieldsFunc(query, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '\''
+	})
+	stop := map[string]bool{
+		"What": true, "Where": true, "When": true, "Who": true, "Why": true, "How": true,
+		"Is": true, "Are": true, "Was": true, "Were": true, "Do": true, "Does": true, "Did": true,
+		"Would": true, "Could": true, "Should": true, "Will": true, "Can": true, "May": true,
+		"Has": true, "Have": true, "Had": true, "The": true, "A": true, "An": true,
+		"And": true, "Or": true, "But": true, "If": true, "In": true, "On": true, "At": true,
+		"To": true, "For": true, "Of": true, "With": true, "About": true, "From": true,
+		"Which": true, "That": true, "This": true, "These": true, "Those": true,
+		"It": true, "He": true, "She": true, "They": true, "We": true, "I": true,
+		"Yes": true, "No": true, "Not": true,
+	}
+	seen := make(map[string]bool)
+	var names []string
+	for i, w := range words {
+		if len(w) < 2 {
+			continue
+		}
+		c0 := w[0]
+		if c0 < 'A' || c0 > 'Z' {
+			continue
+		}
+		// Skip sentence-initial question words and other stop-uppercases.
+		if stop[w] {
+			continue
+		}
+		// First word: only keep if it has internal capitals (e.g., "iPhone")
+		// or appears again later as a real proper-noun candidate. Heuristic:
+		// for the very first word, require at least one more uppercase letter
+		// in the token (e.g., "USA") OR skip it. This avoids "Caroline want" →
+		// boosting "want" usage everywhere. But "Caroline" at position 0 IS
+		// a real name. Trade-off: keep the first token if it's not a stop word.
+		_ = i
+		// Strip possessive "'s" so "Caroline's" matches "Caroline" in content.
+		if strings.HasSuffix(w, "'s") || strings.HasSuffix(w, "'S") {
+			w = w[:len(w)-2]
+			if len(w) < 2 {
+				continue
+			}
+		}
+		if seen[w] {
+			continue
+		}
+		seen[w] = true
+		names = append(names, w)
+	}
+	return names
+}
+
+// countNameMatches counts how many of the given names appear in content
+// (case-sensitive whole-token match). Each name counts at most once.
+func countNameMatches(content string, names []string) int {
+	if content == "" || len(names) == 0 {
+		return 0
+	}
+	hits := 0
+	for _, n := range names {
+		// Cheap whole-word check: name surrounded by non-letter or string edge.
+		idx := strings.Index(content, n)
+		for idx >= 0 {
+			before := idx == 0 || !isLetter(content[idx-1])
+			afterIdx := idx + len(n)
+			after := afterIdx >= len(content) || !isLetter(content[afterIdx])
+			if before && after {
+				hits++
+				break
+			}
+			next := strings.Index(content[idx+1:], n)
+			if next < 0 {
+				break
+			}
+			idx = idx + 1 + next
+		}
+	}
+	return hits
+}
+
+func isLetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // searchMultiQuery runs multiple sub-queries and merges results via RRF.
