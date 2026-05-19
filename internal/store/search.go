@@ -655,6 +655,12 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 	// Only rerank top candidates to keep latency reasonable.
 	// GHOST_RERANK_TOP_N overrides the default window (10) — useful for
 	// benchmarks where evidence routinely lands at rank 6-15 (LoCoMo multi-hop).
+	//
+	// GHOST_RERANK_ADAPTIVE=1 narrows the window to GHOST_RERANK_MIN_N
+	// (default 5) when the pre-rerank top-1 score is well-separated from
+	// the top-5 score (spread > threshold). High spread = retrieval already
+	// confident, no need to pay for wide rerank. Default threshold 0.15
+	// chosen empirically — tune via GHOST_RERANK_SPREAD_THRESHOLD.
 	if s.reranker != nil && len(results) > 1 {
 		rerankN := 10
 		if v := os.Getenv("GHOST_RERANK_TOP_N"); v != "" {
@@ -662,11 +668,49 @@ func (s *SQLiteStore) Search(ctx context.Context, p SearchParams) ([]SearchResul
 				rerankN = n
 			}
 		}
+		skipRerank := false
+		if os.Getenv("GHOST_RERANK_ADAPTIVE") == "1" && len(results) >= 5 {
+			// Skip rerank entirely when retrieval is overwhelmingly confident:
+			// top-1 score very high AND top-5 spread comfortable. The cross-encoder
+			// rarely overturns a clear top-1 — paying ~10-20s per query for nothing.
+			// Crucially we do NOT also narrow the rerank window. On hard
+			// multi-hop queries the pre-rerank top-1 can look confident but be
+			// wrong, and the cross-encoder rescues evidence from rank 6-15 only
+			// if we hand it the full window. Narrow-when-confident regressed
+			// LoCoMo multi-hop MRR 0.620 → 0.525 in testing.
+			top1 := results[0].Similarity
+			spread := results[0].Similarity - results[4].Similarity
+			skipTop1 := 0.9
+			if v := os.Getenv("GHOST_RERANK_SKIP_TOP1"); v != "" {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+					skipTop1 = f
+				}
+			}
+			skipSpread := 0.2
+			if v := os.Getenv("GHOST_RERANK_SKIP_SPREAD"); v != "" {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+					skipSpread = f
+				}
+			}
+			if top1 >= skipTop1 && spread >= skipSpread {
+				skipRerank = true
+			}
+		}
 		if rerankN > len(results) {
 			rerankN = len(results)
 		}
-		top := s.rerankMaxP(ctx, p.Query, results[:rerankN])
-		results = append(top, results[rerankN:]...)
+		if !skipRerank {
+			rerankStart := time.Now()
+			top := s.rerankMaxP(ctx, p.Query, results[:rerankN])
+			if os.Getenv("GHOST_RERANK_DEBUG") == "1" {
+				fmt.Fprintf(os.Stderr, "rerank: n=%d query_len=%d dur_ms=%d top1=%.3f\n",
+					rerankN, len(p.Query), time.Since(rerankStart).Milliseconds(), results[0].Similarity)
+			}
+			results = append(top, results[rerankN:]...)
+		} else if os.Getenv("GHOST_RERANK_DEBUG") == "1" {
+			fmt.Fprintf(os.Stderr, "rerank: SKIP query_len=%d top1=%.3f spread=%.3f\n",
+				len(p.Query), results[0].Similarity, results[0].Similarity-results[4].Similarity)
+		}
 	}
 
 	return results, nil
@@ -986,8 +1030,22 @@ func (s *SQLiteStore) getMemoryByID(ctx context.Context, id string) (*model.Memo
 //   - max 8 chunks per doc (prevents blowup on very long conversations)
 //   - total work capped at ~80 cross-encoder calls per query
 func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []SearchResult) []SearchResult {
-	const maxChunkLen = 1024
-	const maxChunksPerDoc = 8
+	// Default: 1024-char chunks (~256 tokens, well under MiniLM's 512 cap)
+	// with up to 4 chunks per doc. Going wider (2048 chars / 512 tokens)
+	// doubles attention cost (O(L²)) without helping coverage on LoCoMo
+	// where the average session is ~2KB. Override via env if needed.
+	maxChunkLen := 1024
+	if v := os.Getenv("GHOST_RERANK_CHUNK_LEN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 64 {
+			maxChunkLen = n
+		}
+	}
+	maxChunksPerDoc := 8
+	if v := os.Getenv("GHOST_RERANK_CHUNKS_PER_DOC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxChunksPerDoc = n
+		}
+	}
 
 	// Build a flat list of all chunks with their document index
 	type chunkRef struct {

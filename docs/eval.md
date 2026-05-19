@@ -576,6 +576,31 @@ GHOST_BENCH_MULTI_QUERY=1 \
 **Optional features (env vars):**
 - `GHOST_RERANKER=local` — enables cross-encoder reranking (~42 min for 470 questions vs 21s without)
 - `GHOST_RERANK_TOP_N=N` — override default reranker window (10). Widening to 20 helps LoCoMo multi-hop (rescues evidence at rank 6-15 into top-5). Higher N → linearly more cross-encoder calls.
+- `GHOST_RERANK_CHUNK_LEN=N` (default 1024) — chars per MaxP chunk fed to cross-encoder. Larger chunks cover more content per pair but cost grows O(L²) in attention.
+- `GHOST_RERANK_CHUNKS_PER_DOC=N` (default 8) — cap chunks per doc. Lowering trades coverage for throughput; in LoCoMo testing 4 chunks regressed multi-hop MRR vs 8.
+- `GHOST_RERANK_ADAPTIVE=1` — opt-in skip when pre-rerank top-1 is overwhelmingly confident. `GHOST_RERANK_SKIP_TOP1` (default 0.9) and `GHOST_RERANK_SKIP_SPREAD` (default 0.2) tune the trigger. Skip ONLY — does not auto-narrow the window (narrowing regressed LoCoMo multi-hop MRR 0.620 → 0.525 in testing). On the current pre-rerank score scale (RRF+dense fusion, observed top-1 max ~0.85 on LongMemEval, ~0.7 on LoCoMo multi-hop) the default skip threshold rarely fires — useful as a safety hook, not a major throughput lever.
+- `GHOST_RERANK_DEBUG=1` — log per-call timing + top-1 score to stderr for profiling.
+
+### Reranker throughput note (GO backend is the bottleneck)
+
+Cross-encoder reranking ships with hugot's `NewGoSession` (pure-Go via gomlx
+simplego), which is **single-threaded** by design — typical per-call cost ~18s
+at rerank top-20 with 8-chunk docs on M-series CPU. Extrapolated full-LoCoMo
+(1,532q) cost ≈ 8 hours. Hugot hardcodes the backend config string ("go") so
+parallelism cannot be enabled via env vars.
+
+To meaningfully speed this up requires backend choice:
+
+| Backend | Speed | Cost |
+|---|---|---|
+| `NewGoSession` (current) | ~18s/call | pure-Go, no deps |
+| `NewORTSession` | ~3-5× faster (estimated) | CGo + onnxruntime shared lib |
+| Distilled smaller model (e.g., MiniLM-L-2) | ~3× faster | quality trade-off |
+
+The throughput-lever options that DON'T need backend swap (adaptive skip,
+chunk-size tuning, narrowing window) each regress quality more than they save
+time on the hard slices. **Recommendation: scope rerank-enabled benchmarks to
+slices (categories, samples) until a backend swap is approved.**
 - `GHOST_EMBED_MODEL_LOCAL=gte-small` — better embedding model (same 384 dims, +7% recall)
 - `GHOST_BENCH_EMBED_CACHE=path` — pre-computed embeddings for fast iteration
 - `GHOST_BENCH_EXPAND_EDGES=1` — build entity-based edges and use edge expansion during search (multi-hop)
