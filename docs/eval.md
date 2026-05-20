@@ -581,26 +581,51 @@ GHOST_BENCH_MULTI_QUERY=1 \
 - `GHOST_RERANK_ADAPTIVE=1` — opt-in skip when pre-rerank top-1 is overwhelmingly confident. `GHOST_RERANK_SKIP_TOP1` (default 0.9) and `GHOST_RERANK_SKIP_SPREAD` (default 0.2) tune the trigger. Skip ONLY — does not auto-narrow the window (narrowing regressed LoCoMo multi-hop MRR 0.620 → 0.525 in testing). On the current pre-rerank score scale (RRF+dense fusion, observed top-1 max ~0.85 on LongMemEval, ~0.7 on LoCoMo multi-hop) the default skip threshold rarely fires — useful as a safety hook, not a major throughput lever.
 - `GHOST_RERANK_DEBUG=1` — log per-call timing + top-1 score to stderr for profiling.
 
-### Reranker throughput note (GO backend is the bottleneck)
+### Reranker backend choice (GO vs ORT)
 
-Cross-encoder reranking ships with hugot's `NewGoSession` (pure-Go via gomlx
-simplego), which is **single-threaded** by design — typical per-call cost ~18s
-at rerank top-20 with 8-chunk docs on M-series CPU. Extrapolated full-LoCoMo
-(1,532q) cost ≈ 8 hours. Hugot hardcodes the backend config string ("go") so
-parallelism cannot be enabled via env vars.
+Cross-encoder reranking has two backends, switched via Go build tag:
 
-To meaningfully speed this up requires backend choice:
+| Backend | Build | Per-call cost (multi-hop, rerank-20) | Multi-hop MRR | LME PER_TYPE=20 MRR |
+|---|---|---|---|---|
+| **GO** (default, pure-Go) | `go build` | ~18.7s | **0.620** | 0.789 (no rerank: 0.829) |
+| **ORT** (CGo + onnxruntime) | `go build -tags=ORT` | ~0.29s (~64× faster) | 0.517 | 0.789 |
 
-| Backend | Speed | Cost |
-|---|---|---|
-| `NewGoSession` (current) | ~18s/call | pure-Go, no deps |
-| `NewORTSession` | ~3-5× faster (estimated) | CGo + onnxruntime shared lib |
-| Distilled smaller model (e.g., MiniLM-L-2) | ~3× faster | quality trade-off |
+**ORT speedup is real but currently regresses cross-encoder rerank quality.**
+ORT applies sigmoid to cross-encoder scores — many candidate chunks clip to
+exactly 0.0, scrambling MaxP's per-doc max and pushing useful evidence out of
+top-5. Investigation TBD; likely needs a logit-mode toggle in hugot or a
+custom score-normalization layer.
 
-The throughput-lever options that DON'T need backend swap (adaptive skip,
-chunk-size tuning, narrowing window) each regress quality more than they save
-time on the hard slices. **Recommendation: scope rerank-enabled benchmarks to
-slices (categories, samples) until a backend swap is approved.**
+**Practical guidance:**
+
+- **Default (no tag) — GO backend.** Use this for slice benchmarks where
+  rerank quality matters. Scope to a single category (e.g.
+  `GHOST_BENCH_LOCOMO_CAT=multi-hop`) or PER_CAT/PER_TYPE samples — full-corpus
+  rerank at top-20 takes ~8 hours.
+- **`-tags=ORT` — ORT backend.** Use for fast iteration on retrieval changes
+  (no LLM in loop, end-to-end LME completes in ~20s for a 120-q sample), or
+  when reranking is disabled and the dense+FTS path is what's being tested.
+  See `make ort-install` for setup.
+
+The throughput-lever options that don't change backends (adaptive skip,
+chunk-size tuning, narrowing window) all regressed quality more than they
+saved time on the hard slices. Their env knobs ship (`GHOST_RERANK_ADAPTIVE`,
+`GHOST_RERANK_CHUNK_LEN`, `GHOST_RERANK_CHUNKS_PER_DOC`) but defaults preserve
+known-good behavior.
+
+#### ORT setup
+
+```bash
+# macOS (arm64)
+brew install onnxruntime
+make ort-install      # downloads libtokenizers.a v1.23.0 to ~/.ghost/libs
+make ort-build        # CGO_ENABLED=1 go build -tags=ORT
+make ort-test         # LongMemEval PER_TYPE=20 sanity check (~20s)
+```
+
+`GHOST_ONNXRUNTIME_PATH` must point at the **directory** containing the
+shared library (not the file). Override via env if not at the platform default
+(`/opt/homebrew/lib` on macOS arm64; `/usr/lib/x86_64-linux-gnu` on Debian).
 - `GHOST_EMBED_MODEL_LOCAL=gte-small` — better embedding model (same 384 dims, +7% recall)
 - `GHOST_BENCH_EMBED_CACHE=path` — pre-computed embeddings for fast iteration
 - `GHOST_BENCH_EXPAND_EDGES=1` — build entity-based edges and use edge expansion during search (multi-hop)

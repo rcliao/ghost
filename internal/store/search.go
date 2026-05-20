@@ -1123,7 +1123,12 @@ func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []Se
 	for i := range results {
 		scores[i] = docScore{idx: i, score: docMaxScore[i]}
 	}
-	sort.Slice(scores, func(i, j int) bool {
+	// Stable sort: when the cross-encoder applies sigmoid (e.g. on the ORT
+	// backend) many irrelevant candidates collapse to score≈0 and become
+	// indistinguishable. A stable descending sort preserves the strong
+	// pre-rerank dense+FTS+RRF ordering on ties, so a scrambled tail
+	// doesn't replace useful retrieval signal.
+	sort.SliceStable(scores, func(i, j int) bool {
 		return scores[i].score > scores[j].score
 	})
 

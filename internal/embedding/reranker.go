@@ -88,7 +88,7 @@ func (r *LocalReranker) init() error {
 		modelPath = downloaded
 	}
 
-	session, err := hugot.NewGoSession()
+	session, err := makeRerankerSession()
 	if err != nil {
 		r.initErr = fmt.Errorf("create session: %w", err)
 		return r.initErr
