@@ -111,8 +111,8 @@ func (e *LocalEmbedder) init() error {
 		modelPath = downloaded
 	}
 
-	// Create pure Go session (no CGo, no ONNX Runtime)
-	session, err := hugot.NewGoSession()
+	// Backend chosen by build tag (see local_go.go / local_ort.go).
+	session, err := makeEmbedderSession()
 	if err != nil {
 		e.initErr = fmt.Errorf("create session: %w", err)
 		return e.initErr

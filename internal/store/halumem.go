@@ -120,6 +120,13 @@ type HaluMemConfig struct {
 	// SkipBoundary skips Memory Boundary questions (evidence=0, test of
 	// abstention). Retrieval recall isn't meaningful for them.
 	SkipBoundary bool
+
+	// LLM-judge E2E (optional). When LLM is set, each question goes through
+	// Ghost retrieve → compress → answer → judge for Accuracy (C),
+	// Hallucination (H), and Omission (O). Disabled if nil.
+	LLM      LLMClient
+	Judge    LLMClient // judge LLM (defaults to LLM)
+	JudgeTopK int      // top-K memories to feed the answerer (default 5)
 }
 
 // HaluMemReport holds aggregate benchmark results.
@@ -314,6 +321,37 @@ func RunHaluMemRetrieval(cfg HaluMemConfig, newStore func() (*SQLiteStore, func(
 				agg.Metrics["mrr"] += mrr
 				report.Overall["mrr"] += mrr
 
+				// Optional LLM-judge E2E pass: retrieve → compress → answer →
+				// judge for Accuracy / Hallucination / Omission.
+				if cfg.LLM != nil {
+					topK := cfg.JudgeTopK
+					if topK <= 0 {
+						topK = 5
+					}
+					if topK > len(results) {
+						topK = len(results)
+					}
+					userMsg := compressContext(ctx, cfg.LLM, qa.Question, results[:topK]) + qa.Question
+					answer, errA := cfg.LLM.Generate(ctx, e2eSystemPrompt, userMsg)
+					judge := cfg.Judge
+					if judge == nil {
+						judge = cfg.LLM
+					}
+					var refMems []string
+					for _, ev := range qa.Evidence {
+						refMems = append(refMems, ev.MemoryContent)
+					}
+					if errA == nil {
+						c, h, o := haluMemJudge(ctx, judge, qa.Question, qa.Answer, refMems, answer)
+						agg.Metrics["judge_correct"] += c
+						agg.Metrics["judge_hallucination"] += h
+						agg.Metrics["judge_omission"] += o
+						report.Overall["judge_correct"] += c
+						report.Overall["judge_hallucination"] += h
+						report.Overall["judge_omission"] += o
+					}
+				}
+
 				goldRank := 0
 				for i, k := range retrieved {
 					if wantKeys[k] {
@@ -359,4 +397,82 @@ func RunHaluMemRetrieval(cfg HaluMemConfig, newStore func() (*SQLiteStore, func(
 		}
 	}
 	return report, nil
+}
+
+// haluMemJudgeSystemPrompt scores a memory system's QA response on three axes
+// matching HaluMem's QA-evaluation framework: Accuracy (does it answer correctly),
+// Hallucination (does it introduce wrong facts), Omission (does it miss correct facts).
+//
+// Output is three lines: `correct: yes|no`, `hallucination: yes|no`, `omission: yes|no`.
+// Strict format keeps the parser cheap and the judge focused.
+const haluMemJudgeSystemPrompt = `You are evaluating a memory-system answer against a gold reference.
+
+You will see:
+  - Question:   the user's question
+  - Reference:  the canonical correct answer
+  - Key memories: the gold memory facts the reference draws from
+  - Response:   the memory system's answer
+
+Score the response on three independent axes:
+
+  1. correct        — yes if the response answers the question consistently with the Reference (paraphrasing OK), no otherwise.
+  2. hallucination  — yes if the response asserts a fact that is NOT supported by the Key memories or contradicts them. No if the response stays grounded in the memories OR honestly says it doesn't know.
+  3. omission       — yes if the response leaves out a fact from the Key memories that is necessary to fully answer the Question. No if it covers the needed facts.
+
+Output exactly three lines in this format, lowercase:
+
+correct: yes
+hallucination: no
+omission: no
+
+No commentary, no preamble.`
+
+// haluMemJudge calls the LLM-as-judge to score one response on
+// Accuracy / Hallucination / Omission. Returns three 0..1 scores
+// (1 means the axis flag fired for this question; aggregate across
+// many questions to get the published HaluMem rates).
+// On parse failure or LLM error, all three are 0 — caller can detect
+// by aggregating a separate "judged" count if needed.
+func haluMemJudge(ctx context.Context, judge LLMClient, question, reference string, keyMemories []string, response string) (correct, hallucination, omission float64) {
+	if judge == nil {
+		return 0, 0, 0
+	}
+	keyMems := strings.Join(keyMemories, "\n")
+	if keyMems == "" {
+		keyMems = "(none)"
+	}
+	msg := fmt.Sprintf("Question: %s\n\nReference: %s\n\nKey memories:\n%s\n\nResponse: %s\n\nScores:",
+		question, reference, keyMems, response)
+	out, err := judge.Generate(ctx, haluMemJudgeSystemPrompt, msg)
+	if err != nil {
+		return 0, 0, 0
+	}
+	parse := func(line, key string) float64 {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if !strings.HasPrefix(line, key) {
+			return 0
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(line, key+":"))
+		val = strings.TrimSpace(strings.TrimPrefix(val, key))
+		if strings.HasPrefix(val, "yes") {
+			return 1
+		}
+		return 0
+	}
+	for _, line := range strings.Split(out, "\n") {
+		correct += parse(line, "correct")
+		hallucination += parse(line, "hallucination")
+		omission += parse(line, "omission")
+	}
+	// Clamp in case the judge double-emitted a label.
+	if correct > 1 {
+		correct = 1
+	}
+	if hallucination > 1 {
+		hallucination = 1
+	}
+	if omission > 1 {
+		omission = 1
+	}
+	return
 }

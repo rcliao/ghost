@@ -341,8 +341,30 @@ meaningful for them.
 **Out-of-scope for this harness:**
 - Memory Extraction task — requires Ghost to extract memories from raw dialogue
   (currently we ingest pre-extracted gold `memory_points` directly).
-- Hallucination / Omission rates — require an LLM judge on Ghost's QA answer,
-  not just on retrieval. Plug into the existing `ghost-compress*` E2E modes.
+
+**LLM-judge E2E (Accuracy / Hallucination / Omission)** — opt-in via env:
+
+```bash
+GHOST_EMBED_PROVIDER=local \
+GHOST_RERANKER=local \
+GHOST_RERANK_TOP_N=20 \
+GHOST_BENCH_HALUMEM=testdata/halumem/HaluMem-Medium.jsonl \
+GHOST_BENCH_USER_LIMIT=5 \
+GHOST_BENCH_LLM_MODEL=haiku \
+GHOST_BENCH_JUDGE_TOPK=5 \
+  go test ./internal/store/ -run TestHaluMemRetrieval -v -timeout 60m
+```
+
+When `GHOST_BENCH_LLM_MODEL` is set, each non-Boundary question takes a second
+pass: Ghost retrieves → `compressContext` distills → LLM answers → LLM-as-judge
+scores three independent booleans (correct, hallucination, omission). Aggregated
+across the run, these produce HaluMem's published rates: C ↑, H ↓, O ↓.
+Results are reported alongside the retrieval metrics under `judge_correct`,
+`judge_hallucination`, `judge_omission`.
+
+The judge uses a single 3-line response format — one judge call per question
+rather than three — to keep latency and cost down. Falls back to all-zeros on
+parse failure or LLM error.
 
 See `internal/store/halumem.go` for the loader + harness.
 
@@ -678,23 +700,63 @@ GHOST_BENCH_LLM_MODEL=haiku \
 ```
 
 **LongMemEval _M dataset** (harder, ~500 sessions/question):
+
 ```bash
-# Download _M dataset
+# Download _M dataset (~2.7 GB)
 cd testdata/longmemeval/
-wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_m_cleaned.json
+curl -L -o longmemeval_m_cleaned.json \
+  https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_m_cleaned.json
 
-# Build cache (larger dataset, takes longer)
+# Build cache. With ORT (~80 min for 230k unique texts on M-series). With GO
+# (default) this takes ~5+ hours due to single-threaded simplego backend.
+CGO_LDFLAGS="-L$HOME/.ghost/libs -L/opt/homebrew/lib" CGO_ENABLED=1 \
+GHOST_ONNXRUNTIME_PATH=/opt/homebrew/lib \
 GHOST_EMBED_PROVIDER=local \
 GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_m_cleaned.json \
 GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_m.json \
-  go test ./internal/store/ -run TestLongMemEvalBuildCache -v -timeout 240m
+  go test -tags=ORT ./internal/store/ -run TestLongMemEvalBuildCache -v -timeout 240m
 
-# Run benchmark (uses BatchBenchInsert for fast ingestion)
+# Run benchmark (no reranker, ORT build, ~7.5 min wall time for 470q)
+CGO_LDFLAGS="-L$HOME/.ghost/libs -L/opt/homebrew/lib" CGO_ENABLED=1 \
+GHOST_ONNXRUNTIME_PATH=/opt/homebrew/lib \
 GHOST_EMBED_PROVIDER=local \
 GHOST_BENCH_LONGMEMEVAL=testdata/longmemeval/longmemeval_m_cleaned.json \
 GHOST_BENCH_EMBED_CACHE=testdata/longmemeval/embed_cache_m.json \
-  go test ./internal/store/ -run TestLongMemEval -v -timeout 60m
+  go test -tags=ORT ./internal/store/ -run TestLongMemEval -v -timeout 60m
 ```
+
+**Results (LongMemEval _M, n=470, ORT build, no reranker, 2026-05-19):**
+
+| Slice | n | R@5 | MRR | R@10 |
+|---|---|---|---|---|
+| **Overall** | **470** | **0.694** | **0.537** | 0.806 |
+| single-session-assistant | 56 | 0.964 | 0.600 | 1.000 |
+| knowledge-update | 72 | 0.840 | 0.712 | 0.931 |
+| single-session-user | 64 | 0.797 | 0.551 | 0.875 |
+| temporal-reasoning | 127 | 0.601 | 0.495 | 0.724 |
+| multi-session | 121 | 0.598 | 0.526 | 0.761 |
+| single-session-preference | 30 | 0.400 | 0.196 | 0.533 |
+
+**Vs. published _M baselines (R@5):**
+
+| System | R@5 |
+|---|---|
+| BM25 (paper) | 0.634 |
+| **Ghost (ORT, no rerank)** | **0.694** |
+| Contriever (paper) | 0.723 |
+
+Ghost beats BM25 by 9.5%; trails Contriever by 4 points. The collapse vs _S
+(R@5 0.908 → 0.694) is concentrated in slices where the 10× larger haystack
+hurts — temporal-reasoning (0.984 → 0.601), multi-session (0.875 → 0.598),
+single-session-preference (0.733 → 0.400). The "find the right session" slices
+(assistant, knowledge-update, user) hold up well.
+
+**With rerank top-20 (ORT)** the picture is unchanged — Overall R@5=0.690,
+MRR=0.534 (vs no-rerank 0.694 / 0.537). Same pattern as _S: ORT's cross-encoder
+sigmoid clips many candidate chunks to 0.0 → rerank tail is essentially
+unordered → no quality lift. This is the open ORT-backend issue, not a property
+of the _M dataset. Wall time stays under 8 minutes either way thanks to the
+threaded backend.
 
 **Retrieval improvements in this round:**
 - **Knowledge-update detection**: Queries with update intent ("current", "now", "latest") get strong recency bias among topically relevant results

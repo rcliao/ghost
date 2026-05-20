@@ -57,6 +57,24 @@ func TestHaluMemRetrieval(t *testing.T) {
 		}
 	}
 
+	// Optional LLM-judge E2E pass for Accuracy / Hallucination / Omission.
+	var llm LLMClient
+	if llmModel := os.Getenv("GHOST_BENCH_LLM_MODEL"); llmModel != "" {
+		if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+			llm = NewAnthropicClient(llmModel)
+			t.Logf("Using Anthropic API for E2E judge: %s", llm.Name())
+		} else {
+			llm = NewClaudeCLIClient(llmModel)
+			t.Logf("Using Claude CLI for E2E judge: %s", llm.Name())
+		}
+	}
+	judgeTopK := 5
+	if s := os.Getenv("GHOST_BENCH_JUDGE_TOPK"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			judgeTopK = n
+		}
+	}
+
 	cfg := HaluMemConfig{
 		DatasetPath:    datasetPath,
 		UserLimit:      userLimit,
@@ -64,6 +82,9 @@ func TestHaluMemRetrieval(t *testing.T) {
 		TopK:           []int{5, 10},
 		EmbedCachePath: cachePath,
 		SkipBoundary:   true, // retrieval recall isn't meaningful for abstention
+		LLM:            llm,
+		Judge:          llm,
+		JudgeTopK:      judgeTopK,
 		ProgressFunc: func(done, total int) {
 			t.Logf("Progress: %d/%d (%.0f%%)", done, total, float64(done)/float64(total)*100)
 		},
