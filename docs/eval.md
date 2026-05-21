@@ -366,6 +366,13 @@ The judge uses a single 3-line response format — one judge call per question
 rather than three — to keep latency and cost down. Falls back to all-zeros on
 parse failure or LLM error.
 
+**Cost / latency note.** Each question takes ~3 LLM calls (compress, answer,
+judge). On Claude CLI Haiku that's ~25-30s wall time per question — a full
+5-user run (688 questions) takes 5-7 hours. Use `GHOST_BENCH_USER_LIMIT=3`
+(~400 questions) and `GHOST_BENCH_CHECKPOINT=/path/to/file.json` for a
+tractable run that still produces partial results on timeout. The checkpoint
+file is overwritten every 25 questions with mean metrics so far.
+
 See `internal/store/halumem.go` for the loader + harness.
 
 ### LoCoMo-Plus (2026)

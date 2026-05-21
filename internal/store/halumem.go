@@ -379,6 +379,34 @@ func RunHaluMemRetrieval(cfg HaluMemConfig, newStore func() (*SQLiteStore, func(
 				if cfg.ProgressFunc != nil && (done%25 == 0 || done == totalEval) {
 					cfg.ProgressFunc(done, totalEval)
 				}
+
+				// Checkpoint every 25 questions so long LLM-judge runs produce
+				// readable partial results even on timeout. Reuses the
+				// GHOST_BENCH_CHECKPOINT env contract from LoCoMo-Plus.
+				if done%25 == 0 {
+					if ckpt := os.Getenv("GHOST_BENCH_CHECKPOINT"); ckpt != "" {
+						// Average-on-the-fly into a snapshot so the checkpoint
+						// file always shows mean metrics, not cumulative sums.
+						snap := *report
+						snap.ByType = make(map[string]*LongMemEvalTypeAgg, len(report.ByType))
+						snap.Overall = make(map[string]float64, len(report.Overall))
+						for k, v := range report.Overall {
+							snap.Overall[k] = v / float64(report.Total)
+						}
+						for qt, a := range report.ByType {
+							na := &LongMemEvalTypeAgg{Count: a.Count, Metrics: make(map[string]float64, len(a.Metrics))}
+							for k, v := range a.Metrics {
+								if a.Count > 0 {
+									na.Metrics[k] = v / float64(a.Count)
+								}
+							}
+							snap.ByType[qt] = na
+						}
+						if buf, err := json.MarshalIndent(&snap, "", "  "); err == nil {
+							_ = os.WriteFile(ckpt, buf, 0o644)
+						}
+					}
+				}
 			}
 		}
 		cleanup()
