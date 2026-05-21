@@ -601,6 +601,7 @@ GHOST_BENCH_MULTI_QUERY=1 \
 - `GHOST_RERANK_CHUNK_LEN=N` (default 1024) — chars per MaxP chunk fed to cross-encoder. Larger chunks cover more content per pair but cost grows O(L²) in attention.
 - `GHOST_RERANK_CHUNKS_PER_DOC=N` (default 8) — cap chunks per doc. Lowering trades coverage for throughput; in LoCoMo testing 4 chunks regressed multi-hop MRR vs 8.
 - `GHOST_RERANK_ADAPTIVE=1` — opt-in skip when pre-rerank top-1 is overwhelmingly confident. `GHOST_RERANK_SKIP_TOP1` (default 0.9) and `GHOST_RERANK_SKIP_SPREAD` (default 0.2) tune the trigger. Skip ONLY — does not auto-narrow the window (narrowing regressed LoCoMo multi-hop MRR 0.620 → 0.525 in testing). On the current pre-rerank score scale (RRF+dense fusion, observed top-1 max ~0.85 on LongMemEval, ~0.7 on LoCoMo multi-hop) the default skip threshold rarely fires — useful as a safety hook, not a major throughput lever.
+- `GHOST_RERANK_RRF_BLEND=1` — opt-in reciprocal rank fusion between cross-encoder ranks and pre-rerank ranks when CE scores saturate. Tested as a fix for the ORT-backend sigmoid clipping issue. **Empirically a no-op or slight regression** on LoCoMo multi-hop (ORT: 0.517 → 0.509 MRR with RRF on). Kept as an env knob for further experimentation; default off.
 - `GHOST_RERANK_DEBUG=1` — log per-call timing + top-1 score to stderr for profiling.
 
 ### Reranker backend choice (GO vs ORT)
@@ -757,6 +758,25 @@ sigmoid clips many candidate chunks to 0.0 → rerank tail is essentially
 unordered → no quality lift. This is the open ORT-backend issue, not a property
 of the _M dataset. Wall time stays under 8 minutes either way thanks to the
 threaded backend.
+
+**Levers tested and rejected on _M** (full 470q, 2026-05-21):
+
+| Lever | Overall R@5 | Notes |
+|---|---|---|
+| ORT, no rerank (baseline) | 0.694 | reference |
+| + rerank top-20 | 0.690 | sigmoid clipping, no lift |
+| + RRF blend (`GHOST_RERANK_RRF_BLEND=1`) | 0.690 | no improvement |
+| + entity boost 2.0 (`GHOST_RERANK_ENTITY_BOOST=2.0`) | 0.693 | within noise |
+
+**Temporal-reasoning failure pattern.** Sampled failing _M temporal queries
+reference specific user events ("MoMA visit", "Nordstrom F&F sale", "helped
+friend prepare nursery"). The right session is in the haystack but the
+retrieval surfaces other thematically-similar sessions instead. Entity boost
+didn't help because the entity *is* unique but FTS doesn't anchor strongly
+enough to guarantee inclusion in the candidate pool at 10× larger haystack.
+A future fix would be an entity-anchored pass: extract proper nouns from the
+query, run an FTS-only side query for each, union with dense retrieval to
+guarantee entity-matching sessions are in top-K candidates before rerank.
 
 **Retrieval improvements in this round:**
 - **Knowledge-update detection**: Queries with update intent ("current", "now", "latest") get strong recency bias among topically relevant results

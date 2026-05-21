@@ -1123,6 +1123,56 @@ func (s *SQLiteStore) rerankMaxP(ctx context.Context, query string, results []Se
 	for i := range results {
 		scores[i] = docScore{idx: i, score: docMaxScore[i]}
 	}
+
+	// Detect cross-encoder saturation (most common with the ORT backend,
+	// which applies sigmoid → many candidates clip to 0.0). When >half of
+	// the top-K results have docMaxScore == 0, the cross-encoder isn't
+	// discriminating, and a pure-CE sort would scramble useful pre-rerank
+	// order. In that case we blend CE rank with the original retrieval
+	// rank via reciprocal rank fusion (RRF, k=60), which degrades
+	// gracefully when CE signal is sparse.
+	//
+	// Opt-in: GHOST_RERANK_RRF_BLEND=1. Tested empirically on LoCoMo multi-hop
+	// with the ORT backend — net regressed MRR ~0.008, didn't recover quality
+	// vs the GO backend. Kept as an env knob for further experimentation but
+	// off by default until it's a clear win.
+	useRRF := os.Getenv("GHOST_RERANK_RRF_BLEND") == "1"
+	if useRRF {
+		// Pre-rerank rank is just the input order — sortable copy.
+		ceOrder := make([]int, len(results))
+		for i := range results {
+			ceOrder[i] = i
+		}
+		sort.SliceStable(ceOrder, func(i, j int) bool {
+			return docMaxScore[ceOrder[i]] > docMaxScore[ceOrder[j]]
+		})
+		ceRank := make([]int, len(results))
+		for r, idx := range ceOrder {
+			ceRank[idx] = r + 1 // 1-based
+		}
+		// Count saturated zeros in the CE top half.
+		half := len(results) / 2
+		if half < 5 {
+			half = len(results)
+		}
+		zeros := 0
+		for _, idx := range ceOrder[:half] {
+			if docMaxScore[idx] <= 1e-6 {
+				zeros++
+			}
+		}
+		// Only blend if there's meaningful saturation. Otherwise pure CE wins.
+		if zeros >= half/2 {
+			const k = 60.0
+			for i := range scores {
+				origRank := i + 1
+				cer := ceRank[i]
+				rrf := 1.0/(k+float64(origRank)) + 1.0/(k+float64(cer))
+				scores[i].score = float32(rrf)
+			}
+		}
+	}
+
 	// Stable sort: when the cross-encoder applies sigmoid (e.g. on the ORT
 	// backend) many irrelevant candidates collapse to score≈0 and become
 	// indistinguishable. A stable descending sort preserves the strong
