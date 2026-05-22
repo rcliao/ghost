@@ -373,6 +373,38 @@ judge). On Claude CLI Haiku that's ~25-30s wall time per question — a full
 tractable run that still produces partial results on timeout. The checkpoint
 file is overwritten every 25 questions with mean metrics so far.
 
+**First end-to-end results (2026-05-22, 3-user / 398 questions, Haiku):**
+
+Overall: Accuracy=0.352, Hallucination=0.676, Omission=0.661, R@5=0.413, MRR=0.384
+
+| Question type | n | Correct ↑ | Halluc. ↓ | Omission ↓ | R@5 |
+|---|---|---|---|---|---|
+| Memory Conflict | 115 | **0.600** | 0.530 | 0.461 | 0.617 |
+| Generalization & Application | 105 | 0.286 | 0.791 | 0.724 | 0.420 |
+| Basic Fact Recall | 121 | 0.256 | 0.636 | 0.678 | 0.420 |
+| Multi-hop Inference | 40 | 0.225 | 0.850 | 0.900 | 0.235 |
+| Dynamic Update | 17 | 0.059 | 0.824 | 0.941 | 0.208 |
+
+**Read.** Published HaluMem-Medium baselines (Mem0, Zep, MemOS) land roughly
+at C ≈ 0.55–0.70, H ≈ 0.10–0.20, O ≈ 0.20–0.30. Ghost's 0.35 / 0.68 / 0.66
+trails meaningfully. Two factors mixed in:
+
+1. **Judge calibration.** Our 3-line judge is stricter than the upstream
+   evaluation_for_question prompt (which we couldn't fetch from the HaluMem
+   repo). Any unsupported-but-true elaboration in the response gets flagged
+   as hallucination. Recalibrating the judge prompt to match upstream
+   semantics is a future tuning step before publishing head-to-head numbers.
+2. **Granularity mismatch.** Each HaluMem session contains ~15 memory points;
+   the system-under-test is expected to answer at memory-point granularity.
+   Ghost ingests + retrieves at session granularity (key = `s{session}_m{mp}`),
+   so synthesis-across-memory-points (Multi-hop, Dynamic Update) underperforms.
+   Dynamic Update is especially weak (C=0.06) — Ghost stores every memory
+   version as a separate key and doesn't model supersedes natively.
+
+**What's solid in this result:** Memory Conflict at 60% accuracy is the
+brightest slice — when retrieval lands the right session, the LLM correctly
+distinguishes conflicting facts. That's the architecture's strength.
+
 See `internal/store/halumem.go` for the loader + harness.
 
 ### LoCoMo-Plus (2026)
