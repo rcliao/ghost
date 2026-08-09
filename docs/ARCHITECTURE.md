@@ -37,8 +37,8 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 |---------|---------|------|
 | `cmd/ghost` | Entrypoint — delegates to `cli.RootCmd.Execute()` | 13 LOC |
 | `internal/cli` | Cobra commands for all CLI subcommands | ~3400 LOC |
-| `internal/store` | `Store` interface + `SQLiteStore` — CRUD, search, context assembly, edges, reflect lifecycle, freshness, GC, eval | ~13,500 LOC |
-| `internal/capture` | LLM-free memory extraction: regex intent classifiers + entity salience → candidates | ~440 LOC |
+| `internal/store` | `Store` interface + `SQLiteStore` — CRUD, search, context assembly, edges, reflect lifecycle, freshness, GC, eval | ~16,400 LOC |
+| `internal/capture` | LLM-free memory extraction: regex intent classifiers + entity salience → candidates | ~740 LOC |
 | `internal/procedure` | Frequent-sequence workflow miner (procedural induction) | ~141 LOC |
 | `internal/entity` | Rule-based NER + TF-IDF topic extraction (used by capture, auto-linking, relink) | ~399 LOC |
 | `internal/embedding` | Pluggable embeddings (local all-MiniLM / Ollama / OpenAI) + local cross-encoder reranker | ~880 LOC |
