@@ -25,7 +25,7 @@ The gap list: production-parity certification first, then adoption (MPBench, Hal
 
 Ground Truth First / Veracium (arXiv 2607.21962, MIT) is the first suite scoring source attribution.
 It builds ground truth before conversation text exists: per-fact validity intervals, sent-vs-received trust, third-party claims carrying the claimant as source.
-Caveat: a Claude judge scores it, though answers are script-valid by construction.
+Caveat: a versioned LLM judge scores it, with cross-family re-judging, though answers are script-valid by construction.
 Elsewhere attribution appears only as a defect — the Penfield audit found 24 wrong-speaker answer keys inside LoCoMo's 6.4% corrupted labels.
 
 ### F2 — write-path suites matured, several judge-free [Q1]
@@ -75,6 +75,6 @@ Absent everywhere, internal and external: promotion precision, answer stability,
 
 ## Open Questions
 
-- Run Veracium despite its Claude-judge scoring (questions are script-valid by construction), or wait for a judge-free grader?
+- Run Veracium despite its LLM-judge scoring (questions are script-valid by construction), or wait for a judge-free grader?
 - Adopt MPBench cases verbatim (LLM-attack-generated) or re-derive an LLM-free subset shaped by its four write channels?
 - Is a 100k-scale envelope worth the CI cost now, or after the production DBs cross 20k?
