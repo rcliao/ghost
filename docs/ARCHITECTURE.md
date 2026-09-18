@@ -44,7 +44,7 @@ Ghost is a persistent memory system for AI agents. Single binary, SQLite-backed,
 | `internal/embedding` | Pluggable embeddings (local all-MiniLM / Ollama / OpenAI) + local cross-encoder reranker | ~880 LOC |
 | `internal/chunker` | Markdown-aware text splitting (~400 char targets) | 193 LOC |
 | `internal/ingest` | Markdown file parser (H2 → sections → memories) | 154 LOC |
-| `internal/mcpserver` | MCP server over stdio (10 tools: put, get, search, context, expand, consolidate, curate, reflect, edge, edge_candidates) | ~556 LOC |
+| `internal/mcpserver` | MCP server over stdio (11 tools: put, patch, get, search, context, expand, consolidate, curate, reflect, edge, edge_candidates) | ~556 LOC |
 | `internal/dash` | Terminal dashboard for inspecting memory state | ~387 LOC |
 | `internal/model` | Core data types: `Memory`, `Chunk`, `FileRef` | 69 LOC |
 | `memory.go` | Public library API — re-exports from internal packages | ~102 LOC |
@@ -281,8 +281,9 @@ Edges have their own lifecycle managed alongside memory nodes:
 
 ## MCP Server
 
-Exposes 10 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
+Exposes 11 tools over stdio transport using `github.com/modelcontextprotocol/go-sdk`:
 - `ghost_put` — Store/update a memory (auto-links similar via edges)
+- `ghost_patch` — Edit a memory by applying a unified diff to its current content (preferred over `ghost_put` for edits — only touched lines change, and writes are guarded by context verification + compare-and-swap)
 - `ghost_get` — Retrieve a specific memory by namespace and key
 - `ghost_search` — Full-text search with ranking
 - `ghost_context` — Budget-aware context assembly with edge expansion (includes `compaction_suggested` signal; supports `min_score` / `min_spread` noise filters)
@@ -327,6 +328,7 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | Command | Description |
 |---------|-------------|
 | `put` | Store or update a memory |
+| `patch` | Apply a unified diff to a memory's content (context-verified + compare-and-swap) |
 | `capture` | Extract + store memories from raw text using deterministic heuristics (no LLM). Also ingests LLM-produced candidates via `--json` |
 | `mine-procedures` | Induce recurring workflows from usage sequences (stdin) into procedural memories by frequency (no LLM) |
 | `get` | Retrieve by namespace + key |
@@ -343,6 +345,7 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | `files` | Manage file references |
 | `tags` | List, rename, or remove tags |
 | `ns` | Namespace operations (list, rm) |
+| `source` | Manage source-identity aliases (declared equivalence of `source_user` spellings) |
 | `reflect` | Run lifecycle rules |
 | `gc` | Garbage collect expired/stale memories; `--purge-deleted <age|all>` hard-removes soft-deleted rows + orphaned chunks; `--vacuum` reclaims disk |
 | `stats` | Database statistics |
