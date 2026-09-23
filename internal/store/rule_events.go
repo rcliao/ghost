@@ -22,31 +22,32 @@ const (
 
 // RuleEvent is one recorded firing.
 type RuleEvent struct {
-	ID          string `json:"id"`
-	Source      string `json:"source"`
-	RuleID      string `json:"rule_id"`
-	FromID      string `json:"from_id"` // older memory for pair rules
-	ToID        string `json:"to_id"`   // newer memory for pair rules
-	FromKey     string `json:"from_key,omitempty"`
-	ToKey       string `json:"to_key,omitempty"`
-	Features    string `json:"features"` // JSON as evaluated
-	ActionOp    string `json:"action_op"`
-	ActionRel   string `json:"action_rel"`
-	EdgeWritten bool   `json:"edge_written"`
-	CreatedAt   string `json:"created_at"`
-	Reviewed    bool   `json:"reviewed"`
-	Verdict     string `json:"verdict,omitempty"`
-	ReviewedBy  string `json:"reviewed_by,omitempty"`
-	ReviewedAt  string `json:"reviewed_at,omitempty"`
+	ID          string  `json:"id"`
+	Source      string  `json:"source"`
+	RuleID      string  `json:"rule_id"`
+	FromID      string  `json:"from_id"` // older memory for pair rules
+	ToID        string  `json:"to_id"`   // newer memory for pair rules
+	FromKey     string  `json:"from_key,omitempty"`
+	ToKey       string  `json:"to_key,omitempty"`
+	Features    string  `json:"features"` // JSON as evaluated
+	ActionOp    string  `json:"action_op"`
+	ActionRel   string  `json:"action_rel"`
+	Score       float64 `json:"score"`
+	EdgeWritten bool    `json:"edge_written"`
+	CreatedAt   string  `json:"created_at"`
+	Reviewed    bool    `json:"reviewed"`
+	Verdict     string  `json:"verdict,omitempty"`
+	ReviewedBy  string  `json:"reviewed_by,omitempty"`
+	ReviewedAt  string  `json:"reviewed_at,omitempty"`
 }
 
 func (s *SQLiteStore) insertRuleEvent(ctx context.Context, source string, f PairFiring) (string, error) {
 	id := s.newID()
 	now := s.now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO rule_events
-		(id, source, rule_id, from_id, to_id, features, action_op, action_rel, edge_written, created_at, reviewed)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-		id, source, f.RuleID, f.OlderID, f.NewerID, featuresJSON(f.Features), f.Op, f.Rel, boolInt(f.EdgeWritten), now)
+		(id, source, rule_id, from_id, to_id, features, action_op, action_rel, score, edge_written, created_at, reviewed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		id, source, f.RuleID, f.OlderID, f.NewerID, featuresJSON(f.Features), f.Op, f.Rel, f.Score, boolInt(f.EdgeWritten), now)
 	if err != nil {
 		return "", fmt.Errorf("insert rule event: %w", err)
 	}
@@ -58,7 +59,8 @@ type ListRuleEventsParams struct {
 	NS         string // events whose memories are in this namespace
 	RuleID     string
 	Unreviewed bool
-	Limit      int // default 100
+	ByScore    bool // highest score first (the review queue order); default newest first
+	Limit      int  // default 100
 }
 
 // ListRuleEvents returns events newest first, with memory keys resolved.
@@ -67,7 +69,7 @@ func (s *SQLiteStore) ListRuleEvents(ctx context.Context, p ListRuleEventsParams
 		p.Limit = 100
 	}
 	q := `SELECT e.id, e.source, e.rule_id, e.from_id, e.to_id, COALESCE(mf.key,''), COALESCE(mt.key,''),
-		e.features, e.action_op, e.action_rel, e.edge_written, e.created_at, e.reviewed,
+		e.features, e.action_op, e.action_rel, e.score, e.edge_written, e.created_at, e.reviewed,
 		COALESCE(e.verdict,''), COALESCE(e.reviewed_by,''), COALESCE(e.reviewed_at,'')
 		FROM rule_events e
 		LEFT JOIN memories mf ON mf.id = e.from_id
@@ -85,7 +87,11 @@ func (s *SQLiteStore) ListRuleEvents(ctx context.Context, p ListRuleEventsParams
 	if p.Unreviewed {
 		q += ` AND e.reviewed = 0`
 	}
-	q += ` ORDER BY e.created_at DESC, e.id DESC LIMIT ?`
+	if p.ByScore {
+		q += ` ORDER BY e.score DESC, e.created_at DESC, e.id DESC LIMIT ?`
+	} else {
+		q += ` ORDER BY e.created_at DESC, e.id DESC LIMIT ?`
+	}
 	args = append(args, p.Limit)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -97,7 +103,7 @@ func (s *SQLiteStore) ListRuleEvents(ctx context.Context, p ListRuleEventsParams
 		var e RuleEvent
 		var edge, reviewed int
 		if err := rows.Scan(&e.ID, &e.Source, &e.RuleID, &e.FromID, &e.ToID, &e.FromKey, &e.ToKey,
-			&e.Features, &e.ActionOp, &e.ActionRel, &edge, &e.CreatedAt, &reviewed,
+			&e.Features, &e.ActionOp, &e.ActionRel, &e.Score, &edge, &e.CreatedAt, &reviewed,
 			&e.Verdict, &e.ReviewedBy, &e.ReviewedAt); err != nil {
 			return nil, err
 		}

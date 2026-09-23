@@ -84,7 +84,8 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 			maxPairs, _ := cmd.Flags().GetInt("max-pairs")
 			dry, _ := cmd.Flags().GetBool("dry-run")
 			ruleIDs, _ := cmd.Flags().GetStringSlice("rule")
-			res, err := rs.RunPairRules(cmd.Context(), store.RunPairRulesParams{NS: ns, MaxPairs: maxPairs, DryRun: dry, RuleIDs: ruleIDs})
+			maxProposals, _ := cmd.Flags().GetInt("max-proposals")
+			res, err := rs.RunPairRules(cmd.Context(), store.RunPairRulesParams{NS: ns, MaxPairs: maxPairs, DryRun: dry, RuleIDs: ruleIDs, MaxProposals: maxProposals})
 			if err != nil {
 				return err
 			}
@@ -93,8 +94,8 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 				if dry {
 					prefix = "(dry-run) "
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%sscanned %d memories, evaluated %d pairs, %d firings, %d skipped\n",
-					prefix, res.MemoriesScanned, res.PairsEvaluated, len(res.Firings), res.Skipped)
+				fmt.Fprintf(cmd.OutOrStdout(), "%sscanned %d memories, evaluated %d pairs, %d firings, %d skipped, %d capped\n",
+					prefix, res.MemoriesScanned, res.PairsEvaluated, len(res.Firings), res.Skipped, res.Capped)
 				for _, f := range res.Firings {
 					mark := " "
 					if f.EdgeWritten {
@@ -104,8 +105,8 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 					for _, e := range f.Features.SharedEntities {
 						ents = append(ents, e.Text)
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s %-7s %-9s %s -> %s  [%s] %.0fd shared=%s cue=%q\n",
-						mark, f.Op, f.Rel, f.Features.OlderKey, f.Features.NewerKey, f.RuleID, f.Features.DaysApart, strings.Join(ents, ","), f.Features.NewerCue)
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s %.2f %-7s %-9s %s -> %s  [%s] %.0fd shared=%s cue=%q\n",
+						mark, f.Score, f.Op, f.Rel, f.Features.OlderKey, f.Features.NewerKey, f.RuleID, f.Features.DaysApart, strings.Join(ents, ","), f.Features.NewerCue)
 				}
 				return nil
 			}
@@ -117,6 +118,7 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 	pairsCmd.Flags().Int("max-pairs", 500, "Candidate pairs to evaluate")
 	pairsCmd.Flags().Bool("dry-run", false, "Evaluate and report; write nothing")
 	pairsCmd.Flags().StringSlice("rule", nil, "Only these rule ids")
+	pairsCmd.Flags().Int("max-proposals", 200, "Record at most this many proposals per run, highest score first (asserts are never capped)")
 	pairsCmd.MarkFlagRequired("ns")
 
 	eventsCmd := &cobra.Command{
@@ -131,7 +133,8 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 			unrev, _ := cmd.Flags().GetBool("unreviewed")
 			rule, _ := cmd.Flags().GetString("rule")
 			limit, _ := cmd.Flags().GetInt("limit")
-			events, err := rs.ListRuleEvents(cmd.Context(), store.ListRuleEventsParams{NS: ns, RuleID: rule, Unreviewed: unrev, Limit: limit})
+			byScore, _ := cmd.Flags().GetBool("by-score")
+			events, err := rs.ListRuleEvents(cmd.Context(), store.ListRuleEventsParams{NS: ns, RuleID: rule, Unreviewed: unrev, ByScore: byScore || unrev, Limit: limit})
 			if err != nil {
 				return err
 			}
@@ -145,8 +148,8 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 					if e.EdgeWritten {
 						edge = " +edge"
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "%s  %s %s %s%s  %s -> %s  [%s]  %s\n",
-						e.ID, e.CreatedAt[:10], e.ActionOp, e.ActionRel, edge, e.FromKey, e.ToKey, e.RuleID, status)
+					fmt.Fprintf(cmd.OutOrStdout(), "%s  %s %.2f %s %s%s  %s -> %s  [%s]  %s\n",
+						e.ID, e.CreatedAt[:10], e.Score, e.ActionOp, e.ActionRel, edge, e.FromKey, e.ToKey, e.RuleID, status)
 				}
 				return nil
 			}
@@ -158,6 +161,7 @@ reviewed; disagreeing with an asserted edge removes it. No model is called.`,
 	eventsCmd.Flags().Bool("unreviewed", false, "Only events without a verdict")
 	eventsCmd.Flags().String("rule", "", "Only this rule id")
 	eventsCmd.Flags().Int("limit", 100, "Max events")
+	eventsCmd.Flags().Bool("by-score", false, "Highest score first (always on with --unreviewed)")
 
 	reviewCmd := &cobra.Command{
 		Use:   "review <event-id>",

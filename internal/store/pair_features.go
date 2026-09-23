@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rcliao/ghost/internal/entity"
 	"github.com/rcliao/ghost/internal/model"
@@ -104,12 +105,25 @@ var pairDateWords = map[string]bool{
 func pairEntities(content string) map[string]bool {
 	set := make(map[string]bool)
 	for _, e := range entity.Extract(content) {
-		if pairDateWords[e.Text] || isNumeric(e.Text) {
+		if pairDateWords[e.Text] || isNumeric(e.Text) || !looksLikeEntity(e.Text) {
 			continue
 		}
 		set[e.Text] = true
 	}
 	return set
+}
+
+// looksLikeEntity rejects extractor output that survives the frequency band
+// but names nothing: fewer than three letters ("a/c", "ui"), or a token that
+// is mostly punctuation and digits.
+func looksLikeEntity(text string) bool {
+	letters := 0
+	for _, r := range text {
+		if unicode.IsLetter(r) {
+			letters++
+		}
+	}
+	return letters >= 3 && letters*2 >= len([]rune(text))
 }
 
 func isNumeric(s string) bool {
@@ -262,6 +276,34 @@ func collapseParts(in []SharedEntity) []SharedEntity {
 		out = append(out, e)
 	}
 	return out
+}
+
+// ProposeScore ranks a proposal for review. Deterministic, from the features
+// alone, so the same store always yields the same queue. Weights follow what
+// separated true causal pairs from noise on the graded snapshot: a correction
+// or causal cue on the newer side, more shared entities, and shared entities
+// that are rare (low document frequency) in the namespace. Nearer in time
+// breaks ties.
+func (f PairFeatures) ProposeScore() float64 {
+	score := 0.0
+	switch f.NewerCue {
+	case "correction":
+		score += 2.0
+	case "causal":
+		score += 1.5
+	}
+	n := len(f.SharedEntities)
+	if n > 3 {
+		n = 3
+	}
+	score += float64(n)
+	if f.MinSharedDF > 0 {
+		score += 1.0 / float64(f.MinSharedDF)
+	}
+	if f.DaysApart > 0 {
+		score += 0.5 / (1.0 + f.DaysApart/30.0)
+	}
+	return score
 }
 
 // SharedWithin counts shared entities whose document frequency is at most

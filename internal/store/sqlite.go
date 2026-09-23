@@ -436,6 +436,7 @@ func (s *SQLiteStore) migrate() error {
 		features TEXT NOT NULL DEFAULT '{}',
 		action_op TEXT NOT NULL,
 		action_rel TEXT NOT NULL DEFAULT '',
+		score REAL NOT NULL DEFAULT 0,
 		edge_written INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL,
 		reviewed INTEGER NOT NULL DEFAULT 0,
@@ -443,6 +444,7 @@ func (s *SQLiteStore) migrate() error {
 		reviewed_by TEXT,
 		reviewed_at TEXT
 	)`)
+	s.db.Exec(`ALTER TABLE rule_events ADD COLUMN score REAL NOT NULL DEFAULT 0`) // idempotent: errors ignored
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_pair ON rule_events(source, rule_id, from_id, to_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_review ON rule_events(reviewed, created_at)`)
 

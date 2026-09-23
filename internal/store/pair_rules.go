@@ -236,6 +236,11 @@ type RunPairRulesParams struct {
 	SkipPrefixes []string // nil = DefaultPairSkipPrefixes; empty slice = skip nothing
 	DryRun       bool     // evaluate and report, write nothing
 	RuleIDs      []string // optional: only these rules
+	// MaxProposals caps how many PROPOSE firings a run records, highest
+	// ProposeScore first (default 200). ASSERT firings are never capped: a
+	// rule that may write edges has measured precision and fires wherever it
+	// matches. A proposal queue nobody can review is not a queue.
+	MaxProposals int
 }
 
 // PairFiring is one rule firing on one pair.
@@ -247,6 +252,7 @@ type PairFiring struct {
 	Features    PairFeatures `json:"features"`
 	Op          string       `json:"op"`
 	Rel         string       `json:"rel"`
+	Score       float64      `json:"score"`
 	EdgeWritten bool         `json:"edge_written"`
 }
 
@@ -254,8 +260,9 @@ type PairFiring struct {
 type RunPairRulesResult struct {
 	MemoriesScanned int          `json:"memories_scanned"`
 	PairsEvaluated  int          `json:"pairs_evaluated"`
-	Firings         []PairFiring `json:"firings"`
+	Firings         []PairFiring `json:"firings"` // ranked: asserts first, then proposals by score
 	Skipped         int          `json:"skipped"` // pairs already evented for the rule or already typed
+	Capped          int          `json:"capped"`  // proposals dropped by MaxProposals
 	DryRun          bool         `json:"dry_run"`
 }
 
@@ -281,6 +288,9 @@ func (s *SQLiteStore) RunPairRules(ctx context.Context, p RunPairRulesParams) (*
 	}
 	if p.MaxEntityDF <= 0 {
 		p.MaxEntityDF = 40
+	}
+	if p.MaxProposals <= 0 {
+		p.MaxProposals = 200
 	}
 	skip := p.SkipPrefixes
 	if skip == nil {
@@ -344,7 +354,10 @@ func (s *SQLiteStore) RunPairRules(ctx context.Context, p RunPairRulesParams) (*
 		return nil, err
 	}
 
+	// Pass 1: evaluate every pair, collect matches. Nothing is written yet so
+	// proposals can be ranked and capped as a set.
 	seen := make(map[string]bool)
+	var matched []PairFiring
 	for _, e := range entities {
 		list := index[e]
 		for i := 0; i < len(list) && result.PairsEvaluated < p.MaxPairs; i++ {
@@ -374,27 +387,62 @@ func (s *SQLiteStore) RunPairRules(ctx context.Context, p RunPairRulesParams) (*
 						result.Skipped++
 						break
 					}
-					fire := PairFiring{RuleID: r.ID, OlderID: a.id, NewerID: b.id, Features: f, Op: r.Action.Op, Rel: r.Action.Rel}
-					if !p.DryRun {
-						if r.Action.Op == PairOpAssert {
-							if _, err := s.CreateEdge(ctx, EdgeParams{FromNS: p.NS, FromKey: b.key, ToNS: p.NS, ToKey: a.key, Rel: r.Action.Rel}); err == nil {
-								fire.EdgeWritten = true
-							}
-						}
-						id, err := s.insertRuleEvent(ctx, ruleEventSourcePair, fire)
-						if err != nil {
-							return nil, err
-						}
-						fire.EventID = id
-						evented[r.ID+"|"+k] = true
-					}
-					result.Firings = append(result.Firings, fire)
+					matched = append(matched, PairFiring{RuleID: r.ID, OlderID: a.id, NewerID: b.id, Features: f,
+						Op: r.Action.Op, Rel: r.Action.Rel, Score: f.ProposeScore()})
 					break // highest-priority matching rule wins for this pair
 				}
 			}
 		}
 	}
+
+	// Pass 2: rank. Asserts first (uncapped), then proposals by score; ties by
+	// keys so the order is stable across runs.
+	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].Op != matched[j].Op {
+			return matched[i].Op == PairOpAssert
+		}
+		if matched[i].Score != matched[j].Score {
+			return matched[i].Score > matched[j].Score
+		}
+		if matched[i].Features.OlderKey != matched[j].Features.OlderKey {
+			return matched[i].Features.OlderKey < matched[j].Features.OlderKey
+		}
+		return matched[i].Features.NewerKey < matched[j].Features.NewerKey
+	})
+	proposals := 0
+	for _, fire := range matched {
+		if fire.Op == PairOpPropose {
+			proposals++
+			if proposals > p.MaxProposals {
+				result.Capped++
+				continue
+			}
+		}
+		if !p.DryRun {
+			if fire.Op == PairOpAssert {
+				older, newer := memByID(mems, fire.OlderID), memByID(mems, fire.NewerID)
+				if _, err := s.CreateEdge(ctx, EdgeParams{FromNS: p.NS, FromKey: newer.key, ToNS: p.NS, ToKey: older.key, Rel: fire.Rel}); err == nil {
+					fire.EdgeWritten = true
+				}
+			}
+			id, err := s.insertRuleEvent(ctx, ruleEventSourcePair, fire)
+			if err != nil {
+				return nil, err
+			}
+			fire.EventID = id
+		}
+		result.Firings = append(result.Firings, fire)
+	}
 	return result, nil
+}
+
+func memByID(mems []*pairMem, id string) *pairMem {
+	for _, m := range mems {
+		if m.id == id {
+			return m
+		}
+	}
+	return &pairMem{}
 }
 
 func (m *pairMem) model() *model.Memory {

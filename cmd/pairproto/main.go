@@ -266,12 +266,13 @@ func runFromRules(dbPath, ns string, sample, jevN int, seed int64) {
 		byRule[f.RuleID]++
 	}
 	fmt.Printf("store rules: scanned=%d pairs=%d firings=%d skipped=%d by_rule=%v\n", res.MemoriesScanned, res.PairsEvaluated, len(res.Firings), res.Skipped, byRule)
+	// Firings arrive ranked (asserts, then proposals by ProposeScore). The gate
+	// takes the head of the queue — what a reviewer would see first.
 	fir := res.Firings
-	r := rand.New(rand.NewSource(seed))
-	r.Shuffle(len(fir), func(i, j int) { fir[i], fir[j] = fir[j], fir[i] })
 	if len(fir) > sample {
 		fir = fir[:sample]
 	}
+	_ = seed
 	if jevN == 0 {
 		for i, f := range fir {
 			if i >= 15 {
