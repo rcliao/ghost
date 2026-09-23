@@ -59,9 +59,11 @@ func TestReflectPromote(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// Insert STM memory with high access count (>50 threshold) and old enough (>72h)
-	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, importance, tier, est_tokens)
-		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 55, 0.7, 'stm', 30)`,
+	// Insert STM memory with high access count (>50 threshold) and old enough (>72h).
+	// It earned utility on most returns; with zero utility the low-utility prune
+	// (higher priority) would correctly claim it instead.
+	s.db.Exec(`INSERT INTO memories (id, ns, key, content, kind, version, created_at, priority, access_count, utility_count, importance, tier, est_tokens)
+		VALUES ('m1', 'test', 'popular', 'popular content', 'semantic', 1, ?, 'normal', 55, 50, 0.7, 'stm', 30)`,
 		time.Now().Add(-96*time.Hour).UTC().Format(time.RFC3339))
 
 	result, err := s.Reflect(ctx, ReflectParams{})
@@ -210,11 +212,14 @@ func TestRuleMatchesConditions(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "utility_lt skipped when utility_count is 0",
+			name:     "utility_lt matches when utility_count is 0",
 			rule:     ReflectRule{Cond: RuleCond{AccessGT: 5, UtilityLT: 0.2}},
 			mem:      model.Memory{AccessCount: 10, UtilityCount: 0},
 			utilR:    0.0,
-			expected: false, // should NOT match — utility tracking never engaged
+			// Utility tracking has run since ade6daa; a memory surfaced 10 times
+			// that never earned credit is exactly what the prune targets. The old
+			// zero-utility exemption made every such memory permanently immune.
+			expected: true,
 		},
 		{
 			name:     "utility_lt matches when utility tracking engaged",

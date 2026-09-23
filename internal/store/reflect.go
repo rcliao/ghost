@@ -551,7 +551,7 @@ func ruleMatches(rule ReflectRule, m model.Memory, ageHours, unaccessedHours, ut
 	if c.AccessGT > 0 && m.AccessCount <= c.AccessGT {
 		return false
 	}
-	if c.UtilityLT > 0 && (m.AccessCount == 0 || m.UtilityCount == 0 || utilityRatio >= c.UtilityLT) {
+	if c.UtilityLT > 0 && (m.AccessCount == 0 || utilityRatio >= c.UtilityLT) {
 		return false
 	}
 	if c.Kind != "" && m.Kind != c.Kind {
@@ -594,7 +594,7 @@ func ruleMatchesNonSimilarity(rule ReflectRule, m model.Memory, ageHours, unacce
 	if c.AccessGT > 0 && m.AccessCount <= c.AccessGT {
 		return false
 	}
-	if c.UtilityLT > 0 && (m.AccessCount == 0 || m.UtilityCount == 0 || utilityRatio >= c.UtilityLT) {
+	if c.UtilityLT > 0 && (m.AccessCount == 0 || utilityRatio >= c.UtilityLT) {
 		return false
 	}
 	if c.Kind != "" && m.Kind != c.Kind {
