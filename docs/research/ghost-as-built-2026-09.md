@@ -23,16 +23,22 @@ Memory is the most important part of a personal agent.
 It is private, it is secure, and it drives the agent's behaviour by flowing into the system prompt.
 So the memory, the ghost, must be carried across many shells.
 
-Five terms in that statement are load-bearing:
+The owner sharpened the terms in a second review pass, again in their own words:
 
-- **Portable.** The memory outlives any one model or harness.
-- **Private.** It is the owner's, held locally.
-- **Secure.** What enters it and what changes it are controlled.
-- **Behaviour-driving.** Memory reaches the model through the system prompt, so stale memory is wrong behaviour.
-- **Personal.** One household, several people, one agent identity.
+> I want the memory to be something that user (such as myself) can store as my own file (therefore, sqlite choice) instead of having the cloud model (such as you or gpt) that stores memory that creates the lock in to that ecosystem.
 
-LLM-free follows from portability rather than standing beside it.
-A memory that needs a particular model to be read or maintained cannot be carried to another.
+> As memory layer, it needs to be fast and reliable so that agent can use memory to better serve their human counter part with proper write and retrieval.
+
+Read as terms:
+
+- **Owned.** The memory is the user's own file, which is why it is SQLite. The alternative is memory held by a cloud assistant, which locks the user into that ecosystem.
+- **Encrypted.** Owned first, then encrypted at rest, transparently, as FileVault is.
+- **Pluggable.** A storage layer that shells attach to and pull from, one after another. Ghost must stand alone under Claude Code or Codex, without the shell project.
+- **Fast and reliable.** Ghost is infrastructure behind the agent, so latency and silent failure are first-class concerns.
+- **Serves its human.** Proper write and retrieval, personalised to one person or household, shaping the agent's behaviour through the prompt.
+
+LLM-free follows from owned and pluggable rather than standing beside them.
+A memory that needs one vendor's model is neither the user's own nor attachable to another shell.
 The README states the constraint as "LLM-free by design" (`./README.md:5`).
 The architecture doc assigns the intelligence to the caller (`docs/ARCHITECTURE.md:365`).
 
@@ -40,6 +46,7 @@ Three secondary reasons support the constraint.
 
 - **Durability.** One file and one binary survive a provider that does not.
 - **Latency and determinism.** Shell's per-turn Haiku classifier averaged 8.5s and matched nothing in 1,098 calls; its deterministic replacement peaked at 19ms.
+  LLM-free does not by itself make ghost fast; see the companion doc, finding F4.
 - **No extraction hallucination.** Ghost has no extraction stage to hallucinate in.
 
 The cost is specific.
@@ -239,6 +246,12 @@ All gaps are unowned unless marked.
   The architecture doc says 13,500 LOC and 10 MCP tools (`docs/ARCHITECTURE.md:37`, `:50`).
   Measured: 17,882 and 11.
   Five doc-sync PRs are open and unmerged (#118, #123, #126, #127, #128).
+
+### Not yet graded here
+
+This list predates the owner's why and grades only the cost of judging meaning.
+Owned, encrypted, pluggable and fast are graded in `ghost-expansion-research-2026-09.md`, findings F1 to F5.
+The largest gap is speed: search takes 4.8 s with the default reranker backend on the production store.
 
 ### Accepted, not a gap
 
