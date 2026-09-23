@@ -18,55 +18,28 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/rcliao/ghost/internal/entity"
+	"github.com/rcliao/ghost/internal/model"
+	"github.com/rcliao/ghost/internal/store"
 	_ "modernc.org/sqlite"
 )
 
 type mem struct {
 	id, key, content string
 	created          time.Time
+	m                *model.Memory
 	ents             map[string]bool
-	toks             map[string]bool
-	hasCue           bool
-}
-
-// Same change cues freshness.go uses (EN + zh), copied so the prototype is standalone.
-var cueRe = regexp.MustCompile(`(?i)\b(switched (from|to)|no longer|instead of|replaced|superseded|corrected|turns out|caused|led to|resulted in|to prevent|to avoid|root cause)\b|其實|而不是|搞錯|記錯|改成|換成|更正|已經不|錯了|導致|避免`)
-
-var wordRe = regexp.MustCompile(`[\p{L}\p{N}]{3,}`)
-
-func tokens(s string) map[string]bool {
-	m := map[string]bool{}
-	for _, w := range wordRe.FindAllString(strings.ToLower(s), -1) {
-		m[w] = true
-	}
-	return m
-}
-
-func jaccard(a, b map[string]bool) float64 {
-	if len(a) == 0 || len(b) == 0 {
-		return 0
-	}
-	inter := 0
-	for k := range a {
-		if b[k] {
-			inter++
-		}
-	}
-	return float64(inter) / float64(len(a)+len(b)-inter)
 }
 
 type pair struct {
-	a, b     *mem
-	shared   []string
-	daysGap  float64
-	jac      float64
-	cue      bool
+	a, b      *mem
+	shared    []string
+	daysGap   float64
+	jac       float64
+	cue       bool
 	relatesTo bool
 }
 
@@ -112,14 +85,7 @@ func main() {
 			continue
 		}
 		m.created, _ = time.Parse(time.RFC3339, created)
-		m.ents = map[string]bool{}
-		for _, e := range entity.Extract(m.content) {
-			if e.Kind == "name" || e.Kind == "place" || e.Kind == "thing" {
-				m.ents[e.Text] = true
-			}
-		}
-		m.toks = tokens(m.content)
-		m.hasCue = cueRe.MatchString(m.content)
+		m.m = &model.Memory{ID: m.id, Key: m.key, Content: m.content, CreatedAt: m.created}
 		mems = append(mems, &m)
 	}
 	rows.Close()
@@ -136,11 +102,22 @@ func main() {
 	}
 	er.Close()
 
-	// entity document frequency; drop entities too common to discriminate
-	df := map[string]int{}
+	// entity document frequency from the STORE's extractor (the code under test)
+	var corpus []*model.Memory
 	for _, m := range mems {
-		for e := range m.ents {
-			df[e]++
+		corpus = append(corpus, m.m)
+	}
+	df := store.EntityDF(corpus)
+	for _, m := range mems {
+		m.ents = map[string]bool{}
+		for e := range df {
+			_ = e
+		}
+	}
+	// per-memory entity sets, via a single-memory DF (cheap and identical to the store's view)
+	for _, m := range mems {
+		for e := range store.EntityDF([]*model.Memory{m.m}) {
+			m.ents[e] = true
 		}
 	}
 	index := map[string][]*mem{}
@@ -170,28 +147,24 @@ func main() {
 				if seen[k] {
 					continue
 				}
-				gap := b.created.Sub(a.created).Hours() / 24
-				if gap < *minDays {
-					continue
-				}
-				jac := jaccard(a.toks, b.toks)
-				if jac > *maxJac {
+				pf := store.NewPairFeatures(a.m, b.m, df)
+				if pf.DaysApart < *minDays || pf.Jaccard > *maxJac {
 					continue
 				}
 				seen[k] = true
 				var shared []string
-				for x := range a.ents {
-					if b.ents[x] && df[x] <= *maxDF {
-						shared = append(shared, x)
+				for _, se := range pf.SharedEntities {
+					if se.DF <= *maxDF {
+						shared = append(shared, se.Text)
 					}
 				}
-				sort.Strings(shared)
 				_ = e
-				if len(shared) < *minShared || (*requireCue && !b.hasCue) {
+				hasCue := pf.NewerCue != ""
+				if len(shared) < *minShared || (*requireCue && !hasCue) {
 					continue
 				}
-				pairs = append(pairs, pair{a: a, b: b, shared: shared, daysGap: gap, jac: jac,
-					cue: b.hasCue, relatesTo: rel[k]})
+				pairs = append(pairs, pair{a: a, b: b, shared: shared, daysGap: pf.DaysApart, jac: pf.Jaccard,
+					cue: hasCue, relatesTo: rel[k]})
 			}
 		}
 	}
@@ -286,8 +259,8 @@ var criteria = map[string]string{
 
 func askJev(key, state string) (string, float64, error) {
 	body, _ := json.Marshal(map[string]any{
-		"state": map[string]string{"memories": state},
-		"model": "jev-latest",
+		"state":     map[string]string{"memories": state},
+		"model":     "jev-latest",
 		"questions": map[string]any{"rel": map[string]any{"type": "choice", "instructions": sysPrompt, "criteria": criteria}},
 	})
 	req, _ := http.NewRequestWithContext(context.Background(), "POST", "https://api.typesafe.ai/v1/systemone", bytes.NewReader(body))

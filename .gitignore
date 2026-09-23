@@ -3,3 +3,6 @@
 *.db
 .claude/
 dist/
+
+# graded pairs from real (private) stores — never committed; the in-repo fixture is synthetic
+testdata/pair_rules/local/
