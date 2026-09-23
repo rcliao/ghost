@@ -24,6 +24,16 @@ func TestProposeScoreOrdersCueAndSpecificityFirst(t *testing.T) {
 	if plain.ProposeScore() != plain.ProposeScore() {
 		t.Error("score must be deterministic")
 	}
+	sibling := rare
+	sibling.KeyPrefixMatch = true
+	overlapping := rare
+	overlapping.Jaccard = 0.25
+	if !(sibling.ProposeScore() < rare.ProposeScore() && overlapping.ProposeScore() < rare.ProposeScore()) {
+		t.Errorf("sibling shapes must rank below causal shapes: sibling=%.2f overlap=%.2f rare=%.2f", sibling.ProposeScore(), overlapping.ProposeScore(), rare.ProposeScore())
+	}
+	if sibling.ProposeScore() <= 0 {
+		t.Errorf("penalties push down, not out: %.2f", sibling.ProposeScore())
+	}
 }
 
 func TestLooksLikeEntity(t *testing.T) {

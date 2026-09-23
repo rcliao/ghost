@@ -303,6 +303,16 @@ func (f PairFeatures) ProposeScore() float64 {
 	if f.DaysApart > 0 {
 		score += 0.5 / (1.0 + f.DaysApart/30.0)
 	}
+	// Sibling shapes — two summaries of the same thread, or heavy overlap —
+	// share many entities and so score high on the terms above while being
+	// restatements, not causes. Push them down, not out: they remain
+	// proposals, just behind the pairs a reviewer should see first.
+	if f.KeyPrefixMatch {
+		score -= 1.5
+	}
+	if f.Jaccard > 0.15 {
+		score -= (f.Jaccard - 0.15) * 10 // 0.25 overlap costs 1.0
+	}
 	return score
 }
 
