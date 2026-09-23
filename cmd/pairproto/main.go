@@ -55,10 +55,15 @@ func main() {
 	minShared := flag.Int("min-shared", 1, "minimum shared entities")
 	excl := flag.String("exclude-prefix", "briefing-,hb-,heartbeat-,exchange-,session-pikamini-,skill-", "comma-separated key prefixes to skip (agent self-maintenance, not memory of the human)")
 	requireCue := flag.Bool("require-cue", false, "keep only pairs whose newer side has a cue")
+	fromRules := flag.Bool("from-rules", false, "take candidates from the store's RunPairRules (dry-run) instead of this prototype's own enumeration")
 	flag.Parse()
 	if *dbPath == "" {
 		fmt.Fprintln(os.Stderr, "--db required")
 		os.Exit(2)
+	}
+	if *fromRules {
+		runFromRules(*dbPath, *ns, *sample, *jev, *seed)
+		return
 	}
 	db, err := sql.Open("sqlite", "file:"+*dbPath+"?mode=ro")
 	must(err)
@@ -245,6 +250,78 @@ func main() {
 		}
 	}
 	fmt.Printf("jev on %d rule-generated pairs: %v\n", n, counts)
+}
+
+// runFromRules is the gate for the shipped path: the store's own rules choose
+// the candidates, Jev classifies them, and the distribution is compared with
+// the prototype's. Opens the snapshot with the real store (dry-run writes nothing).
+func runFromRules(dbPath, ns string, sample, jevN int, seed int64) {
+	st, err := store.NewSQLiteStore(dbPath)
+	must(err)
+	defer st.Close()
+	res, err := st.RunPairRules(context.Background(), store.RunPairRulesParams{NS: ns, MaxPairs: 20000, DryRun: true})
+	must(err)
+	byRule := map[string]int{}
+	for _, f := range res.Firings {
+		byRule[f.RuleID]++
+	}
+	fmt.Printf("store rules: scanned=%d pairs=%d firings=%d skipped=%d by_rule=%v\n", res.MemoriesScanned, res.PairsEvaluated, len(res.Firings), res.Skipped, byRule)
+	fir := res.Firings
+	r := rand.New(rand.NewSource(seed))
+	r.Shuffle(len(fir), func(i, j int) { fir[i], fir[j] = fir[j], fir[i] })
+	if len(fir) > sample {
+		fir = fir[:sample]
+	}
+	if jevN == 0 {
+		for i, f := range fir {
+			if i >= 15 {
+				break
+			}
+			fmt.Printf("  [%s] --%.0fd--> [%s]  rule=%s cue=%q\n", f.Features.OlderKey, f.Features.DaysApart, f.Features.NewerKey, f.RuleID, f.Features.NewerCue)
+		}
+		return
+	}
+	key := os.Getenv("TYPESAFE_API_KEY")
+	if key == "" {
+		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY not set")
+		os.Exit(2)
+	}
+	ro, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	must(err)
+	defer ro.Close()
+	content := func(id string) (string, time.Time) {
+		var c, created string
+		if err := ro.QueryRow(`SELECT content, created_at FROM memories WHERE id = ?`, id).Scan(&c, &created); err != nil {
+			return "", time.Time{}
+		}
+		ts, _ := time.Parse(time.RFC3339, created)
+		return c, ts
+	}
+	counts := map[string]int{}
+	n := 0
+	for _, f := range fir {
+		if n >= jevN {
+			break
+		}
+		n++
+		ac, at := content(f.OlderID)
+		bc, bt := content(f.NewerID)
+		msg := fmt.Sprintf("Memory A (key: %s, %s):\n%s\n\nMemory B (key: %s, %s):\n%s",
+			f.Features.OlderKey, at.Format("2006-01-02"), trunc(ac, 1500), f.Features.NewerKey, bt.Format("2006-01-02"), trunc(bc, 1500))
+		ch, prob, err := askJev(key, msg)
+		if err != nil {
+			counts["error"]++
+			if counts["error"] == 1 {
+				fmt.Fprintln(os.Stderr, "jev:", strings.ReplaceAll(err.Error(), key, "[redacted]"))
+			}
+			continue
+		}
+		counts[ch]++
+		if ch != "none" && ch != "restates" {
+			fmt.Printf("  %-9s p=%.2f  [%s] -> [%s]  rule=%s\n", ch, prob, f.Features.OlderKey, f.Features.NewerKey, f.RuleID)
+		}
+	}
+	fmt.Printf("jev on %d store-rule pairs: %v\n", n, counts)
 }
 
 const sysPrompt = `You are an expert at identifying reasoning relationships between two pieces of text from a user's memory. Memory A is OLDER, Memory B is NEWER. Decide which relationship holds between them. Be strict: only choose a reasoning relation when the logical link is clear from the text. Generic topical similarity is "none".`

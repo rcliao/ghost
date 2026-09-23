@@ -110,7 +110,7 @@ Default weights by relation type:
 
 ### Link (legacy)
 
-Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`, `contains`, `merged_into`. Reasoning relations: `caused_by`, `prevents`, `implies` (populated via `ghost infer-edges` CLI — LLM-assisted, offline). Migrated to `memory_edges` table on startup.
+Semantic relationships between memories: `relates_to`, `contradicts`, `depends_on`, `refines`, `contains`, `merged_into`. Reasoning relations: `caused_by`, `prevents`, `implies` — candidates come from pair rules (see Pair Rules), labels from a caller or `ghost infer-edges` (LLM-assisted, offline). Migrated to `memory_edges` table on startup.
 
 ## Storage Layer
 
@@ -129,6 +129,8 @@ Uses `modernc.org/sqlite` with WAL mode. Single file at `~/.ghost/memory.db` (co
 | `memory_links` | Legacy directed edges (migrated to memory_edges) |
 | `memory_files` | File path references |
 | `reflect_rules` | Condition→action rules for the reflect engine |
+| `pair_rules` | Condition→action rules over pair features: `propose` a relation for a caller to decide, or `assert` it (needs measured precision) |
+| `rule_events` | Audit trace of every rule firing (features seen, action, edge written) with `reviewed`/`verdict`; disagree removes an asserted edge. Carries a `source` so lifecycle decisions can write it later |
 
 ### Migrations
 
@@ -226,6 +228,18 @@ Tier multipliers: ltm=1.0, stm=0.8, dormant=0.15, sensory=0.1
 **Per-memory token cap**: `MaxMemoryTokens` (default 400) limits how many tokens any single memory can contribute to the output. Memories exceeding the cap are automatically excerpted, preventing large memories from dominating the budget and leaving room for more diverse results. Set to `-1` to disable.
 
 Memories that don't fully fit the remaining budget get excerpted (truncated with "...") if at least 25 tokens remain.
+
+## Pair Rules (relationship logic as data)
+
+Typed relations are where ghost's deterministic algorithms are meant to run, and they are not created by the hot path. Pair rules generate them from features, not from cosine neighbours (which are restatements: 0 causal pairs per 100 measured, against 8–12 for rule-generated candidates).
+
+- `NewPairFeatures(a, b, df)` (`internal/store/pair_features.go`) is a pure function over two memories: shared entities with document frequency (date words excluded, whole-entity containment), days apart, token Jaccard, the newer side's cue class (`correction` outranks `causal`), same user/scope, key-prefix match.
+- A `PairRule` (`internal/store/pair_rules.go`) is a `PairCond` over those features and a `PairAction`: `propose <rel>` surfaces the pair through `rule_events` for a caller or an out-of-band classifier to decide; `assert <rel>` writes the edge and requires `min_precision >= 0.8` measured on `testdata/pair_rules/fixture.json`. Two system rules are seeded, both `propose caused_by`.
+- `RunPairRules` enumerates pairs from an entity index within a frequency band, fires the highest-priority matching rule once per pair, records a `rule_events` row per firing, and is idempotent. Agent self-maintenance keys (`briefing-`, `hb-`, `exchange-`…) are skipped by default.
+- `ReviewRuleEvent` records `agree` or `disagree`; disagree on an asserted edge deletes it. Nothing on the retrieval hot path reads `rule_events`.
+- The store never decides `caused_by` / `prevents` / `implies` itself. `ghost infer-edges --provider jev|anthropic|claude` is the out-of-band classifier; `cmd/pairproto` is the kept verification harness (`--from-rules` runs the shipped path).
+
+Design: `docs/research/pair-rules-design.md`.
 
 ## Reflect System
 
@@ -344,6 +358,8 @@ The public `Store` interface is a subset of the internal one — core CRUD, sear
 | `tags` | List, rename, or remove tags |
 | `ns` | Namespace operations (list, rm) |
 | `reflect` | Run lifecycle rules |
+| `rules` | Pair rules: `list`, `pairs` (run, `--dry-run`), `events` (`--unreviewed`), `review <id> --verdict agree\|disagree` |
+| `infer-edges` | Out-of-band LLM classification of reasoning edges; `--provider claude\|anthropic\|jev` |
 | `gc` | Garbage collect expired/stale memories; `--purge-deleted <age|all>` hard-removes soft-deleted rows + orphaned chunks; `--vacuum` reclaims disk |
 | `stats` | Database statistics |
 | `export` / `import` | JSON export/import |
