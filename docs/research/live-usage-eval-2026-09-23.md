@@ -40,12 +40,17 @@ Limits: exact-text matching misses paraphrased influence and silently avoided mi
 2. **A lone returned direct hit never earned utility.** Utility was credited only inside `strengthenCoRetrievedEdges`, which runs when 2+ memories are returned.
 3. **The low-utility prune exempted zero utility.** `ruleMatches` returned false for `UtilityCount == 0`, so the rule could never fire on exactly the memories it targets.
 
+The fix touches only **returned direct hits**. A first version touched everything returned; review caught that edge passengers (typed-edge neighbours, force-included `contradicts`) would then accrue access without utility and get promoted through the same door. `TestContextEdgePassengerNotPromoted` pins this.
+
 With 1 and 2 fixed, "zero utility over more than 20 returned accesses" means "only ever an edge passenger", which is what the prune was written for. The spaced-access guard still protects anything accessed on 2+ distinct days.
 
 ## Not fixed here (follow-ups)
 
 - **Explicit gets earn no utility.** `Get` records an access but never utility, so a memory fetched explicitly more than 20 times on one day, and older than 72h, is now prunable.
 - **Typed-edge neighbours bypass the score floor** (#103), including dormant ones (#104). An auto-classified `contradicts` edge from a junk memory is enough to drag it into context.
+- **Some memories are no longer touched by `Context`:** pinned memories (they're lifecycle-exempt, but `last_accessed_at` can be stale after an unpin), edge passengers, and children replaced by `substituteParents`. Children in LTM that are always represented by their parent will go stale and be demoted to dormant after 7 days.
+- **The access-log cap (100 rows per memory) can erase the spacing guard.** A memory returned more than 100 times in one day collapses to 1 distinct day. This rarely matters now that direct-hit utility tracks access.
+- **The GC prune is now inconsistent with reflect.** `sqlite_gc.go` still requires `utility_count > 0`.
 - **Utility measures "returned as a direct hit", not "used".** A reference-detection signal (did the agent act on it?) would make the lifecycle and `GHOST_UTILITY_WEIGHT` reward usefulness instead of topicality.
 
 ## Operator-side changes made alongside (hooks, not in this repo)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func accessAndUtility(t *testing.T, s *SQLiteStore, ns, key string) (int, int) {
@@ -65,5 +66,58 @@ func TestContextCreditsLoneDirectHit(t *testing.T) {
 	access, utility := accessAndUtility(t, s, "test", "deploy-gotcha")
 	if access != 1 || utility != 1 {
 		t.Errorf("lone returned hit: access=%d utility=%d, want 1 and 1", access, utility)
+	}
+}
+
+// An edge passenger (here a junk capture hanging off a real hit by a
+// force-included contradicts edge) is returned but never matched the query. It
+// must not accrue access, or three days of returns would read as rehearsal and
+// promote it to ltm while the spaced-access guard shields it from the prune.
+func TestContextEdgePassengerNotPromoted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Now().Add(-96 * time.Hour)
+	clock := base
+	s.SetClock(func() time.Time { return clock })
+	s.Put(ctx, PutParams{NS: "test", Key: "real-fact", Content: "Release tags need a manual workflow run"})
+	s.Put(ctx, PutParams{NS: "test", Key: "junk-capture", Content: "i think that is fine and lets go"})
+	if _, err := s.CreateEdge(ctx, EdgeParams{FromNS: "test", FromKey: "real-fact", ToNS: "test", ToKey: "junk-capture", Rel: "contradicts"}); err != nil {
+		t.Fatal(err)
+	}
+	s.db.Exec(`UPDATE memories SET created_at = ?`, base.Add(-96*time.Hour).UTC().Format(time.RFC3339))
+
+	passengerReturned := false
+	for day := 0; day < 3; day++ {
+		clock = base.Add(time.Duration(day*24) * time.Hour)
+		for i := 0; i < 20; i++ {
+			res, err := s.Context(ctx, ContextParams{NS: "test", Query: "release tags manual workflow", Budget: 4000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range res.Memories {
+				if m.Key == "junk-capture" {
+					passengerReturned = true
+				}
+			}
+		}
+	}
+	if !passengerReturned {
+		t.Fatal("setup: expected the contradicts neighbour to ride along as an edge passenger")
+	}
+	if access, _ := accessAndUtility(t, s, "test", "junk-capture"); access != 0 {
+		t.Errorf("edge passenger access_count=%d, want 0", access)
+	}
+	if access, utility := accessAndUtility(t, s, "test", "real-fact"); access != 60 || utility != 60 {
+		t.Errorf("direct hit access=%d utility=%d, want 60 and 60", access, utility)
+	}
+
+	clock = base.Add(96 * time.Hour)
+	if _, err := s.Reflect(ctx, ReflectParams{NS: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var tier string
+	s.db.QueryRow(`SELECT tier FROM memories WHERE key = 'junk-capture'`).Scan(&tier)
+	if tier == "ltm" {
+		t.Errorf("edge passenger was promoted to ltm")
 	}
 }

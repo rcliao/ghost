@@ -686,16 +686,6 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		}
 	}
 
-	// Touch access metadata only for memories actually returned. Raw search
-	// hits that the MinScore/MinSpread floor or the budget dropped were never
-	// surfaced, so counting them as accesses let any memory that lexically
-	// matches common words ("stop", "lets", "fine") accrue access days, get
-	// promoted to ltm by sys-promote-to-ltm, and escape sys-prune-low-utility
-	// — all without ever being shown to an agent.
-	if err := s.touchMemories(ctx, returnedIDs); err != nil {
-		_ = err
-	}
-
 	// Only Phase-2 direct search hits earn utility credit (not edge passengers).
 	directHit := make(map[string]bool, len(results))
 	for _, r := range results {
@@ -707,6 +697,18 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 			utilityIDs = append(utilityIDs, id)
 		}
 	}
+
+	// Touch access metadata only for returned direct hits. Raw search hits the
+	// MinScore/MinSpread floor or the budget dropped were never surfaced, and
+	// edge passengers (typed-edge neighbours, force-included contradicts, pulled
+	// out of dormancy) never matched the query. Counting either as an access let
+	// a memory accrue access days without earning utility, which
+	// sys-promote-to-ltm reads as rehearsal and the spaced-access guard then
+	// shields from sys-prune-low-utility.
+	if err := s.touchMemories(ctx, utilityIDs); err != nil {
+		_ = err
+	}
+
 	// Co-retrieval strengthening: strengthen edges between memories that
 	// appear together in this context response (Hebbian: "fire together, wire together").
 	// Edges need a pair, but utility credit does not: a lone direct hit is

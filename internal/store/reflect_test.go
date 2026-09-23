@@ -212,10 +212,10 @@ func TestRuleMatchesConditions(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "utility_lt matches when utility_count is 0",
-			rule:     ReflectRule{Cond: RuleCond{AccessGT: 5, UtilityLT: 0.2}},
-			mem:      model.Memory{AccessCount: 10, UtilityCount: 0},
-			utilR:    0.0,
+			name:  "utility_lt matches when utility_count is 0",
+			rule:  ReflectRule{Cond: RuleCond{AccessGT: 5, UtilityLT: 0.2}},
+			mem:   model.Memory{AccessCount: 10, UtilityCount: 0},
+			utilR: 0.0,
 			// Utility tracking has run since ade6daa; a memory surfaced 10 times
 			// that never earned credit is exactly what the prune targets. The old
 			// zero-utility exemption made every such memory permanently immune.
