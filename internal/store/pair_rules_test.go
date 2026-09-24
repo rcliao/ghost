@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rcliao/ghost/internal/model"
 )
 
 // Matches is exercised on the synthetic fixture: the two built-in rules must
@@ -272,6 +274,113 @@ func TestAgreeOnProposalWritesEdge(t *testing.T) {
 	edges, _ = s.GetEdges(ctx, ev.NewerID)
 	if hasEdge(edges, ev.NewerID, ev.OlderID, "caused_by") {
 		t.Error("a later disagree must remove the edge agree wrote")
+	}
+}
+
+// A re-put gives a memory a new id. Verdicts must follow it: the reserved
+// handling and disagree must still find the live edge, a second run must fire
+// nothing, and purging the old version must not cascade the trace away.
+func TestRuleEventsFollowVersionChange(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedPairCorpus(t, s, "agent:test")
+	res, err := s.RunPairRules(ctx, RunPairRulesParams{NS: "agent:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev PairFiring
+	for _, f := range res.Firings {
+		if f.Features.OlderKey == "health-shoulder-cause-corrected" && f.Features.NewerKey == "behavioral-reread-before-citing" {
+			ev = f
+		}
+	}
+	if ev.EventID == "" {
+		t.Fatal("correction pair not proposed")
+	}
+	if err := s.ReviewRuleEvent(ctx, ev.EventID, VerdictAgree, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	// Re-put both sides with the same content: new versions, new ids.
+	for _, key := range []string{"behavioral-reread-before-citing", "health-shoulder-cause-corrected"} {
+		var m []model.Memory
+		m, err = s.Get(ctx, GetParams{NS: "agent:test", Key: key})
+		if err != nil || len(m) == 0 {
+			t.Fatalf("get %s: %v", key, err)
+		}
+		if _, err := s.Put(ctx, PutParams{NS: "agent:test", Key: key, Content: m[0].Content + " (edited)", Tier: "stm"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live, err := s.GetEdgesByNSKey(ctx, "agent:test", "behavioral-reread-before-citing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edge *Edge
+	for i := range live {
+		if live[i].Rel == "caused_by" {
+			edge = &live[i]
+		}
+	}
+	if edge == nil {
+		t.Fatalf("caused_by edge lost on re-put: %+v", live)
+	}
+	if !s.reviewedEdgeSet(ctx)[edge.FromID+"|"+edge.ToID+"|caused_by"] {
+		t.Errorf("agree verdict no longer matches the live edge after re-put")
+	}
+	again, err := s.RunPairRules(ctx, RunPairRulesParams{NS: "agent:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range again.Firings {
+		if f.Features.NewerKey == "behavioral-reread-before-citing" && f.Features.OlderKey == "health-shoulder-cause-corrected" {
+			t.Errorf("pair proposed again after re-put: %+v", f)
+		}
+	}
+	if _, err := s.PurgeDeleted(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if evs := mustList(t, s, ListRuleEventsParams{RuleID: ev.RuleID}); len(evs) == 0 {
+		t.Error("purging old versions cascaded the review trace away")
+	}
+	if err := s.ReviewRuleEvent(ctx, ev.EventID, VerdictDisagree, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	live, _ = s.GetEdgesByNSKey(ctx, "agent:test", "behavioral-reread-before-citing")
+	for _, e := range live {
+		if e.Rel == "caused_by" {
+			t.Errorf("disagree after re-put did not remove the live edge")
+		}
+	}
+}
+
+// The MaxPairs window must advance past pairs already handled, or a queue can
+// never refill after review.
+func TestRunPairRulesWindowAdvances(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedPairCorpus(t, s, "agent:test")
+	full, _ := s.RunPairRules(ctx, RunPairRulesParams{NS: "agent:test", DryRun: true})
+	fired, evaluated := len(full.Firings), full.PairsEvaluated
+	if fired < 2 {
+		t.Skipf("corpus fires %d; need >= 2", fired)
+	}
+	// A window one wider than the non-matching pairs holds at least one
+	// undecided match per run. Decided pairs leave the window, so each run
+	// must fire at least once until every match is recorded.
+	window := evaluated - fired + 1
+	total := 0
+	for i := 0; i < fired; i++ {
+		r, err := s.RunPairRules(ctx, RunPairRulesParams{NS: "agent:test", MaxPairs: window})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Firings) == 0 {
+			t.Fatalf("run %d fired nothing: the window did not advance past decided pairs", i)
+		}
+		total += len(r.Firings)
+	}
+	if total != fired {
+		t.Errorf("windowed runs fired %d in total, a full run fires %d", total, fired)
 	}
 }
 

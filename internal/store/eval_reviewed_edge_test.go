@@ -114,8 +114,13 @@ func TestEvalReviewedEdgeSurvivesTightBudget(t *testing.T) {
 		if hc {
 			t.Fatalf("budget %d: control arm reaches the neighbour by similarity; the case cannot measure an edge", budget)
 		}
-		if budget == reviewedEdgeTightBudget && !hr {
-			t.Errorf("budget %d: a caused_by edge with an AGREE verdict did not carry its cause into context (unreviewed=%v)", budget, hu)
+		if budget == reviewedEdgeTightBudget {
+			if !hr {
+				t.Errorf("budget %d: a caused_by edge with an AGREE verdict did not carry its cause into context (unreviewed=%v)", budget, hu)
+			}
+			if hu {
+				t.Errorf("budget %d: the UNREVIEWED edge carried its cause; the treatment is not what made the difference", budget)
+			}
 		}
 	}
 }
@@ -125,8 +130,14 @@ func TestEvalReviewedEdgeSurvivesTightBudget(t *testing.T) {
 // budget and the class would stop being scarce (TestNonReserveClassIsNotPromoted).
 func TestEvalReviewedEdgeReservationIsScarce(t *testing.T) {
 	c := reviewedCausedByCase(t)
+	// packed_reserved never sees edge arrivals (viaEdge is counted first), so
+	// observe the flag where it is set: edge_marked_reserved.
 	unrev := buildReviewedCase(t, c, armUnreviewed, reviewedEdgeTightBudget)
-	if unrev.Stages["packed_reserved"] != 0 {
-		t.Errorf("an unreviewed caused_by edge must not be packed as reserved: stage=%d", unrev.Stages["packed_reserved"])
+	if unrev.Stages["edge_marked_reserved"] != 0 {
+		t.Errorf("an unreviewed caused_by edge must not be marked reserved: stage=%d", unrev.Stages["edge_marked_reserved"])
+	}
+	rev := buildReviewedCase(t, c, armReviewed, reviewedEdgeTightBudget)
+	if rev.Stages["edge_marked_reserved"] == 0 {
+		t.Errorf("the reviewed edge must be marked reserved; stages=%v", rev.Stages)
 	}
 }

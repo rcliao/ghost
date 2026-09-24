@@ -371,21 +371,30 @@ func (s *SQLiteStore) RunPairRules(ctx context.Context, p RunPairRulesParams) (*
 					continue
 				}
 				seen[k] = true
-				result.PairsEvaluated++
 				if typed[k] || typed[b.id+"|"+a.id] {
 					result.Skipped++
 					continue
 				}
+				// A pair some active rule already fired on is decided: it leaves
+				// the window without being counted, so later runs advance past
+				// it and the queue can refill after review. (A pair that matched
+				// no rule is undecided and is evaluated again — rules change.)
+				decided := false
+				for _, r := range active {
+					if evented[r.ID+"|"+k] {
+						decided = true
+						break
+					}
+				}
+				if decided {
+					result.Skipped++
+					continue
+				}
+				result.PairsEvaluated++
 				f := NewPairFeatures(a.model(), b.model(), df)
 				for _, r := range active {
 					if !r.Cond.Matches(f) {
 						continue
-					}
-					if evented[r.ID+"|"+k] {
-						// The winning rule already fired on this pair; do not let a
-						// lower-priority rule fire in its place.
-						result.Skipped++
-						break
 					}
 					matched = append(matched, PairFiring{RuleID: r.ID, OlderID: a.id, NewerID: b.id, Features: f,
 						Op: r.Action.Op, Rel: r.Action.Rel, Score: f.ProposeScore()})
@@ -457,7 +466,8 @@ func (s *SQLiteStore) loadPairMemories(ctx context.Context, ns string, skip []st
 		INNER JOIN (SELECT ns, key, MAX(version) AS mv FROM memories WHERE ns = ? AND deleted_at IS NULL GROUP BY ns, key) l
 		  ON m.ns = l.ns AND m.key = l.key AND m.version = l.mv
 		WHERE m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
-		  AND COALESCE(m.tier,'stm') != 'dormant'`, ns, now)
+		  AND COALESCE(m.tier,'stm') != 'dormant'
+		ORDER BY m.created_at, m.key`, ns, now)
 	if err != nil {
 		return nil, err
 	}

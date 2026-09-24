@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rcliao/ghost/internal/embedding"
@@ -328,7 +329,21 @@ func relinkEdges(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	if err != nil {
 		return fmt.Errorf("relink edges to: %w", err)
 	}
+	// The review trace keys the same ids: without this, every re-put detaches
+	// its verdicts (reserved handling and disagree both stop matching the live
+	// edge), a second run fires duplicates, and purging the old version
+	// cascades the history away.
+	if _, err = tx.ExecContext(ctx, `UPDATE rule_events SET from_id = ? WHERE from_id = ?`, newID, oldID); err != nil && !isMissingTable(err) {
+		return fmt.Errorf("relink rule events from: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE rule_events SET to_id = ? WHERE to_id = ?`, newID, oldID); err != nil && !isMissingTable(err) {
+		return fmt.Errorf("relink rule events to: %w", err)
+	}
 	return nil
+}
+
+func isMissingTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
 }
 
 // autoLinkEdges finds similar memories and creates relates_to edges.
