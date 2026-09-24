@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -56,6 +57,9 @@ func main() {
 	excl := flag.String("exclude-prefix", "briefing-,hb-,heartbeat-,exchange-,session-pikamini-,skill-", "comma-separated key prefixes to skip (agent self-maintenance, not memory of the human)")
 	requireCue := flag.Bool("require-cue", false, "keep only pairs whose newer side has a cue")
 	fromRules := flag.Bool("from-rules", false, "take candidates from the store's RunPairRules (dry-run) instead of this prototype's own enumeration")
+	pullThrough := flag.String("pullthrough", "", "TSV of accepted pairs (older, newer, p): write caused_by edges on a copy and measure whether the cause becomes reachable via Context (control vs edges)")
+	budget := flag.Int("budget", 2000, "pullthrough: Context token budget")
+	minScore := flag.Float64("min-score", 0.3, "pullthrough: Context MinScore (production uses 0.3)")
 	flag.Parse()
 	if *dbPath == "" {
 		fmt.Fprintln(os.Stderr, "--db required")
@@ -63,6 +67,10 @@ func main() {
 	}
 	if *fromRules {
 		runFromRules(*dbPath, *ns, *sample, *jev, *seed)
+		return
+	}
+	if *pullThrough != "" {
+		runPullThrough(*dbPath, *ns, *pullThrough, *budget, *minScore)
 		return
 	}
 	db, err := sql.Open("sqlite", "file:"+*dbPath+"?mode=ro")
@@ -250,6 +258,111 @@ func main() {
 		}
 	}
 	fmt.Printf("jev on %d rule-generated pairs: %v\n", n, counts)
+}
+
+// runPullThrough mirrors TestEvalGraphPullThrough on real data: for each
+// accepted pair, the query is the NEWER memory's own opening text (the
+// situation the agent is in), and we ask whether the OLDER cause is packed —
+// with the caused_by edge vs without. Pinned are excluded as the shell does
+// (they live in the system prompt); MinScore matches production.
+func runPullThrough(dbPath, ns, tsv string, budget int, minScore float64) {
+	type pair struct{ older, newer, p string }
+	var pairs []pair
+	raw, err := os.ReadFile(tsv)
+	must(err)
+	for _, line := range strings.Split(string(raw), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "\t")
+		if len(f) >= 2 && f[0] != "" {
+			p := ""
+			if len(f) > 2 {
+				p = f[2]
+			}
+			pairs = append(pairs, pair{f[0], f[1], p})
+		}
+	}
+	control := dbPath + ".control"
+	treat := dbPath + ".edges"
+	for _, dst := range []string{control, treat} {
+		b, err := os.ReadFile(dbPath)
+		must(err)
+		must(os.WriteFile(dst, b, 0o600))
+	}
+	ctx := context.Background()
+	stC, err := store.NewSQLiteStore(control)
+	must(err)
+	defer stC.Close()
+	stE, err := store.NewSQLiteStore(treat)
+	must(err)
+	defer stE.Close()
+	written := 0
+	for _, p := range pairs {
+		if _, err := stE.CreateEdge(ctx, store.EdgeParams{FromNS: ns, FromKey: p.newer, ToNS: ns, ToKey: p.older, Rel: "caused_by"}); err == nil {
+			written++
+		}
+	}
+	fmt.Printf("pairs=%d edges_written=%d budget=%d min_score=%.2f exclude_pinned=true\n", len(pairs), written, budget, minScore)
+	ro, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	must(err)
+	defer ro.Close()
+	contentOf := func(key string) string {
+		var c string
+		_ = ro.QueryRow(`SELECT content FROM memories WHERE ns=? AND key=? AND deleted_at IS NULL ORDER BY version DESC LIMIT 1`, ns, key).Scan(&c)
+		return c
+	}
+	bracket := regexp.MustCompile(`\[[^\]]*\]`)
+	ws := regexp.MustCompile(`\s+`)
+	queryFrom := func(text string) string {
+		t := ws.ReplaceAllString(bracket.ReplaceAllString(text, ""), " ")
+		t = strings.TrimSpace(t)
+		if len(t) > 200 {
+			t = t[:200]
+		}
+		return t
+	}
+	rank := func(st *store.SQLiteStore, q, key string) (int, bool, int) {
+		res, err := st.Context(ctx, store.ContextParams{NS: ns, Query: q, Budget: budget, ExcludePinned: true, MinScore: minScore})
+		if err != nil {
+			return 0, false, 0
+		}
+		r, seeded := 0, false
+		for i, m := range res.Memories {
+			if m.Key == key {
+				r = i + 1
+			}
+		}
+		_ = seeded
+		return r, false, len(res.Memories)
+	}
+	pulled, both, lifted, absent, regress := 0, 0, 0, 0, 0
+	for _, p := range pairs {
+		q := queryFrom(contentOf(p.newer))
+		if q == "" {
+			continue
+		}
+		rc, _, nc := rank(stC, q, p.older)
+		re, _, ne := rank(stE, q, p.older)
+		sc, _, _ := rank(stC, q, p.newer)
+		verdict := ""
+		switch {
+		case re > 0 && rc == 0:
+			verdict = "PULLED THROUGH"
+			pulled++
+		case rc > 0 && re == 0:
+			verdict = "REGRESSION"
+			regress++
+		case rc > 0 && re > 0:
+			both++
+			if re < rc {
+				lifted++
+			}
+			verdict = fmt.Sprintf("both (rank %d -> %d)", rc, re)
+		default:
+			verdict = "absent in both"
+			absent++
+		}
+		fmt.Printf("%-24s p=%-5s packed=%d/%d seed_rank=%-2d  %s <- %s\n", verdict, p.p, nc, ne, sc, p.older, p.newer)
+	}
+	fmt.Printf("\nSUMMARY: pulled_through=%d present_both=%d (rank lifted %d) absent_both=%d regression=%d of %d\n", pulled, both, lifted, absent, regress, len(pairs))
 }
 
 // runFromRules is the gate for the shipped path: the store's own rules choose
