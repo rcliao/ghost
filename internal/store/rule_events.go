@@ -141,11 +141,43 @@ func (s *SQLiteStore) ReviewRuleEvent(ctx context.Context, id, verdict, by strin
 		verdict, by, now, id); err != nil {
 		return err
 	}
-	if verdict == VerdictDisagree && edgeWritten == 1 {
-		// The pair-rule edge is written newer→older (from = newer).
+	// The pair-rule edge is written newer→older (from = newer = event.to_id).
+	switch {
+	case verdict == VerdictDisagree && edgeWritten == 1:
 		if _, err := tx.ExecContext(ctx, `DELETE FROM memory_edges WHERE from_id = ? AND to_id = ? AND rel = ?`, toID, fromID, rel); err != nil {
+			return err
+		}
+	case verdict == VerdictAgree && edgeWritten == 0:
+		// Agreeing with a PROPOSAL is what creates the edge: the reviewer's
+		// decision is the write. Weight is the relation's default.
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO memory_edges (from_id, to_id, rel, weight, access_count, created_at)
+			VALUES (?, ?, ?, ?, 0, ?)`, toID, fromID, rel, defaultEdgeWeight(rel), now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE rule_events SET edge_written = 1 WHERE id = ?`, id); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// reviewedEdgeSet returns the edges a reviewer has AGREED with, keyed as the
+// edge is stored ("from|to|rel", from = newer). Read once per Context call by
+// edge expansion, which lets a reviewed accompany-class edge claim reserved
+// budget. This is the one place the retrieval path consults the review trace,
+// and only for edges that exist; rows are few and the index makes it cheap.
+func (s *SQLiteStore) reviewedEdgeSet(ctx context.Context) map[string]bool {
+	set := make(map[string]bool)
+	rows, err := s.db.QueryContext(ctx, `SELECT to_id, from_id, action_rel FROM rule_events WHERE verdict = ? AND edge_written = 1`, VerdictAgree)
+	if err != nil {
+		return set // no table yet, or unreadable: no reservations
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var from, to, rel string
+		if err := rows.Scan(&from, &to, &rel); err == nil {
+			set[from+"|"+to+"|"+rel] = true
+		}
+	}
+	return set
 }

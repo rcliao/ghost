@@ -740,6 +740,9 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 	}
 
 	totalExpanded := 0
+	// Edges a reviewer agreed with may claim reserved budget even when their
+	// relation is accompany-class. Read once per call; see reviewedEdgeSet.
+	reviewedEdges := s.reviewedEdgeSet(ctx)
 	// Breadth-first over hops. `frontier` is the set of seeds for the current
 	// hop; neighbours discovered during it become the next hop's frontier, but
 	// only along relations whose policy grants that depth (see MaxHops). Depth
@@ -802,7 +805,7 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 				// `contradicts`: measurement showed score is not what carries a
 				// neighbour past the near-duplicate wall, so widening it would add
 				// risk without adding effect. Reservation is the lever being widened.
-				isReserved := reservesBudget(edge.Rel)
+				isReserved := reservesBudget(edge.Rel) || reviewedEdges[edge.FromID+"|"+edge.ToID+"|"+edge.Rel]
 				if isReserved {
 					if existing, ok := scoreMap[neighborID]; ok {
 						existing.reserved = true

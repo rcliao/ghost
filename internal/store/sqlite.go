@@ -447,6 +447,7 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE rule_events ADD COLUMN score REAL NOT NULL DEFAULT 0`) // idempotent: errors ignored
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_pair ON rule_events(source, rule_id, from_id, to_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_review ON rule_events(reviewed, created_at)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_agreed ON rule_events(verdict, edge_written)`)
 
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()

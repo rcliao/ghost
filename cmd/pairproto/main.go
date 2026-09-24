@@ -61,6 +61,7 @@ func main() {
 	budget := flag.Int("budget", 2000, "pullthrough: Context token budget")
 	minScore := flag.Float64("min-score", 0.3, "pullthrough: Context MinScore (production uses 0.3)")
 	qr := flag.Int("query-runes", 80, "pullthrough: query length in runes taken from the newer memory")
+	reviewed := flag.Bool("reviewed", false, "pullthrough: also record an AGREE verdict for each edge in rule_events (the reviewed arm)")
 	flag.Parse()
 	if *dbPath == "" {
 		fmt.Fprintln(os.Stderr, "--db required")
@@ -72,6 +73,7 @@ func main() {
 	}
 	if *pullThrough != "" {
 		queryRunes = *qr
+		reviewedArm = *reviewed
 		runPullThrough(*dbPath, *ns, *pullThrough, *budget, *minScore)
 		return
 	}
@@ -263,6 +265,7 @@ func main() {
 }
 
 var queryRunes = 80
+var reviewedArm = false
 
 // runPullThrough mirrors TestEvalGraphPullThrough on real data: for each
 // accepted pair, the query is the NEWER memory's own opening text (the
@@ -298,13 +301,33 @@ func runPullThrough(dbPath, ns, tsv string, budget int, minScore float64) {
 	stE, err := store.NewSQLiteStore(treat)
 	must(err)
 	defer stE.Close()
-	written := 0
-	for _, p := range pairs {
+	written, agreed := 0, 0
+	rw, err := sql.Open("sqlite", treat)
+	must(err)
+	defer rw.Close()
+	idOf := func(key string) string {
+		var id string
+		_ = rw.QueryRow(`SELECT id FROM memories WHERE ns=? AND key=? AND deleted_at IS NULL ORDER BY version DESC LIMIT 1`, ns, key).Scan(&id)
+		return id
+	}
+	for i, p := range pairs {
 		if _, err := stE.CreateEdge(ctx, store.EdgeParams{FromNS: ns, FromKey: p.newer, ToNS: ns, ToKey: p.older, Rel: "caused_by"}); err == nil {
 			written++
 		}
+		if reviewedArm {
+			// The harness stands in for a reviewer: an AGREE row keyed as the
+			// store keys pair-rule events (from = older, to = newer).
+			older, newer := idOf(p.older), idOf(p.newer)
+			if older != "" && newer != "" {
+				if _, err := rw.Exec(`INSERT INTO rule_events (id, source, rule_id, from_id, to_id, features, action_op, action_rel, score, edge_written, created_at, reviewed, verdict, reviewed_by, reviewed_at)
+					VALUES (?, 'pair_rule', 'harness', ?, ?, '{}', 'propose', 'caused_by', 0, 1, ?, 1, 'agree', 'harness', ?)`,
+					fmt.Sprintf("harness-%03d", i), older, newer, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)); err == nil {
+					agreed++
+				}
+			}
+		}
 	}
-	fmt.Printf("pairs=%d edges_written=%d budget=%d min_score=%.2f exclude_pinned=true\n", len(pairs), written, budget, minScore)
+	fmt.Printf("pairs=%d edges_written=%d agreed=%d budget=%d min_score=%.2f exclude_pinned=true\n", len(pairs), written, agreed, budget, minScore)
 	ro, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	must(err)
 	defer ro.Close()

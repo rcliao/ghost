@@ -232,6 +232,49 @@ func TestAssertRuleWritesEdgeAndDisagreeRemovesIt(t *testing.T) {
 	}
 }
 
+// Agreeing with a PROPOSAL is what creates the edge; disagreeing later removes it.
+func TestAgreeOnProposalWritesEdge(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedPairCorpus(t, s, "agent:test")
+	res, err := s.RunPairRules(ctx, RunPairRulesParams{NS: "agent:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev PairFiring
+	for _, f := range res.Firings {
+		if f.Features.OlderKey == "health-shoulder-cause-corrected" && f.Features.NewerKey == "behavioral-reread-before-citing" {
+			ev = f
+		}
+	}
+	if ev.EventID == "" || ev.EdgeWritten {
+		t.Fatalf("expected an unwritten proposal for the correction pair: %+v", res.Firings)
+	}
+	if err := s.ReviewRuleEvent(ctx, ev.EventID, VerdictAgree, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	edges, _ := s.GetEdges(ctx, ev.NewerID)
+	if !hasEdge(edges, ev.NewerID, ev.OlderID, "caused_by") {
+		t.Fatalf("agree must write caused_by newer→older: %+v", edges)
+	}
+	events := mustList(t, s, ListRuleEventsParams{RuleID: ev.RuleID})
+	for _, e := range events {
+		if e.ID == ev.EventID && !e.EdgeWritten {
+			t.Error("event must record edge_written after agree")
+		}
+	}
+	if !s.reviewedEdgeSet(ctx)[ev.NewerID+"|"+ev.OlderID+"|caused_by"] {
+		t.Error("reviewed edge set must contain the agreed edge, keyed as stored")
+	}
+	if err := s.ReviewRuleEvent(ctx, ev.EventID, VerdictDisagree, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	edges, _ = s.GetEdges(ctx, ev.NewerID)
+	if hasEdge(edges, ev.NewerID, ev.OlderID, "caused_by") {
+		t.Error("a later disagree must remove the edge agree wrote")
+	}
+}
+
 func TestPairRuleCRUDAndSeeding(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
