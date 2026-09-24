@@ -60,6 +60,7 @@ func main() {
 	pullThrough := flag.String("pullthrough", "", "TSV of accepted pairs (older, newer, p): write caused_by edges on a copy and measure whether the cause becomes reachable via Context (control vs edges)")
 	budget := flag.Int("budget", 2000, "pullthrough: Context token budget")
 	minScore := flag.Float64("min-score", 0.3, "pullthrough: Context MinScore (production uses 0.3)")
+	qr := flag.Int("query-runes", 80, "pullthrough: query length in runes taken from the newer memory")
 	flag.Parse()
 	if *dbPath == "" {
 		fmt.Fprintln(os.Stderr, "--db required")
@@ -70,6 +71,7 @@ func main() {
 		return
 	}
 	if *pullThrough != "" {
+		queryRunes = *qr
 		runPullThrough(*dbPath, *ns, *pullThrough, *budget, *minScore)
 		return
 	}
@@ -260,6 +262,8 @@ func main() {
 	fmt.Printf("jev on %d rule-generated pairs: %v\n", n, counts)
 }
 
+var queryRunes = 80
+
 // runPullThrough mirrors TestEvalGraphPullThrough on real data: for each
 // accepted pair, the query is the NEWER memory's own opening text (the
 // situation the agent is in), and we ask whether the OLDER cause is packed —
@@ -314,8 +318,9 @@ func runPullThrough(dbPath, ns, tsv string, budget int, minScore float64) {
 	queryFrom := func(text string) string {
 		t := ws.ReplaceAllString(bracket.ReplaceAllString(text, ""), " ")
 		t = strings.TrimSpace(t)
-		if len(t) > 200 {
-			t = t[:200]
+		// Rune-safe cut at the length of a real prompt; a byte cut splits CJK.
+		if r := []rune(t); len(r) > queryRunes {
+			t = string(r[:queryRunes])
 		}
 		return t
 	}
@@ -342,6 +347,16 @@ func runPullThrough(dbPath, ns, tsv string, budget int, minScore float64) {
 		rc, _, nc := rank(stC, q, p.older)
 		re, _, ne := rank(stE, q, p.older)
 		sc, _, _ := rank(stC, q, p.newer)
+		// Pool rank: is the seed even among the 50 search candidates Context draws from?
+		poolRank := 0
+		if sr, err := stC.Search(ctx, store.SearchParams{NS: ns, Query: q, Limit: 50}); err == nil {
+			for i, r := range sr {
+				if r.Key == p.newer {
+					poolRank = i + 1
+					break
+				}
+			}
+		}
 		verdict := ""
 		switch {
 		case re > 0 && rc == 0:
@@ -360,7 +375,7 @@ func runPullThrough(dbPath, ns, tsv string, budget int, minScore float64) {
 			verdict = "absent in both"
 			absent++
 		}
-		fmt.Printf("%-24s p=%-5s packed=%d/%d seed_rank=%-2d  %s <- %s\n", verdict, p.p, nc, ne, sc, p.older, p.newer)
+		fmt.Printf("%-24s p=%-5s packed=%d/%d seed_pool=%-2d seed_packed=%-2d  %s <- %s\n", verdict, p.p, nc, ne, poolRank, sc, p.older, p.newer)
 	}
 	fmt.Printf("\nSUMMARY: pulled_through=%d present_both=%d (rank lifted %d) absent_both=%d regression=%d of %d\n", pulled, both, lifted, absent, regress, len(pairs))
 }
