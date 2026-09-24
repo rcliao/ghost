@@ -1,0 +1,153 @@
+{
+  "_comment": "Synthetic pairs mirroring the SHAPES graded on a private production snapshot on 2026-09-23 (the real graded list is gitignored under local/). Each case names the pattern, the two memories, and the features a correct extractor must produce. Names, places and facts are invented.",
+  "cases": [
+    {
+      "name": "rule-from-incident",
+      "pattern": "a correction of a fact, then a behavioural rule written because the agent cited the old fact (the rule text also records the correction, and correction outranks causal)",
+      "older": {
+        "key": "health-2026-07-18-shoulder-ache-cause-corrected",
+        "created_at": "2026-07-30T10:00:00Z",
+        "source_user": "rina",
+        "content": "Correction from Rina on 7/30: the 7/18 shoulder ache was NOT from gardening, it was from installing the Solaris patio lights overhead for two hours. Diagnosis changed from strain to sun-and-posture fatigue."
+      },
+      "newer": {
+        "key": "behavioral-reread-record-before-citing-date",
+        "created_at": "2026-08-08T20:00:00Z",
+        "source_user": "",
+        "content": "RULE: before citing a past date as evidence, re-read that date's record. Failed 2026-08-08: told Rina her 7/18 shoulder ache came from gardening, but she had corrected that cause on 7/30 (Solaris lights install). Root cause: I answered from a stale summary."
+      },
+      "expect": {
+        "days_apart_min": 8,
+        "days_apart_max": 10,
+        "shared_entities_include": [
+          "solaris"
+        ],
+        "jaccard_max": 0.25,
+        "newer_cue": "correction",
+        "same_user": false,
+        "key_prefix_match": false
+      }
+    },
+    {
+      "name": "decision-then-schedule",
+      "pattern": "a dietary decision, then a schedule that changed because of it",
+      "older": {
+        "key": "rina-kefir-discontinued-2026-06",
+        "created_at": "2026-06-08T09:00:00Z",
+        "source_user": "rina",
+        "content": "Rina decided to stop drinking kefir entirely as of June 2026. Probiotics are covered by the Floravita capsule; calcium by tofu, greens and sesame. Decision confirmed twice."
+      },
+      "newer": {
+        "key": "rina-supplement-schedule-june-2026",
+        "created_at": "2026-06-21T09:00:00Z",
+        "source_user": "rina",
+        "content": "Rina's confirmed supplement timing as of 6/21: digestive enzyme before lunch, Floravita one capsule after any meal. Floravita replaces kefir's probiotic role now that she avoids dairy."
+      },
+      "expect": {
+        "days_apart_min": 12,
+        "days_apart_max": 14,
+        "shared_entities_include": [
+          "floravita"
+        ],
+        "jaccard_max": 0.25,
+        "newer_cue": "",
+        "same_user": true,
+        "key_prefix_match": false
+      }
+    },
+    {
+      "name": "restatement",
+      "pattern": "the same rule captured twice in different words — must be recognisable by overlap, not proposed as a reasoning pair; keys carry no date segment, so Jaccard is the signal",
+      "older": {
+        "key": "learning-group-chat-eavesdrop",
+        "created_at": "2026-03-27T18:00:00Z",
+        "source_user": "",
+        "content": "Do not proactively reference information from the group chat transcript that Rina told another agent. Even though the transcript is visible, surfacing it feels like eavesdropping. Wait for Rina to mention it directly."
+      },
+      "newer": {
+        "key": "learning-no-eavesdrop-group-chat",
+        "created_at": "2026-03-27T18:05:00Z",
+        "source_user": "",
+        "content": "Do not proactively reference info from group chat transcripts that Rina said to another agent. Even though the transcript is visible, surfacing it feels like eavesdropping. Wait for Rina to mention it directly."
+      },
+      "expect": {
+        "days_apart_max": 0.01,
+        "jaccard_min": 0.6,
+        "newer_cue": ""
+      }
+    },
+    {
+      "name": "date-words-are-not-entities",
+      "pattern": "two unrelated memories that share only weekday and month words; the extractor must not report them as shared entities",
+      "older": {
+        "key": "trip-oct2026-coast-hotel-status",
+        "created_at": "2026-08-01T12:00:00Z",
+        "source_user": "",
+        "content": "Coast trip hotel: booked Sat to Wed in October at the Harborline Inn. Cancel by Sept 20 for a full refund."
+      },
+      "newer": {
+        "key": "media-note-1790000000001",
+        "created_at": "2026-09-14T12:00:00Z",
+        "source_user": "",
+        "content": "[photo] Wed evening: Rina sent a picture of the new Brightmoor kettle box from the Sat delivery. Model number visible."
+      },
+      "expect": {
+        "shared_entities_exclude": [
+          "sat",
+          "wed",
+          "sept",
+          "october"
+        ],
+        "jaccard_max": 0.15
+      }
+    },
+    {
+      "name": "trip-booked-then-tool-built",
+      "pattern": "a confirmed plan, then a tool built because of it (the festival surfaces with different neighbours in each memory; word-boundary containment must still match it)",
+      "older": {
+        "key": "travel-sep2026-lantern-festival-logistics",
+        "created_at": "2026-06-29T09:00:00Z",
+        "source_user": "rina",
+        "content": "CONFIRMED by Rina 6/29: Lantern Festival trip to Port Ellery, Fri 9/11 to Sun 9/13. Hotel and train booked. Tickets under Rina's email."
+      },
+      "newer": {
+        "key": "lanternfest-planner-webapp-2026-09",
+        "created_at": "2026-08-20T15:00:00Z",
+        "source_user": "",
+        "content": "2026-08-20: Rina asked for a visual schedule builder for the Port Ellery Lantern Festival weekend (9/11 to 9/13). Built a small web app; she chose the grid layout."
+      },
+      "expect": {
+        "days_apart_min": 51,
+        "days_apart_max": 53,
+        "shared_entities_include": [
+          "lantern festival"
+        ],
+        "jaccard_max": 0.25,
+        "same_user": false
+      }
+    },
+    {
+      "name": "same-session-summarised-twice",
+      "pattern": "two summaries of one session written under sibling keys — a restatement with key-prefix match",
+      "older": {
+        "key": "session-summary-2026-07-09",
+        "created_at": "2026-07-09T23:00:00Z",
+        "source_user": "",
+        "content": "July 9 session: logged Rina's lunch and dinner, reviewed the Harborline booking, and set a reminder for the Sept 20 cancellation deadline."
+      },
+      "newer": {
+        "key": "session-summary-2026-07-09-rina-meals",
+        "created_at": "2026-07-09T23:30:00Z",
+        "source_user": "",
+        "content": "July 9: logged Rina's meals (lunch soup, dinner rice and greens), reviewed the Harborline hotel booking, set the Sept 20 cancellation reminder."
+      },
+      "expect": {
+        "jaccard_min": 0.35,
+        "key_prefix_match": true,
+        "shared_entities_include": [
+          "harborline"
+        ]
+      }
+    }
+  ]
+}

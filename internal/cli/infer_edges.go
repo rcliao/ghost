@@ -17,11 +17,14 @@ func init() {
 whether a reasoning relationship exists. Creates typed edges when confirmed.
 
 LLM is called out-of-band — Ghost's hot path (Search, Context) remains LLM-free.
-Uses 'claude -p' by default; set ANTHROPIC_API_KEY to use the API directly.
+Providers: 'claude' (claude -p, default), 'anthropic' (ANTHROPIC_API_KEY),
+'jev' (TypeSafe decision API, TYPESAFE_API_KEY — one typed choice question per
+pair, returns a probability that is kept in the edge reason for review).
 
 Examples:
   ghost infer-edges --ns agent:claude-code --max-pairs 50 --dry-run
-  ghost infer-edges --ns agent:pikamini --seed "login-flow,auth-decision"`,
+  ghost infer-edges --ns agent:pikamini --seed "login-flow,auth-decision"
+  ghost infer-edges --ns agent:pikamini --provider jev --min-prob 0.7 --dry-run`,
 		RunE: runInferEdges,
 	}
 
@@ -30,6 +33,8 @@ Examples:
 	cmd.Flags().String("seed", "", "Optional comma-separated keys; only pairs touching these are examined")
 	cmd.Flags().Bool("dry-run", false, "Classify but don't write edges")
 	cmd.Flags().String("model", "", "LLM model (default: claude CLI default)")
+	cmd.Flags().String("provider", "", "claude | anthropic | jev (default: anthropic if ANTHROPIC_API_KEY is set, else claude)")
+	cmd.Flags().Float64("min-prob", jevMinProbDefault, "jev only: minimum probability for a relation to be accepted")
 	cmd.MarkFlagRequired("ns")
 
 	RootCmd.AddCommand(cmd)
@@ -51,11 +56,27 @@ func runInferEdges(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	provider, _ := cmd.Flags().GetString("provider")
+	minProb, _ := cmd.Flags().GetFloat64("min-prob")
 	var llm store.InferLLMClient
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+	switch provider {
+	case "jev":
+		if os.Getenv(jevKeyEnv) == "" {
+			return fmt.Errorf("--provider jev requires %s", jevKeyEnv)
+		}
+		llm = newJevClient(minProb)
+	case "anthropic":
 		llm = store.NewAnthropicClient(model)
-	} else {
+	case "claude":
 		llm = store.NewClaudeCLIClient(model)
+	case "":
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			llm = store.NewAnthropicClient(model)
+		} else {
+			llm = store.NewClaudeCLIClient(model)
+		}
+	default:
+		return fmt.Errorf("unknown --provider %q (claude | anthropic | jev)", provider)
 	}
 
 	result, err := st.InferEdges(cmd.Context(), store.InferEdgesParams{
@@ -67,6 +88,11 @@ func runInferEdges(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("infer edges: %w", err)
+	}
+	if jc, ok := llm.(*jevClient); ok {
+		if sum := jc.Summary(); sum != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), sum)
+		}
 	}
 
 	if formatFlag == "text" {

@@ -406,8 +406,52 @@ func (s *SQLiteStore) migrate() error {
 		    action_params = '{"to_tier":"dormant"}'
 		WHERE id = 'sys-prune-low-utility' AND cond_access_gt = 5`)
 
+	// Pair rules + the rule-event audit trace (docs/research/pair-rules-design.md).
+	// Additive: an older binary ignores both tables; the contract version is unchanged.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS pair_rules (
+		id TEXT PRIMARY KEY,
+		ns TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		priority INTEGER NOT NULL DEFAULT 0,
+		created_by TEXT NOT NULL DEFAULT 'system',
+		cond_min_shared_entities INTEGER NOT NULL DEFAULT 0,
+		cond_max_entity_df INTEGER NOT NULL DEFAULT 0,
+		cond_min_days_apart REAL NOT NULL DEFAULT 0,
+		cond_max_jaccard REAL NOT NULL DEFAULT 0,
+		cond_cue TEXT NOT NULL DEFAULT '',
+		cond_same_user INTEGER NOT NULL DEFAULT -1,
+		cond_key_prefix_match INTEGER NOT NULL DEFAULT -1,
+		action_op TEXT NOT NULL,
+		action_rel TEXT NOT NULL,
+		min_precision REAL NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS rule_events (
+		id TEXT PRIMARY KEY,
+		source TEXT NOT NULL,
+		rule_id TEXT NOT NULL,
+		from_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+		to_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+		features TEXT NOT NULL DEFAULT '{}',
+		action_op TEXT NOT NULL,
+		action_rel TEXT NOT NULL DEFAULT '',
+		score REAL NOT NULL DEFAULT 0,
+		edge_written INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		reviewed INTEGER NOT NULL DEFAULT 0,
+		verdict TEXT,
+		reviewed_by TEXT,
+		reviewed_at TEXT
+	)`)
+	s.db.Exec(`ALTER TABLE rule_events ADD COLUMN score REAL NOT NULL DEFAULT 0`) // idempotent: errors ignored
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_pair ON rule_events(source, rule_id, from_id, to_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_review ON rule_events(reviewed, created_at)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rule_events_agreed ON rule_events(verdict, edge_written)`)
+
 	// Seed built-in reflect rules
 	s.seedBuiltinRules()
+	s.seedBuiltinPairRules()
 
 	return nil
 }
