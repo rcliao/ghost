@@ -4,10 +4,10 @@ go 1.25.0
 
 require (
 	github.com/knights-analytics/hugot v0.6.4
-	github.com/modelcontextprotocol/go-sdk v1.4.0
-	github.com/oklog/ulid/v2 v2.1.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/oklog/ulid/v2 v2.1.2
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	modernc.org/sqlite v1.59.0
 )
 
@@ -23,7 +23,7 @@ require (
 	github.com/gomlx/go-xla v0.1.4 // indirect
 	github.com/gomlx/gomlx v0.26.0 // indirect
 	github.com/gomlx/onnx-gomlx v0.3.4 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/knights-analytics/ortgenai v0.1.0 // indirect
@@ -36,7 +36,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
-	github.com/segmentio/encoding v0.5.3 // indirect
+	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	github.com/sugarme/tokenizer v0.3.0 // indirect
 	github.com/viant/afs v1.30.0 // indirect
@@ -46,10 +46,12 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/image v0.36.0 // indirect
-	golang.org/x/oauth2 v0.34.0 // indirect
+	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	modernc.org/libc v1.75.7 // indirect
