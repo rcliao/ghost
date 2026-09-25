@@ -1,8 +1,9 @@
-# Hindsight: what to steal, what to refuse
+# Hindsight compared with ghost, September 2026
 
 Reviewed `github.com/vectorize-io/hindsight` at `559050e` (2026-09-25, MIT).
 Citations are paths in that repo, mostly under `hindsight-api-slim/hindsight_api/`, unless prefixed `ghost:`.
 Judged against ghost's intent: SQLite for memory, with a graph, deterministic algorithms with knobs; owned, pluggable, fast.
+This is a description of how Hindsight works and where it differs; nothing in it is on ghost's design or backlog.
 
 ## What it is
 
@@ -15,12 +16,14 @@ So the substrate and the write path are the opposite of ghost's.
 The retrieval engineering is where it has learned things ghost has not yet had to.
 Its evals are LLM-judged and need a provider; the LongMemEval numbers are not reproducible from the repo (`hindsight-system-evals/README.md:14-25`).
 
-## Ghost's ground: retrieval algorithms with knobs
+## Retrieval engineering ghost has not needed yet
+
+Observations, with ghost's current shape beside each.
 
 1. **Boost in rank space, never in score space.**
    Weighted RRF at `w=7` let one arm fill all 300 rerank slots; measured recall@20 fell 0.97 → 0.40.
    The fix, `1/(k + rank/w)`, cancels the `k` term so a boosted rank `r` beats another arm's `s` only when `r < w·s` (`engine/search/recall_boost.py:36-48`).
-   Ghost fuses FTS, LIKE and vector by plain RRF today (`ghost:internal/store/search.go:506`); the day it weights an arm, this is the shape.
+   Ghost fuses FTS, LIKE and vector by plain RRF today (`ghost:internal/store/search.go:506`) and weights no arm.
 
 2. **Human levels over raw floats.**
    `BOOST_LEVELS = low / medium / high` map to tuned tuples, validated by a guard test (`engine/search/recall_boost.py:98-105`).
@@ -29,12 +32,12 @@ Its evals are LLM-judged and need a provider; the LongMemEval numbers are not re
 
 3. **Bounded multiplicative boosts around a neutral 0.5.**
    Final score is `CE × (1 + α(recency − 0.5)) × (1 + α(temporal − 0.5)) × (1 + α(proof − 0.5))` with α = 0.2, 0.2, 0.1, so no secondary signal moves a result more than ±10% and a missing signal is exactly neutral (`engine/search/reranking.py:32-46`).
-   Ghost's context score is an additive weighted sum by kind (`ghost:internal/store/context.go:1136`); auditability favours the bounded form.
+   Ghost's context score is an additive weighted sum by kind (`ghost:internal/store/context.go:1136`).
 
 4. **A second fusion for dedup, not answering.**
    RRF averages down a near-identical twin that is first in one arm and absent in others, which caused duplicate creation during consolidation.
    `interleave_fusion` round-robins so every arm's head gets a slot (`engine/search/fusion.py:112`).
-   Ghost's pair rules and consolidation share this failure shape; a restates queue should use its own candidate query.
+   Ghost's consolidation candidates come from the same connected-components clustering as everything else.
 
 5. **Per-stage score floors as an abstention knob** — `min_scores {semantic, keyword, reranker, final}` (`mcp_tools.py:1263-1271`), with the honest caveat that reranker scores are not calibrated across queries.
    Ghost has one floor.
@@ -51,14 +54,14 @@ Its evals are LLM-judged and need a provider; the LongMemEval numbers are not re
 
 9. **Edge snapshots for revert.**
    Archiving a unit destroys its edges by cascade, so non-derivable edges are serialised onto the archive row for undo (`engine/causal_links.py:21-46`).
-   Ghost's `disagree` deletes an edge outright; the same snapshot would make it reversible.
+   Ghost's `disagree` deletes an edge outright.
 
-## The caller's ground
+## Integration surface
 
 Hindsight's Claude Code integration plugs in through hooks, not MCP — `SessionStart`, `UserPromptSubmit` (45 s timeout), `Stop` (`hindsight-integrations/claude-code/hooks/hooks.json:1-35`) — and its skill tells the agent "your job is to decide **when** to store, not **what**".
 Rendering lives in the API (`api/page_markdown.py`), consistent with ghost's rule that formatting is the caller's.
 
-## Refuse
+## Where it diverges from ghost's intent
 
 - **Postgres as the substrate.** A supervised daemon and a data directory is not a file you hand someone.
 - **An LLM-mandatory write path.** Without a model there are no facts, no entities, no edges.
