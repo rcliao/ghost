@@ -27,6 +27,9 @@ The summary content must be provided by the caller (no LLM calls inside ghost).`
 	cmd.Flags().String("kind", "semantic", "Memory kind for the summary")
 	cmd.Flags().Float64("importance", 0.7, "Importance for the summary (default: 0.7)")
 	cmd.Flags().StringSlice("tags", nil, "Tags for the summary memory")
+	cmd.Flags().String("source-user", "", "Person the summary is about (default: derived from the sources)")
+	cmd.Flags().String("source-kind", "", "stated | observed | self | peer (default: derived — observed when every attributed source names one person, else self)")
+	cmd.Flags().String("source-scope", "", "Where the summary was born (default: carried when all sources share one)")
 
 	cmd.MarkFlagRequired("ns")
 	cmd.MarkFlagRequired("summary-key")
@@ -44,6 +47,9 @@ func runConsolidate(cmd *cobra.Command, args []string) error {
 	kind, _ := cmd.Flags().GetString("kind")
 	importance, _ := cmd.Flags().GetFloat64("importance")
 	tags, _ := cmd.Flags().GetStringSlice("tags")
+	sourceUser, _ := cmd.Flags().GetString("source-user")
+	sourceKind, _ := cmd.Flags().GetString("source-kind")
+	sourceScope, _ := cmd.Flags().GetString("source-scope")
 
 	sourceKeys := strings.Split(keysStr, ",")
 	if len(sourceKeys) < 2 {
@@ -74,6 +80,7 @@ func runConsolidate(cmd *cobra.Command, args []string) error {
 		Kind:       kind,
 		Importance: importance,
 		Tags:       tags,
+		SourceUser: sourceUser, SourceKind: sourceKind, SourceScope: sourceScope,
 	})
 	if err != nil {
 		return fmt.Errorf("create summary: %w", err)

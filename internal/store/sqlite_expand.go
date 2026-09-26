@@ -237,14 +237,25 @@ func (s *SQLiteStore) Consolidate(ctx context.Context, p ConsolidateParams) (*Co
 		importance = 0.7
 	}
 
+	// Provenance: explicit wins; otherwise derived from the sources so a summary
+	// never lands with an empty source_kind (measured: 31 of one agent's 76
+	// unset-source memories in a week were consolidate summaries).
+	user, skind, scope := p.SourceUser, p.SourceKind, p.SourceScope
+	if skind == "" {
+		user, skind, scope = s.deriveSummaryProvenance(ctx, p.NS, p.SourceKeys, user, scope)
+	}
+
 	// Create summary memory
 	summary, err := s.Put(ctx, PutParams{
-		NS:         p.NS,
-		Key:        p.SummaryKey,
-		Content:    p.Content,
-		Kind:       kind,
-		Importance: importance,
-		Tags:       p.Tags,
+		NS:          p.NS,
+		Key:         p.SummaryKey,
+		Content:     p.Content,
+		Kind:        kind,
+		Importance:  importance,
+		Tags:        p.Tags,
+		SourceUser:  user,
+		SourceKind:  skind,
+		SourceScope: scope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("consolidate put summary: %w", err)
@@ -267,4 +278,49 @@ func (s *SQLiteStore) Consolidate(ctx context.Context, p ConsolidateParams) (*Co
 	}
 
 	return &ConsolidateResult{Summary: summary, Edges: edges}, nil
+}
+
+// deriveSummaryProvenance decides what a summary "knows" from what its sources
+// know. When every attributed source names the same person (unattributed
+// sources do not vote; at least one attributed source is required) → the
+// summary is an OBSERVATION about that person (the agent derived it, the
+// person did not state it). Anything else → the agent's own note (self).
+// SourceScope is carried only when every source shares one. An explicit user
+// passed by the caller always yields observed/that user; explicit scope is
+// kept; only the kind is decided here when the caller left it empty.
+func (s *SQLiteStore) deriveSummaryProvenance(ctx context.Context, ns string, keys []string, user, scope string) (string, string, string) {
+	users := map[string]int{}
+	scopes := map[string]int{}
+	total := 0
+	for _, key := range keys {
+		var su, ss sql.NullString
+		err := s.db.QueryRowContext(ctx, `SELECT source_user, source_scope FROM memories
+			WHERE ns = ? AND key = ? AND deleted_at IS NULL ORDER BY version DESC LIMIT 1`, ns, key).Scan(&su, &ss)
+		if err != nil {
+			continue
+		}
+		total++
+		if su.Valid && su.String != "" {
+			users[su.String]++
+		}
+		if ss.Valid && ss.String != "" {
+			scopes[ss.String]++
+		}
+	}
+	if scope == "" && len(scopes) == 1 {
+		for k, n := range scopes {
+			if n == total {
+				scope = k
+			}
+		}
+	}
+	if user != "" {
+		return user, "observed", scope
+	}
+	if len(users) == 1 {
+		for k := range users {
+			return k, "observed", scope
+		}
+	}
+	return "", "self", scope
 }

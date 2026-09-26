@@ -86,6 +86,11 @@ type ContextParams struct {
 	// Memories born in the same scope (source_scope match, alias-resolved)
 	// get a score boost. Boost, never filter; empty = no effect.
 	ForScope string
+	// TagMode decides what Tags mean. "" or TagModeBoost: tags bias scoring
+	// (matching memories are multiplied like ForUser/ForScope) and nothing is
+	// excluded. TagModeFilter: the hard AND filter — every packed memory must
+	// carry every tag — kept opt-in for callers that mean it.
+	TagMode string
 }
 
 // forUserBoost is the multiplicative score boost for memories originated by
@@ -101,6 +106,33 @@ const forUserBoost = 1.8
 // contested slots against out-of-scope twins. Pinned by
 // TestScopeBoostContested; applied before the MinScore floor like ForUser.
 const forScopeBoost = 1.8
+
+// tagBoost is the multiplier a memory earns for carrying any requested tag in
+// the default (boost) tag mode — the same magnitude as ForUser/ForScope, so a
+// tag can lift a memory over an untagged peer of equal relevance without
+// letting an irrelevant tagged memory beat a relevant untagged one.
+const tagBoost = 1.8
+
+// hasAnyTag reports whether the memory carries at least one of the tags.
+func hasAnyTag(m model.Memory, tags []string) bool {
+	if len(tags) == 0 {
+		return false
+	}
+	for _, have := range m.Tags {
+		for _, want := range tags {
+			if have == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Tag modes for ContextParams.TagMode.
+const (
+	TagModeBoost  = "boost"
+	TagModeFilter = "filter"
+)
 
 // ContextMemory is a scored memory for context output.
 type ContextMemory struct {
@@ -253,15 +285,49 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	}
 
 	// Search for candidates (get more than we need for scoring)
+	// Tags reach Search as a hard filter only in TagModeFilter. By default
+	// they bias scoring below: a relevant memory that lacks a tag still
+	// surfaces (agent proposal pikamini #3, from real recall misses).
+	var searchTags []string
+	if p.TagMode == TagModeFilter {
+		searchTags = p.Tags
+	}
 	results, err := s.Search(ctx, SearchParams{
 		NS:    p.NS,
 		Query: p.Query,
 		Kind:  p.Kind,
-		Tags:  p.Tags,
+		Tags:  searchTags,
 		Limit: 50,
 	})
 	if err != nil {
 		return nil, err
+	}
+	// In boost mode the boost can only lift what is in the pool, and the
+	// untagged top-50 need not contain the tagged memories at all (a large
+	// namespace crowds them out). Pull the tagged candidates in as a second
+	// arm, unioned by id, so a tag guarantees pool membership and then boosts.
+	if p.TagMode != TagModeFilter && len(p.Tags) > 0 {
+		tagged, err := s.Search(ctx, SearchParams{
+			NS:    p.NS,
+			Query: p.Query,
+			Kind:  p.Kind,
+			Tags:  p.Tags,
+			Limit: 50,
+		})
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]bool, len(results))
+		for _, r := range results {
+			seen[r.ID] = true
+		}
+		for _, r := range tagged {
+			if !seen[r.ID] {
+				results = append(results, r)
+				seen[r.ID] = true
+			}
+		}
+		result.Stages["tagged_pool"] = len(tagged)
 	}
 
 	if len(results) == 0 && len(result.Memories) == 0 {
@@ -358,6 +424,9 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		}
 		if p.ForScope != "" && resolver.sameSource(m.SourceScope, p.ForScope) {
 			score *= forScopeBoost
+		}
+		if p.TagMode != TagModeFilter && hasAnyTag(m, p.Tags) {
+			score *= tagBoost
 		}
 		scoreMap[m.ID] = &contextCandidate{memory: m, score: score, relevance: sim}
 	}

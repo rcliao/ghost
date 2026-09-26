@@ -19,7 +19,8 @@ func init() {
 
 	cmd.Flags().StringP("ns", "n", "", "Filter by namespace (supports prefix: 'ns:*')")
 	cmd.Flags().String("kind", "", "Filter by kind")
-	cmd.Flags().StringSliceP("tags", "t", nil, "Filter by tags")
+	cmd.Flags().StringSliceP("tags", "t", nil, "Tags: by default they boost matching memories; with --tag-mode filter every result must carry every tag")
+	cmd.Flags().String("tag-mode", "boost", "boost | filter")
 	cmd.Flags().IntP("budget", "b", 4000, "Max tokens in output")
 	cmd.Flags().Float64("min-score", 0, "Drop candidates with score below this floor (0 = no filter). Useful at scale to suppress noisy low-confidence retrievals.")
 	cmd.Flags().Float64("min-spread", 0, "If top-1 score minus top-5 score is less than this delta, collapse to top-1 only (flat-noise detection, 0 = no filter).")
@@ -31,6 +32,7 @@ func runContext(cmd *cobra.Command, args []string) {
 	ns, _ := cmd.Flags().GetString("ns")
 	kind, _ := cmd.Flags().GetString("kind")
 	tags, _ := cmd.Flags().GetStringSlice("tags")
+	tagMode, _ := cmd.Flags().GetString("tag-mode")
 	budget, _ := cmd.Flags().GetInt("budget")
 	minScore, _ := cmd.Flags().GetFloat64("min-score")
 	minSpread, _ := cmd.Flags().GetFloat64("min-spread")
@@ -48,6 +50,7 @@ func runContext(cmd *cobra.Command, args []string) {
 		Query:     query,
 		Kind:      kind,
 		Tags:      tags,
+		TagMode:   tagMode,
 		Budget:    budget,
 		MinScore:  minScore,
 		MinSpread: minSpread,
