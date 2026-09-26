@@ -178,8 +178,8 @@ type ConsolidateParams struct {
 	Importance float64 // default 0.7
 	Tags       []string
 	// Provenance of the summary. Explicit values win; when empty, Consolidate
-	// derives them from the sources: one dominant source_user → observed about
-	// that person; otherwise self. A summary never lands with an empty kind.
+	// derives them from the sources: every attributed source names one person →
+	// observed about that person; otherwise self. A summary never lands with an empty kind.
 	SourceUser  string
 	SourceKind  string
 	SourceScope string

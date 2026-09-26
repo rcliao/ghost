@@ -165,7 +165,7 @@ Tags replace the old namespace hierarchy for categorization. Use tags to classif
 | `capability` | What the agent can do |
 | `user:<name>` | Per-user preferences |
 
-**In `Context`, tags bias rather than filter.** `ContextParams.Tags` multiplies matching memories' scores (×1.8, the same magnitude as `ForUser`/`ForScope`) and excludes nothing, so a relevant memory that lacks a tag still surfaces. `TagMode: "filter"` (CLI `--tag-mode filter`, MCP `tag_mode`) restores the hard AND filter for callers that mean it. `Search` keeps tags as a filter — it is the low-level API. Changed 2026-09-26 on an agent's own proposal from its recall misses.
+**In `Context`, tags bias rather than filter.** `ContextParams.Tags` multiplies matching memories' scores (×1.8, the same magnitude as `ForUser`/`ForScope`) and excludes nothing, so a relevant memory that lacks a tag still surfaces. Tagged candidates are pulled in as a second search arm (`tagged_pool` stage) so a tag guarantees pool membership even when the untagged top-50 is crowded. `TagMode: "filter"` (CLI `--tag-mode filter`, MCP `tag_mode`) restores the hard AND filter for callers that mean it. `Search` keeps tags as a filter — it is the low-level API. Changed 2026-09-26 on an agent's own proposal from its recall misses.
 
 ### Design Rationale
 
@@ -279,7 +279,7 @@ When similar memories accumulate, the agent-driven consolidation flow is:
 1. ghost reflect          → links similar memories, returns linked_clusters
 2. ghost clusters -n ...  → shows all connected groups of similar memories
 3. agent reviews clusters → decides which to consolidate, writes summary text
-4. ghost consolidate      → creates summary parent with contains edges; the summary carries provenance — explicit `source_*` params win, else one dominant `source_user` across the sources → `observed` about that person, otherwise `self` (never an empty kind)
+4. ghost consolidate      → creates summary parent with contains edges; the summary carries provenance — explicit `source_*` params win, else when every attributed source names one `source_user` → `observed` about that person, otherwise `self` (never an empty kind)
 5. ghost context          → returns summary, suppresses children (parent boosting)
 ```
 

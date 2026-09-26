@@ -28,7 +28,7 @@ The summary content must be provided by the caller (no LLM calls inside ghost).`
 	cmd.Flags().Float64("importance", 0.7, "Importance for the summary (default: 0.7)")
 	cmd.Flags().StringSlice("tags", nil, "Tags for the summary memory")
 	cmd.Flags().String("source-user", "", "Person the summary is about (default: derived from the sources)")
-	cmd.Flags().String("source-kind", "", "stated | observed | self | peer (default: derived — observed for one dominant person, else self)")
+	cmd.Flags().String("source-kind", "", "stated | observed | self | peer (default: derived — observed when every attributed source names one person, else self)")
 	cmd.Flags().String("source-scope", "", "Where the summary was born (default: carried when all sources share one)")
 
 	cmd.MarkFlagRequired("ns")

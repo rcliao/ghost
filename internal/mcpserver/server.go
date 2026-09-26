@@ -524,7 +524,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"source_keys":  {"type": "array", "items": map[string]any{"type": "string"}, "description": "Keys of memories to consolidate (minimum 2)"},
 			"kind":         prop("string", "Memory kind for summary (default: semantic)"),
 			"importance":   prop("number", "Importance 0.0-1.0 (default: 0.7)"),
-			"source_user":  prop("string", "Person the summary is about, if one; default: derived from the sources (one dominant source_user → that person)"),
+			"source_user":  prop("string", "Person the summary is about, if one; default: derived from the sources (every attributed source names one person → that person)"),
 			"source_kind":  prop("string", "stated | observed | self | peer. Default: derived — observed when the sources share one person, else self. A summary never lands with an empty kind"),
 			"source_scope": prop("string", "Where the summary was born, e.g. project:ghost; default: carried when all sources share one"),
 			"tags":         {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for the summary memory"},

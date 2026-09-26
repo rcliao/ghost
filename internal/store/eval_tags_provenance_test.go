@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -148,5 +149,52 @@ func TestEvalConsolidateCarriesProvenance(t *testing.T) {
 	}
 	if res.Summary.SourceKind != "self" {
 		t.Errorf("summary of unattributed sources must be self, got %q", res.Summary.SourceKind)
+	}
+
+	// Explicit SourceUser with mixed sources: the caller's user is kept, never
+	// silently dropped by the derivation (fresh-context review finding).
+	res, err = s.Consolidate(ctx, ConsolidateParams{NS: "agent:prov", SummaryKey: "sum-explicit-user", Content: "what mami said, with papi's aside", SourceKeys: []string{"a", "c"}, SourceUser: "mami"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Summary.SourceKind != "observed" || res.Summary.SourceUser != "mami" {
+		t.Errorf("explicit SourceUser must be kept: got %q/%q", res.Summary.SourceKind, res.Summary.SourceUser)
+	}
+
+	// Unattributed sources do not vote: mami, mami and an agent note is still
+	// an observation about mami.
+	res, err = s.Consolidate(ctx, ConsolidateParams{NS: "agent:prov", SummaryKey: "sum-mami-plus-note", Content: "mami's probiotic change, with my note", SourceKeys: []string{"a", "b", "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Summary.SourceKind != "observed" || res.Summary.SourceUser != "mami" {
+		t.Errorf("unattributed sources must not veto the attributed ones: got %q/%q", res.Summary.SourceKind, res.Summary.SourceUser)
+	}
+}
+
+// TestEvalTagBoostReachesCrowdedOut: the boost can only lift what is in the
+// pool. With 80 untagged near-duplicates outranking one tagged memory on raw
+// relevance, the tagged memory must still surface in boost mode (fresh-context
+// review finding: a rerank of the untagged top-50 is a recall regression for
+// the exact memories tags were meant to reach).
+func TestEvalTagBoostReachesCrowdedOut(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return base })
+	for i := 0; i < 80; i++ {
+		if _, err := s.Put(ctx, PutParams{NS: "agent:crowd", Key: fmt.Sprintf("dup-%02d", i), Content: fmt.Sprintf("Rina takes a Floravita probiotic capsule after lunch instead of kefir, note %d", i), Tier: "ltm", Importance: 0.6}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Put(ctx, PutParams{NS: "agent:crowd", Key: "tagged", Content: "kefir substitute for Rina: capsule", Tags: []string{"chat:100"}, Tier: "ltm", Importance: 0.6}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Context(ctx, ContextParams{NS: "agent:crowd", Query: "what does Rina take instead of kefir", Tags: []string{"chat:100"}, Budget: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctxRank(res, "tagged") == 0 {
+		t.Fatalf("tagged memory crowded out of the pool in boost mode: stages=%v", res.Stages)
 	}
 }

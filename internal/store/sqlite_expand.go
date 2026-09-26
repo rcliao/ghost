@@ -281,10 +281,12 @@ func (s *SQLiteStore) Consolidate(ctx context.Context, p ConsolidateParams) (*Co
 }
 
 // deriveSummaryProvenance decides what a summary "knows" from what its sources
-// know. One dominant source_user across the sources → the summary is an
-// OBSERVATION about that person (the agent derived it, the person did not state
-// it). Anything else → the agent's own note (self). SourceScope is carried only
-// when every source shares one. Explicit user/scope passed by the caller are
+// know. When every attributed source names the same person (unattributed
+// sources do not vote; at least one attributed source is required) → the
+// summary is an OBSERVATION about that person (the agent derived it, the
+// person did not state it). Anything else → the agent's own note (self).
+// SourceScope is carried only when every source shares one. An explicit user
+// passed by the caller always yields observed/that user; explicit scope is
 // kept; only the kind is decided here when the caller left it empty.
 func (s *SQLiteStore) deriveSummaryProvenance(ctx context.Context, ns string, keys []string, user, scope string) (string, string, string) {
 	users := map[string]int{}
@@ -312,15 +314,13 @@ func (s *SQLiteStore) deriveSummaryProvenance(ctx context.Context, ns string, ke
 			}
 		}
 	}
-	if user == "" && len(users) == 1 {
-		for k, n := range users {
-			if n == total {
-				user = k
-			}
-		}
-	}
-	if user != "" && len(users) <= 1 {
+	if user != "" {
 		return user, "observed", scope
+	}
+	if len(users) == 1 {
+		for k := range users {
+			return k, "observed", scope
+		}
 	}
 	return "", "self", scope
 }

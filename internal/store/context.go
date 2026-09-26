@@ -302,6 +302,33 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	if err != nil {
 		return nil, err
 	}
+	// In boost mode the boost can only lift what is in the pool, and the
+	// untagged top-50 need not contain the tagged memories at all (a large
+	// namespace crowds them out). Pull the tagged candidates in as a second
+	// arm, unioned by id, so a tag guarantees pool membership and then boosts.
+	if p.TagMode != TagModeFilter && len(p.Tags) > 0 {
+		tagged, err := s.Search(ctx, SearchParams{
+			NS:    p.NS,
+			Query: p.Query,
+			Kind:  p.Kind,
+			Tags:  p.Tags,
+			Limit: 50,
+		})
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]bool, len(results))
+		for _, r := range results {
+			seen[r.ID] = true
+		}
+		for _, r := range tagged {
+			if !seen[r.ID] {
+				results = append(results, r)
+				seen[r.ID] = true
+			}
+		}
+		result.Stages["tagged_pool"] = len(tagged)
+	}
 
 	if len(results) == 0 && len(result.Memories) == 0 {
 		return &ContextResult{Budget: budget, Used: 0, Memories: []ContextMemory{}}, nil
