@@ -28,7 +28,7 @@ Namespace conventions:
 - agent:<name> — per-agent memory space (e.g. agent:pikamini, agent:coder)
 - Each agent's memories are isolated — no cross-namespace visibility.
 
-Tags (first-class filtering, use for categorization):
+Tags (categorization; in ghost_context they boost matching memories by default and filter only with tag_mode=filter; ghost_search still filters):
 - identity — core agent persona (name, personality, appearance)
 - lore — background knowledge, relationships, trivia
 - chat:<id> — per-conversation context
@@ -147,21 +147,21 @@ func registerTools(server *mcp.Server, st store.Store) {
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
-			NS         string   `json:"ns"`
-			Key        string   `json:"key"`
-			Content    string   `json:"content"`
-			Kind       string   `json:"kind"`
-			Tags       []string `json:"tags"`
-			Priority   string   `json:"priority"`
-			Importance float64  `json:"importance"`
-			Tier       string   `json:"tier"`
-			Pinned     bool     `json:"pinned"`
-			TTL        string   `json:"ttl"`
-			Dedup      bool     `json:"dedup"`
-			BaseVer    float64  `json:"base_version"`
-			SourceUser  string  `json:"source_user"`
-			SourceKind  string  `json:"source_kind"`
-			SourceScope string  `json:"source_scope"`
+			NS          string   `json:"ns"`
+			Key         string   `json:"key"`
+			Content     string   `json:"content"`
+			Kind        string   `json:"kind"`
+			Tags        []string `json:"tags"`
+			Priority    string   `json:"priority"`
+			Importance  float64  `json:"importance"`
+			Tier        string   `json:"tier"`
+			Pinned      bool     `json:"pinned"`
+			TTL         string   `json:"ttl"`
+			Dedup       bool     `json:"dedup"`
+			BaseVer     float64  `json:"base_version"`
+			SourceUser  string   `json:"source_user"`
+			SourceKind  string   `json:"source_kind"`
+			SourceScope string   `json:"source_scope"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -261,7 +261,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 			"query":          prop("string", "Natural language description of the current task"),
 			"ns":             prop("string", "Namespace filter (optional)"),
 			"kind":           prop("string", "Filter by kind: semantic, episodic, procedural"),
-			"tags":           {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tag filters"},
+			"tags":           {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags. By default they BOOST matching memories (x1.8) and exclude nothing, so a relevant memory without the tag still surfaces; set tag_mode=filter to require every tag"},
+			"tag_mode":       prop("string", "boost (default) | filter"),
 			"budget":         prop("integer", "Max tokens in output (default 4000)"),
 			"exclude_pinned": prop("boolean", "Skip pinned memories, use full budget for search-ranked results"),
 			"min_score":      prop("number", "Absolute score floor (0-1). Drop candidates below this. 0 = no filter. Helpful at scale to suppress low-confidence retrievals."),
@@ -275,6 +276,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			NS            string   `json:"ns"`
 			Kind          string   `json:"kind"`
 			Tags          []string `json:"tags"`
+			TagMode       string   `json:"tag_mode"`
 			Budget        int      `json:"budget"`
 			ExcludePinned bool     `json:"exclude_pinned"`
 			MinScore      float64  `json:"min_score"`
@@ -293,6 +295,7 @@ func registerTools(server *mcp.Server, st store.Store) {
 			Query:         p.Query,
 			Kind:          p.Kind,
 			Tags:          p.Tags,
+			TagMode:       p.TagMode,
 			Budget:        p.Budget,
 			ExcludePinned: p.ExcludePinned,
 			MinScore:      p.MinScore,
@@ -515,23 +518,29 @@ func registerTools(server *mcp.Server, st store.Store) {
 		Name:        "ghost_consolidate",
 		Description: "Create a summary memory that consolidates multiple source memories. Creates the summary and contains edges in one operation. Children are automatically suppressed in context when the summary is present.",
 		InputSchema: schema([]string{"ns", "summary_key", "content", "source_keys"}, map[string]map[string]any{
-			"ns":          prop("string", "Namespace (e.g. agent:pikamini)"),
-			"summary_key": prop("string", "Key for the new summary memory"),
-			"content":     prop("string", "Summary content text (caller must provide — no LLM inside ghost)"),
-			"source_keys": {"type": "array", "items": map[string]any{"type": "string"}, "description": "Keys of memories to consolidate (minimum 2)"},
-			"kind":        prop("string", "Memory kind for summary (default: semantic)"),
-			"importance":  prop("number", "Importance 0.0-1.0 (default: 0.7)"),
-			"tags":        {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for the summary memory"},
+			"ns":           prop("string", "Namespace (e.g. agent:pikamini)"),
+			"summary_key":  prop("string", "Key for the new summary memory"),
+			"content":      prop("string", "Summary content text (caller must provide — no LLM inside ghost)"),
+			"source_keys":  {"type": "array", "items": map[string]any{"type": "string"}, "description": "Keys of memories to consolidate (minimum 2)"},
+			"kind":         prop("string", "Memory kind for summary (default: semantic)"),
+			"importance":   prop("number", "Importance 0.0-1.0 (default: 0.7)"),
+			"source_user":  prop("string", "Person the summary is about, if one; default: derived from the sources (one dominant source_user → that person)"),
+			"source_kind":  prop("string", "stated | observed | self | peer. Default: derived — observed when the sources share one person, else self. A summary never lands with an empty kind"),
+			"source_scope": prop("string", "Where the summary was born, e.g. project:ghost; default: carried when all sources share one"),
+			"tags":         {"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for the summary memory"},
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {
-			NS         string   `json:"ns"`
-			SummaryKey string   `json:"summary_key"`
-			Content    string   `json:"content"`
-			SourceKeys []string `json:"source_keys"`
-			Kind       string   `json:"kind"`
-			Importance float64  `json:"importance"`
-			Tags       []string `json:"tags"`
+			NS          string   `json:"ns"`
+			SummaryKey  string   `json:"summary_key"`
+			Content     string   `json:"content"`
+			SourceKeys  []string `json:"source_keys"`
+			Kind        string   `json:"kind"`
+			Importance  float64  `json:"importance"`
+			Tags        []string `json:"tags"`
+			SourceUser  string   `json:"source_user"`
+			SourceKind  string   `json:"source_kind"`
+			SourceScope string   `json:"source_scope"`
 		}
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
@@ -546,7 +555,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 			SourceKeys: p.SourceKeys,
 			Kind:       p.Kind,
 			Importance: p.Importance,
-			Tags:       p.Tags,
+			SourceUser: p.SourceUser, SourceKind: p.SourceKind, SourceScope: p.SourceScope,
+			Tags: p.Tags,
 		})
 		if err != nil {
 			return errResult(err.Error()), nil
