@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -321,4 +322,78 @@ func TestContextPriorityBoosting(t *testing.T) {
 	if result.Memories[0].Key != "critical-pri" {
 		t.Errorf("expected critical-pri first, got %s", result.Memories[0].Key)
 	}
+}
+
+// TestContextUsedNeverExceedsBudget pins the budget as a hard contract:
+// Used must never exceed Budget. The partial-fit excerpt used to be sized to
+// the whole remaining budget and then charged the 20-token per-memory overhead
+// on top, so the last packed memory overshot by ~20 (budget 1000 -> used 1020).
+func TestContextUsedNeverExceedsBudget(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// Varied lengths so the greedy pack leaves an awkward remainder and the
+	// last candidate has to be excerpted.
+	sentence := "Deployment pipeline notes about the staging cluster and rollback steps. "
+	for i := 0; i < 30; i++ {
+		content := fmt.Sprintf("Memory %d. ", i)
+		for j := 0; j < 3+(i*7)%11; j++ {
+			content += sentence
+		}
+		if _, err := s.Put(ctx, PutParams{NS: "budget", Key: fmt.Sprintf("m%02d", i), Content: content}); err != nil {
+			t.Fatalf("put m%02d: %v", i, err)
+		}
+	}
+
+	cases := []struct {
+		name   string
+		params func(budget int) ContextParams
+	}{
+		{"default pin budget", func(b int) ContextParams {
+			return ContextParams{NS: "budget", Query: "deployment pipeline staging", Budget: b}
+		}},
+		{"pin budget above budget", func(b int) ContextParams {
+			return ContextParams{NS: "budget", Query: "deployment pipeline staging", Budget: b, PinBudget: b * 2}
+		}},
+	}
+	budgets := []int{100, 300, 600, 1000, 2000}
+
+	check := func(label string) {
+		t.Helper()
+		sawExcerpt := false
+		for _, budget := range budgets {
+			for _, tc := range cases {
+				res, err := s.Context(ctx, tc.params(budget))
+				if err != nil {
+					t.Fatalf("%s/%s budget %d: %v", label, tc.name, budget, err)
+				}
+				if res.Used > budget {
+					t.Errorf("%s/%s: used %d exceeds budget %d", label, tc.name, res.Used, budget)
+				}
+				for _, m := range res.Memories {
+					sawExcerpt = sawExcerpt || m.Excerpt
+				}
+			}
+		}
+		// Guard against a vacuous pass: the seed set must actually drive
+		// the partial-fit excerpt path this test exists for.
+		if !sawExcerpt {
+			t.Errorf("%s: no partial-fit excerpt produced; test no longer exercises the excerpt path", label)
+		}
+	}
+	check("no pinned")
+
+	// With pinned memories present, both phases share the same budget.
+	for i := 0; i < 4; i++ {
+		content := fmt.Sprintf("Pinned rule %d. ", i)
+		for j := 0; j < 4+i*3; j++ {
+			content += "Always confirm the rollback plan before deploying to production. "
+		}
+		if _, err := s.Put(ctx, PutParams{NS: "budget", Key: fmt.Sprintf("pin%d", i), Content: content,
+			Pinned: true, Importance: 0.9}); err != nil {
+			t.Fatalf("put pin%d: %v", i, err)
+		}
+	}
+	check("pinned")
 }

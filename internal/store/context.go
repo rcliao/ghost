@@ -213,6 +213,12 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		if pinBudget <= 0 {
 			pinBudget = budget / 2
 		}
+		// The pin sub-budget is carved out of the total, never added to it:
+		// an explicit PinBudget above Budget would otherwise let pinned
+		// memories alone pack past the hard budget.
+		if pinBudget > budget {
+			pinBudget = budget
+		}
 
 		pinDropped := 0
 		pinned, err := s.loadPinnedMemories(ctx, p.NS)
@@ -697,14 +703,18 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				SourceKind: c.memory.SourceKind, SourceScope: c.memory.SourceScope,
 			})
 			usedTokens += memTokens
-		} else if remainingTokens := budget - usedTokens; remainingTokens >= 25 {
-			// Partial fit — excerpt to remaining budget
-			remainingChars := remainingTokens * 4
+		} else if contentTokens := budget - usedTokens - memoryOverheadTokens; contentTokens >= 25 {
+			// Partial fit — excerpt to what remains after the per-memory
+			// overhead. Sizing the excerpt to the whole remainder and then
+			// charging the overhead on top overshot the budget by exactly
+			// memoryOverheadTokens (budget 1000 → used 1020).
+			remainingChars := contentTokens * 4
 			excerpt := content
 			if len(excerpt) > remainingChars {
 				excerpt = excerpt[:remainingChars] + "..."
 			}
-			excerptTokens := (len(excerpt) / 4) + 20
+			// len/4 floors, so the 3-char ellipsis never adds a token.
+			excerptTokens := (len(excerpt) / 4) + memoryOverheadTokens
 			result.Memories = append(result.Memories, ContextMemory{
 				NS:         c.memory.NS,
 				Key:        c.memory.Key,
