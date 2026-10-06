@@ -468,8 +468,14 @@ func tierOrDefault(tier string) string {
 }
 
 // estimateTokens returns a rough token count for content.
+// memoryOverheadTokens is the fixed per-memory token charge (key, metadata,
+// framing) added on top of content tokens. Context packing charges it for
+// every memory it emits, excerpts included, so it must be reserved before an
+// excerpt is sized to the remaining budget.
+const memoryOverheadTokens = 20
+
 func estimateTokens(content string) int {
-	return (len(content) / 4) + 20
+	return (len(content) / 4) + memoryOverheadTokens
 }
 
 func truncate(s string, maxLen int) string {
