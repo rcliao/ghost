@@ -231,6 +231,19 @@ Tier multipliers: ltm=1.0, stm=0.8, dormant=0.15, sensory=0.1
 
 Memories that don't fully fit the remaining budget get excerpted (truncated with "...") if at least 25 tokens remain.
 
+**Tracing (`via`)**: each memory in a context result (CLI `ghost context` JSON and MCP `ghost_context`) carries a `via` field saying how it entered the context. This explains, for example, why a memory scoring under `--min-score` is still present. It is computed after selection and never affects which memories are chosen, their order, or their scores.
+
+| `via` | Meaning |
+|---|---|
+| `pinned` | Phase 1 pinned set |
+| `search` | Direct Phase-2 hit at/above `MinScore`, or no floor set |
+| `rescued` | Direct hit below `MinScore` kept by the relevance-confident rescue (relevance ≥ 0.35 and ≥ 0.8× the query's best relevance) |
+| `edge` | Arrived by graph expansion: typed or `relates_to` spreading activation, `contains`-parent boosting from a matching child, or the PPR path |
+| `reserved` | Carries the reserve class (`contradicts`, `depends_on`, `prevents`, a reviewed edge, or an authority-reserved statement). It is exempt from the floor and can be hoisted. The label is set even when the 1/3-budget hoist cap was full. The PPR path never marks reserve |
+| `parent` | A `contains` parent substituted for 3+ children under budget pressure (`summary_of` lists them) |
+
+Precedence, most specific first: `parent` > `reserved` > `rescued` / `edge` / `search`. A typed-edge arrival below the floor reports `edge` (or `reserved`), because typed edges are exempt from `MinScore`.
+
 ## Pair Rules (relationship logic as data)
 
 Typed relations are where ghost's deterministic algorithms are meant to run, and they are not created by the hot path. Pair rules generate them from features, not from cosine neighbours (which are restatements: 0 causal pairs per 100 measured, against 8–12 for rule-generated candidates).

@@ -154,7 +154,45 @@ type ContextMemory struct {
 	SourceKind string `json:"source_kind,omitempty"`
 	// SourceScope is where the memory was born (encoding context), verbatim.
 	SourceScope string `json:"source_scope,omitempty"`
+	// Via traces HOW this memory entered the context, so a caller can tell
+	// why a memory scoring under its --min-score is still present. Purely
+	// descriptive: it is computed after selection and never feeds ranking.
+	//
+	//   pinned   — Phase 1: always-load pinned set.
+	//   search   — a direct Phase-2 search hit, at/above MinScore (or no
+	//              floor was set).
+	//   rescued  — a direct search hit BELOW MinScore, kept by the
+	//              relevance-confident rescue (relevance ≥ 0.35 and ≥ 0.8×
+	//              the best relevance for this query).
+	//   edge     — arrived through graph expansion: spreading activation
+	//              over typed or relates_to edges, contains-parent boosting
+	//              from a matching child, or the PPR path when enabled.
+	//              Typed-edge arrivals are exempt from MinScore.
+	//   reserved — carries the reserve class (contradicts, depends_on,
+	//              prevents, a reviewed edge, or an authority-reserved
+	//              statement): floor-exempt and eligible for the packing
+	//              hoist. Set even when the 1/3-budget hoist cap was full
+	//              and the memory packed in plain score order. The PPR path
+	//              never marks reserve, so PPR contradicts report "edge".
+	//   parent   — a contains-parent substituted for 3+ of its children
+	//              under budget pressure (SummaryOf lists them).
+	//
+	// Precedence (most specific wins): parent > reserved > rescued|edge|search.
+	// rescued and edge are disjoint (edge arrivals have relevance 0, so the
+	// rescue cannot apply to them). Empty only for results from stores that
+	// do not trace (e.g. the mock).
+	Via string `json:"via,omitempty"`
 }
+
+// Via values for ContextMemory.Via.
+const (
+	ViaPinned   = "pinned"
+	ViaSearch   = "search"
+	ViaRescued  = "rescued"
+	ViaEdge     = "edge"
+	ViaReserved = "reserved"
+	ViaParent   = "parent"
+)
 
 // ContextResult is the assembled context response.
 type ContextResult struct {
@@ -190,6 +228,27 @@ type contextCandidate struct {
 	// through an edge is what the edge is for), so any filter that judges
 	// candidates on relevance must not judge them at all.
 	viaEdge bool
+	// via is the arrival path (ViaSearch, ViaEdge, ViaParent), set where the
+	// candidate is constructed and narrowed to ViaRescued at the MinScore
+	// floor. finalVia applies the reserved/parent precedence at pack time.
+	// Trace only — nothing in selection or ranking reads it.
+	via string
+}
+
+// finalVia resolves the reported ContextMemory.Via for a packed candidate.
+// Precedence, most specific first: parent (substituted for children) >
+// reserved (reserve-class flag) > the arrival path (rescued | edge | search).
+func finalVia(c contextCandidate, substitutedParent bool) string {
+	switch {
+	case substitutedParent:
+		return ViaParent
+	case c.reserved:
+		return ViaReserved
+	case c.via != "":
+		return c.via
+	default:
+		return ViaSearch
+	}
 }
 
 // Context assembles relevant memories within a token budget.
@@ -244,6 +303,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 					Score:      m.Importance, // pinned memories use importance as score
 					SourceUser: m.SourceUser,
 					SourceKind: m.SourceKind, SourceScope: m.SourceScope,
+					Via: ViaPinned,
 				})
 				usedTokens += memTokens
 				seen[m.ID] = true
@@ -434,7 +494,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 		if p.TagMode != TagModeFilter && hasAnyTag(m, p.Tags) {
 			score *= tagBoost
 		}
-		scoreMap[m.ID] = &contextCandidate{memory: m, score: score, relevance: sim}
+		scoreMap[m.ID] = &contextCandidate{memory: m, score: score, relevance: sim, via: ViaSearch}
 	}
 
 	// Phase 3: Edge expansion — spreading activation
@@ -560,6 +620,12 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				if c.viaEdge || c.reserved ||
 					c.score >= p.MinScore ||
 					(c.relevance >= 0.35 && c.relevance >= 0.8*maxRel) {
+					// Trace only: a direct hit under the floor that is neither
+					// structural nor reserved can only have passed through the
+					// relevance-confident rescue prong above.
+					if c.via == ViaSearch && !c.viaEdge && !c.reserved && c.score < p.MinScore {
+						c.via = ViaRescued
+					}
 					keep = append(keep, c)
 				}
 			}
@@ -701,6 +767,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				SummaryOf:  substituted[c.memory.ID],
 				SourceUser: c.memory.SourceUser,
 				SourceKind: c.memory.SourceKind, SourceScope: c.memory.SourceScope,
+				Via: finalVia(c, len(substituted[c.memory.ID]) > 0),
 			})
 			usedTokens += memTokens
 		} else if contentTokens := budget - usedTokens - memoryOverheadTokens; contentTokens >= 25 {
@@ -724,6 +791,7 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 				Excerpt:    true,
 				SourceUser: c.memory.SourceUser,
 				SourceKind: c.memory.SourceKind, SourceScope: c.memory.SourceScope,
+				Via: finalVia(c, len(substituted[c.memory.ID]) > 0),
 			})
 			usedTokens += excerptTokens
 			break
@@ -949,7 +1017,7 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 					// is not similarity; those are the ones the floor must not
 					// judge.
 					structural := expansionDirectionsFor(edge.Rel).Handling != handleBackground
-					scoreMap[neighborID] = &contextCandidate{memory: *m, score: propagated, reserved: isReserved, viaEdge: structural}
+					scoreMap[neighborID] = &contextCandidate{memory: *m, score: propagated, reserved: isReserved, viaEdge: structural, via: ViaEdge}
 					originalScores[neighborID] = 0 // no direct score
 					totalExpanded++
 					// This neighbour may itself seed the next hop. Its propagated
@@ -1003,7 +1071,7 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 			if parentScore < 0.3 {
 				parentScore = 0.3
 			}
-			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore}
+			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge}
 			originalScores[parentID] = 0
 		}
 	}
