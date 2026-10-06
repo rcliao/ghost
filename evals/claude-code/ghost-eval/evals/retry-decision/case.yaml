@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: retry-decision
+description: "explicit recall: the prompt alludes to a past decision that only ghost holds"
+execution:
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Edit, Write, mcp__ghost-eval__recall]
+context:
+  scaffold_script: fixture.sh

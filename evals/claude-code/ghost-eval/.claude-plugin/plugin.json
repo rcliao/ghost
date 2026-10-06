@@ -1,0 +1,5 @@
+{
+  "name": "ghost-eval",
+  "version": "0.1.0",
+  "description": "Eval harness for ghost in Claude Code: per-prompt memory injection, an explicit recall tool and the ghost-lens nudge, all against a fixture DB."
+}

@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: deploy-short
+description: "recall-only: 5-word prompt skips injection; only the recall tool can find ENV=stg REGION=usw2"
+execution:
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Edit, Write, mcp__ghost-eval__recall]
+context:
+  scaffold_script: fixture.sh

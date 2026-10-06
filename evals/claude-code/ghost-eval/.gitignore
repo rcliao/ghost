@@ -1,0 +1,5 @@
+fixture/
+evals/results/
+# written by Claude Code when it loads the plugin
+tsconfig.json
+.claude-plugin/types/
