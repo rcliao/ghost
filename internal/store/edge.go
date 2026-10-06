@@ -666,7 +666,7 @@ func (s *SQLiteStore) loadMemoryByID(ctx context.Context, id string) (*model.Mem
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, ns, key, content, kind, tags, version, supersedes,
 		        created_at, deleted_at, priority, access_count, last_accessed_at, meta, expires_at,
-		        importance, utility_count, tier, est_tokens, pinned, source_user, source_kind, source_scope
+		        importance, utility_count, tier, est_tokens, pinned, source_user, source_kind, source_scope, used_count
 		 FROM memories
 		 WHERE id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
 		id, now)

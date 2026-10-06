@@ -342,6 +342,11 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE memories ADD COLUMN valid_from TEXT`)
 	s.db.Exec(`ALTER TABLE memories ADD COLUMN valid_to TEXT`)
 
+	// Caller-reported use (curate --op used, e.g. ghost-lens): kept apart from
+	// utility_count, which is the retrieval-time credit, so the explicit signal
+	// is not drowned out. Not yet read by ranking. Idempotent: errors ignored.
+	s.db.Exec(`ALTER TABLE memories ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0`)
+
 	// Phase 10: per-access log (see access_log.go) — the raw timestamps that
 	// access_count/last_accessed_at compress away. Pruned by GC (retention +
 	// per-memory cap), so it stays small.
@@ -498,14 +503,14 @@ func scanMemory(row scanner) (model.Memory, error) {
 	var tagsJSON, supersedes, deletedAt, lastAccessed, meta, expiresAt, tier, sourceUser, sourceKind, sourceScope sql.NullString
 	var createdAt string
 	var importance sql.NullFloat64
-	var utilityCount, estTokens, pinned sql.NullInt64
+	var utilityCount, estTokens, pinned, usedCount sql.NullInt64
 
 	err := row.Scan(
 		&m.ID, &m.NS, &m.Key, &m.Content, &m.Kind, &tagsJSON,
 		&m.Version, &supersedes, &createdAt, &deletedAt,
 		&m.Priority, &m.AccessCount, &lastAccessed, &meta, &expiresAt,
 		&importance, &utilityCount, &tier, &estTokens, &pinned,
-		&sourceUser, &sourceKind, &sourceScope,
+		&sourceUser, &sourceKind, &sourceScope, &usedCount,
 	)
 	if err != nil {
 		return m, err
@@ -537,6 +542,9 @@ func scanMemory(row scanner) (model.Memory, error) {
 		m.Importance = importance.Float64
 	} else {
 		m.Importance = 0.5
+	}
+	if usedCount.Valid {
+		m.UsedCount = int(usedCount.Int64)
 	}
 	if utilityCount.Valid {
 		m.UtilityCount = int(utilityCount.Int64)

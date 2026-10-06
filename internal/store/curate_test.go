@@ -166,3 +166,96 @@ func TestCurate_PromoteAtTop(t *testing.T) {
 		t.Error("expected error when promoting from identity tier")
 	}
 }
+
+func TestCurate_Used(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, PutParams{NS: "test", Key: "fact", Content: "hello", Importance: 0.5})
+	s.Curate(ctx, CurateParams{NS: "test", Key: "fact", Op: "promote"}) // stm→ltm
+	before, _ := s.Get(ctx, GetParams{NS: "test", Key: "fact"})
+	b := before[0]
+
+	// Read access counters directly: Get itself bumps them.
+	accessOf := func() (int, string) {
+		var n int
+		var last string
+		s.db.QueryRowContext(ctx,
+			`SELECT access_count, COALESCE(last_accessed_at, '') FROM memories WHERE ns = 'test' AND key = 'fact' AND deleted_at IS NULL`).Scan(&n, &last)
+		return n, last
+	}
+	accBefore, lastBefore := accessOf()
+
+	result, err := s.Curate(ctx, CurateParams{NS: "test", Key: "fact", Op: "used"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Op != "used" || result.NS != "test" || result.Key != "fact" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	// A reported use is not a retrieval: access counters and recency stay put.
+	if accAfter, lastAfter := accessOf(); accAfter != accBefore || lastAfter != lastBefore {
+		t.Errorf("used touched access tracking: access_count %d→%d, last_accessed_at %q→%q", accBefore, accAfter, lastBefore, lastAfter)
+	}
+
+	after, _ := s.Get(ctx, GetParams{NS: "test", Key: "fact"})
+	a := after[0]
+	if a.UsedCount != b.UsedCount+1 {
+		t.Errorf("used_count: want %d, got %d", b.UsedCount+1, a.UsedCount)
+	}
+	// The caller-reported signal is stored apart from the retrieval-time credit.
+	if a.UtilityCount != b.UtilityCount {
+		t.Errorf("used must not touch utility_count: %d→%d", b.UtilityCount, a.UtilityCount)
+	}
+	if a.Importance != b.Importance || a.Tier != b.Tier || a.Content != b.Content ||
+		a.Version != b.Version || a.ID != b.ID || a.Pinned != b.Pinned {
+		t.Errorf("used changed more than used_count: before %+v after %+v", b, a)
+	}
+
+	// Second call increments again by exactly 1, still without new versions.
+	s.Curate(ctx, CurateParams{NS: "test", Key: "fact", Op: "used"})
+	again, _ := s.Get(ctx, GetParams{NS: "test", Key: "fact"})
+	if again[0].UsedCount != b.UsedCount+2 {
+		t.Errorf("used_count after 2 uses: want %d, got %d", b.UsedCount+2, again[0].UsedCount)
+	}
+	hist, _ := s.Get(ctx, GetParams{NS: "test", Key: "fact", History: true})
+	if len(hist) != 1 {
+		t.Errorf("used must not create versions: got %d versions", len(hist))
+	}
+}
+
+func TestCurate_UsedOnPinnedAndLocked(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.Put(ctx, PutParams{NS: "test", Key: "pinned", Content: "p", Pinned: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, PutParams{NS: "test", Key: "locked", Content: "l", Tags: []string{LockedTag}, Pinned: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"pinned", "locked"} {
+		before, _ := s.Get(ctx, GetParams{NS: "test", Key: key})
+		if _, err := s.Curate(ctx, CurateParams{NS: "test", Key: key, Op: "used"}); err != nil {
+			t.Fatalf("used on %s: %v", key, err)
+		}
+		after, _ := s.Get(ctx, GetParams{NS: "test", Key: key})
+		if after[0].UsedCount != before[0].UsedCount+1 {
+			t.Errorf("%s used_count: want %d, got %d", key, before[0].UsedCount+1, after[0].UsedCount)
+		}
+		if after[0].UtilityCount != before[0].UtilityCount {
+			t.Errorf("%s: used touched utility_count", key)
+		}
+		if !after[0].Pinned || after[0].Content != before[0].Content || after[0].Version != before[0].Version {
+			t.Errorf("%s: used changed protected state: before %+v after %+v", key, before[0], after[0])
+		}
+	}
+}
+
+func TestCurate_UsedNotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Curate(context.Background(), CurateParams{NS: "test", Key: "nope", Op: "used"})
+	if err == nil {
+		t.Error("expected error for missing memory")
+	}
+}
