@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: api-changes-log
+description: "must-have: repo convention only ghost knows (docs/api-changes.md on route changes)"
+execution:
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Edit, Write, mcp__ghost-eval__recall]
+context:
+  scaffold_script: fixture.sh

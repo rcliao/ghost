@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: script-language
+description: "must-have: stated user preference (JS .mjs over Python)"
+execution:
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Edit, Write, mcp__ghost-eval__recall]
+context:
+  scaffold_script: fixture.sh
