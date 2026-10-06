@@ -233,6 +233,32 @@ type contextCandidate struct {
 	// floor. finalVia applies the reserved/parent precedence at pack time.
 	// Trace only — nothing in selection or ranking reads it.
 	via string
+	// keepFloorExempt exempts a candidate from the GHOST_EDGE_MIN_SCORE
+	// passenger floor without the packing side effects of `reserved`. Set
+	// only by the PPR path's contradicts force-include, which does not mark
+	// `reserved` (PPR is env-gated and left as measured); single-hop
+	// reserve-class arrivals are covered by `reserved` itself.
+	keepFloorExempt bool
+}
+
+// edgeMinScoreFilter removes candidates that arrived ONLY through edge
+// expansion (via == ViaEdge — not a direct search hit, not pinned; a search hit
+// boosted by an edge keeps ViaSearch) whose score is below minScore. Measured
+// motivation: session-start contexts carried many edge passengers (mostly
+// contains-parent arrivals) at final score 0.00–0.01, costing tokens.
+// Reserve-class candidates (contradicts, depends_on, prevents, reviewed, or
+// authority-reserved; on the PPR path, force-included contradicts via
+// keepFloorExempt) are always kept: they exist to prevent false assertions.
+// Returns the number dropped.
+func edgeMinScoreFilter(scoreMap map[string]*contextCandidate, minScore float64) int {
+	dropped := 0
+	for id, c := range scoreMap {
+		if c.via == ViaEdge && !c.reserved && !c.keepFloorExempt && c.score < minScore {
+			delete(scoreMap, id)
+			dropped++
+		}
+	}
+	return dropped
 }
 
 // finalVia resolves the reported ContextMemory.Via for a packed candidate.
@@ -538,6 +564,15 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 	// store never suppresses the inference or ranks by authority; it
 	// guarantees the reader sees both and applies the ladder itself.
 	result.Stages["authority_reserved"] = s.reserveStatementsForInferences(ctx, p.NS, scoreMap)
+
+	// Edge passenger floor (A/B knob, GHOST_EDGE_MIN_SCORE, default 0 = off):
+	// applied here, after both expansion paths (single-hop and PPR) and the
+	// authority reservation, so it sees each candidate's final pre-pack score.
+	if minEdge := envFloatDefault("GHOST_EDGE_MIN_SCORE", 0); minEdge > 0 {
+		if dropped := edgeMinScoreFilter(scoreMap, minEdge); dropped > 0 {
+			result.Stages["edge_min_score_dropped"] = dropped
+		}
+	}
 
 	// Collect and sort candidates
 	var candidates []contextCandidate

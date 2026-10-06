@@ -54,6 +54,13 @@ type EdgeExpansionConfig struct {
 //	GHOST_EDGE_MAX_PER_SEED   — max neighbors per seed (default 5)
 //	GHOST_EDGE_MAX_EXPANSION  — max total expanded memories (default 50)
 //	GHOST_EDGE_MAX_BOOST      — max additive boost factor (default 0.5)
+//	GHOST_EDGE_EXPANSION      — "off" / "0" / "false" disables edge expansion
+//	                            entirely (Enabled=false); unset or any other
+//	                            value leaves it on. A/B knob, default unchanged.
+//
+// A related A/B knob, GHOST_EDGE_MIN_SCORE (default 0 = off), is read in
+// Context, not here: it drops edge-only arrivals below that final score after
+// expansion, never reserve-class ones (see edgeMinScoreFilter).
 func DefaultEdgeExpansion() EdgeExpansionConfig {
 	cfg := EdgeExpansionConfig{
 		Enabled:           true,
@@ -88,6 +95,10 @@ func DefaultEdgeExpansion() EdgeExpansionConfig {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
 			cfg.MaxBoostFactor = f
 		}
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GHOST_EDGE_EXPANSION"))) {
+	case "off", "0", "false":
+		cfg.Enabled = false
 	}
 
 	return cfg

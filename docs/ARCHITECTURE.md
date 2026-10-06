@@ -212,6 +212,11 @@ Three-phase greedy packing within a token budget:
 | `MaxExpansionTotal` | `50` | Total cap on new candidates from edges |
 | `MaxBoostFactor` | `0.5` | Cap on additive boost for direct+edge hits |
 
+These are overridable for experiments via `GHOST_EDGE_DAMPING`, `GHOST_EDGE_MIN_WEIGHT`, `GHOST_EDGE_MAX_PER_SEED`, `GHOST_EDGE_MAX_EXPANSION` and `GHOST_EDGE_MAX_BOOST`. Two A/B knobs exist for measuring whether edge expansion earns its tokens; both default off, so unset means unchanged behaviour:
+
+- `GHOST_EDGE_EXPANSION=off` (also `0` / `false`) sets `Enabled=false`: no Phase 3 at all, only pinned and direct hits.
+- `GHOST_EDGE_MIN_SCORE=<float>` (default `0` = off) drops, after either expansion path (single-hop or PPR) and before packing, candidates that arrived *only* via an edge (`Via=edge`, not a search hit or pinned) whose final score is below the value. Reserve-class arrivals (`contradicts`, `depends_on`, `prevents`, reviewed edges, authority-reserved statements, and PPR's force-included contradictions) are never dropped. The count appears as `stages.edge_min_score_dropped`. Motivation: session-start contexts carried many `contains`-parent passengers at final score 0.00–0.01.
+
 **Composite scoring** (4 additive factors + multiplicative tier modifier):
 
 Additive weights vary by memory kind to match cognitive retrieval patterns:
