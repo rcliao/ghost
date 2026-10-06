@@ -22,6 +22,7 @@ type Memory struct {
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	Importance     float64    `json:"importance"`
 	UtilityCount   int        `json:"utility_count"`
+	UsedCount      int        `json:"used_count,omitempty"` // caller-reported actual use (curate --op used); not in ranking yet
 	Tier           string     `json:"tier"`
 	// SourceUser is the PERSON this memory originated from ("mami", "papi") —
 	// not the chat, which is a channel and belongs in tags. Empty = unknown.

@@ -310,11 +310,11 @@ func registerTools(server *mcp.Server, st store.Store) {
 
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_curate",
-		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, delete, pin, or unpin a specific memory by namespace and key.",
+		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, delete, pin, or unpin a specific memory by namespace and key. Use op=used to report that an agent actually used a memory (used_count +1, separate from the retrieval-time utility_count).",
 		InputSchema: schema([]string{"ns", "key", "op"}, map[string]map[string]any{
 			"ns":  prop("string", "Namespace of the memory"),
 			"key": prop("string", "Key of the memory"),
-			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete), pin (always in context), unpin (remove pin)"),
+			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete), pin (always in context), unpin (remove pin), used (agent actually used it: used_count +1)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var p struct {

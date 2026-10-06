@@ -71,6 +71,7 @@ Memory {
   Tags           []string    // categorization; filter in Search, boost in Context (identity, lore, project:ghost, chat:123)
   AccessCount    int         // incremented on every retrieval
   UtilityCount   int         // incremented when directly useful (query-hit, not edge passenger)
+  UsedCount      int         // caller-reported actual use (curate --op used); JSON used_count, omitted when 0; not in ranking yet
   Ease           float64     // spaced-repetition decay resistance (1.0 neutral; grows with utility)
   EstTokens      int         // rough token estimate (len/4 + 20)
   TTL/ExpiresAt              // optional expiration
@@ -267,6 +268,11 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 
 **Spaced-repetition ease (decay resistance).** Each memory carries an `ease` factor derived from proven usefulness: `ease = 1 + 0.2 × utility_count`, capped at 4.0 (utility 0 → ease 1.0, neutral). Reflect recomputes and persists it each cycle. The stale-LTM demotion threshold scales by ease, so a memory that proved useful N times survives idle stretches proportionally longer before demotion to `dormant` — durable preferences stay searchable across quiet periods, while never-useful memories decay on the normal 7-day schedule. Low-utility memories (ease ≈ 1.0) and the low-utility prune rule are unaffected.
 
+**Utility signals.** Two counters, stored separately so neither drowns the other out:
+
+- `utility_count` — retrieval-time credit: a memory that is a direct hit for a context query (not an edge-expansion passenger) gets +1 in `strengthenCoRetrievedEdges`. Feeds ease, the utility ratio, and the low-utility prune rule.
+- `used_count` — caller-reported actual use: `ghost curate --op used` / `ghost_curate op=used`, sent when an agent was observed actually using an injected memory (e.g. by the ghost-lens Claude Code mod). +1 in place on the latest live version — no new version, no importance/tier/content change, no access/recency touch — and allowed on pinned and locked memories. Not carried to a new version (same as `utility_count`); round-trips through export/import. **Not yet used in ranking or lifecycle**; an A/B will decide how it feeds scoring.
+
 | Built-in Rule | Condition | Action |
 |---------------|-----------|--------|
 | `sys-promote-sensory` | sensory, >1h old, >1 access | PROMOTE to STM |
@@ -318,7 +324,7 @@ Exposes 10 tools over stdio transport using `github.com/modelcontextprotocol/go-
 - `ghost_context` — Budget-aware context assembly with edge expansion (includes `compaction_suggested` signal; supports `min_score` / `min_spread` noise filters)
 - `ghost_expand` — List consolidation nodes (no key) or drill into a summary to get its children (with key)
 - `ghost_consolidate` — Create a summary memory with contains edges to source memories in one operation
-- `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin)
+- `ghost_curate` — Instance-level lifecycle actions on individual memories (promote, demote, boost, diminish, archive, delete, pin, unpin, used)
 - `ghost_edge` — Create, remove, or list weighted edges between memories for DAG-based retrieval
 - `ghost_reflect` — Run lifecycle rules across all memories (promote, decay, prune, merge similar, edge decay)
 - `ghost_edge_candidates` — Return `relates_to` pairs that do not yet have a typed reasoning edge, so the calling agent (itself an LLM) can classify them and commit edges via `ghost_edge`. Ghost does zero LLM work — the hot path AND this hygiene path stay LLM-free. For fully-automated batch inference without an agent in the loop, use the `ghost infer-edges` CLI instead, which does spawn an LLM.

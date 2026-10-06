@@ -10,7 +10,7 @@ import (
 type CurateParams struct {
 	NS  string // namespace
 	Key string // key within namespace
-	Op  string // promote | demote | boost | diminish | archive | delete | pin | unpin
+	Op  string // promote | demote | boost | diminish | archive | delete | pin | unpin | used
 }
 
 // CurateResult describes what happened after curation.
@@ -42,7 +42,7 @@ var tierDown = map[string]string{
 var validCurateOps = map[string]bool{
 	"promote": true, "demote": true, "boost": true,
 	"diminish": true, "archive": true, "delete": true,
-	"pin": true, "unpin": true,
+	"pin": true, "unpin": true, "used": true,
 }
 
 // Curate applies a lifecycle action to a single memory identified by ns+key.
@@ -51,7 +51,28 @@ func (s *SQLiteStore) Curate(ctx context.Context, p CurateParams) (*CurateResult
 		return nil, fmt.Errorf("ns and key are required")
 	}
 	if !validCurateOps[p.Op] {
-		return nil, fmt.Errorf("invalid op %q; must be one of: promote, demote, boost, diminish, archive, delete, pin, unpin", p.Op)
+		return nil, fmt.Errorf("invalid op %q; must be one of: promote, demote, boost, diminish, archive, delete, pin, unpin, used", p.Op)
+	}
+
+	// "used" resolves the latest version without Get: Get counts as a
+	// retrieval (access_count+1, last_accessed_at=now, access log), so one
+	// reported use would also refresh recency and feed the spaced-access
+	// guard. Only used_count moves — kept separate from utility_count (the
+	// retrieval-time credit) so the explicit signal is not drowned out. Allowed
+	// on pinned and locked memories: it is a usage counter, never content or
+	// lifecycle.
+	if p.Op == "used" {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE memories SET used_count = used_count + 1
+			 WHERE id = (SELECT id FROM memories WHERE ns = ? AND key = ? AND deleted_at IS NULL
+			             ORDER BY version DESC LIMIT 1)`, p.NS, p.Key)
+		if err != nil {
+			return nil, fmt.Errorf("used: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil, fmt.Errorf("memory not found: %s/%s", p.NS, p.Key)
+		}
+		return &CurateResult{NS: p.NS, Key: p.Key, Op: p.Op}, nil
 	}
 
 	// Resolve to latest version

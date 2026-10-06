@@ -639,7 +639,7 @@ func (m *MockStore) ExportAll(_ context.Context, ns string) ([]model.Memory, err
 func (m *MockStore) Import(ctx context.Context, memories []model.Memory) (int, error) {
 	imported := 0
 	for _, mem := range memories {
-		_, err := m.Put(ctx, PutParams{
+		got, err := m.Put(ctx, PutParams{
 			NS:       mem.NS,
 			Key:      mem.Key,
 			Content:  mem.Content,
@@ -650,6 +650,14 @@ func (m *MockStore) Import(ctx context.Context, memories []model.Memory) (int, e
 		})
 		if err != nil {
 			return imported, err
+		}
+		if mem.UsedCount > 0 && got != nil {
+			m.mu.Lock()
+			if stored, ok := m.memories[got.ID]; ok && stored.UsedCount < mem.UsedCount {
+				stored.UsedCount = mem.UsedCount
+				m.memories[got.ID] = stored
+			}
+			m.mu.Unlock()
 		}
 		imported++
 	}
@@ -1056,9 +1064,10 @@ func (m *MockStore) Curate(ctx context.Context, p CurateParams) (*CurateResult, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	key := p.NS + ":" + p.Key
+	// memories is keyed by id; resolve the latest live version of ns/key.
+	key := m.latestID(p.NS, p.Key)
 	mem, ok := m.memories[key]
-	if !ok {
+	if key == "" || !ok {
 		return nil, fmt.Errorf("memory not found: %s/%s", p.NS, p.Key)
 	}
 
@@ -1105,6 +1114,8 @@ func (m *MockStore) Curate(ctx context.Context, p CurateParams) (*CurateResult, 
 		result.OldPinned = mem.Pinned
 		mem.Pinned = false
 		result.NewPinned = false
+	case "used":
+		mem.UsedCount++
 	}
 	m.memories[key] = mem
 	return result, nil

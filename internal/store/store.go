@@ -305,7 +305,9 @@ type Store interface {
 	Consolidate(ctx context.Context, p ConsolidateParams) (*ConsolidateResult, error)
 
 	// Curate applies a lifecycle action to a single memory identified by ns+key.
-	// Supported ops: promote, demote, boost, diminish, archive, delete.
+	// Supported ops: promote, demote, boost, diminish, archive, delete, pin, unpin,
+	// used (caller-reported use: used_count +1, separate from utility_count;
+	// no version/access bump, allowed on pinned/locked).
 	Curate(ctx context.Context, p CurateParams) (*CurateResult, error)
 
 	// Reflect evaluates rules against memories and applies tier/importance changes.

@@ -23,13 +23,16 @@ Operations:
   archive   Move to dormant tier
   delete    Soft-delete (recoverable)
   pin       Always loaded in context, exempt from decay
-  unpin     Remove from always-on context`,
+  unpin     Remove from always-on context
+  used      Record observed use by an agent: used_count +1, kept
+            separate from utility_count (no version, access, importance,
+            tier, or content change; allowed on pinned/locked)`,
 		RunE: runCurate,
 	}
 
 	cmd.Flags().StringP("ns", "n", "", "Namespace (required)")
 	cmd.Flags().StringP("key", "k", "", "Memory key (required)")
-	cmd.Flags().String("op", "", "Operation: promote, demote, boost, diminish, archive, delete, pin, unpin (required)")
+	cmd.Flags().String("op", "", "Operation: promote, demote, boost, diminish, archive, delete, pin, unpin, used (required)")
 
 	RootCmd.AddCommand(cmd)
 }

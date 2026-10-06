@@ -1211,7 +1211,7 @@ func (s *SQLiteStore) loadPinnedMemories(ctx context.Context, ns string) ([]mode
 
 	query := fmt.Sprintf(`SELECT m.id, m.ns, m.key, m.content, m.kind, m.tags, m.version, m.supersedes,
 		m.created_at, m.deleted_at, m.priority, m.access_count, m.last_accessed_at, m.meta, m.expires_at,
-		m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned, m.source_user, m.source_kind, m.source_scope
+		m.importance, m.utility_count, m.tier, m.est_tokens, m.pinned, m.source_user, m.source_kind, m.source_scope, m.used_count
 		FROM memories m
 		INNER JOIN (
 			SELECT ns, key, MAX(version) AS max_ver
