@@ -195,7 +195,7 @@ func (s *SQLiteStore) expandEdgesPPR(ctx context.Context, scoreMap map[string]*c
 			if err != nil || m.Tier == "dormant" {
 				continue
 			}
-			scoreMap[n.id] = &contextCandidate{memory: *m, score: math.Min(0.3, rel*0.3)}
+			scoreMap[n.id] = &contextCandidate{memory: *m, score: math.Min(0.3, rel*0.3), via: ViaEdge}
 			originalScores[n.id] = 0
 			added++
 		}
@@ -227,7 +227,7 @@ func (s *SQLiteStore) forceIncludeContradictions(ctx context.Context, scoreMap m
 			if err != nil || m.Tier == "dormant" {
 				continue
 			}
-			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor}
+			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor, via: ViaEdge}
 			originalScores[e.ToID] = 0
 		}
 	}
@@ -256,7 +256,7 @@ func (s *SQLiteStore) boostContainsParents(ctx context.Context, scoreMap map[str
 			if parentScore < 0.3 {
 				parentScore = 0.3
 			}
-			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore}
+			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge}
 		}
 	}
 }

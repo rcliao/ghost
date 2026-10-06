@@ -93,7 +93,7 @@ func (s *SQLiteStore) substituteParents(ctx context.Context, candidates []contex
 		inserted := false
 		for i, c := range candidates {
 			if i == bestIdx && !inserted {
-				keep = append(keep, contextCandidate{memory: *parent, score: bestScore})
+				keep = append(keep, contextCandidate{memory: *parent, score: bestScore, via: ViaParent})
 				inserted = true
 			}
 			if childSet[c.memory.ID] || c.memory.ID == parentID {
@@ -102,7 +102,7 @@ func (s *SQLiteStore) substituteParents(ctx context.Context, candidates []contex
 			keep = append(keep, c)
 		}
 		if !inserted {
-			keep = append(keep, contextCandidate{memory: *parent, score: bestScore})
+			keep = append(keep, contextCandidate{memory: *parent, score: bestScore, via: ViaParent})
 		}
 		candidates = keep
 		substituted[parentID] = childKeys
