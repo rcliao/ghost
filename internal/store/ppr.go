@@ -221,13 +221,14 @@ func (s *SQLiteStore) forceIncludeContradictions(ctx context.Context, scoreMap m
 			floor := seedScore * 0.8
 			if existing, ok := scoreMap[e.ToID]; ok {
 				existing.score = math.Max(existing.score, floor)
+				existing.keepFloorExempt = true
 				continue
 			}
 			m, err := s.loadMemoryByID(ctx, e.ToID)
 			if err != nil || m.Tier == "dormant" {
 				continue
 			}
-			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor, via: ViaEdge}
+			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor, via: ViaEdge, keepFloorExempt: true}
 			originalScores[e.ToID] = 0
 		}
 	}
