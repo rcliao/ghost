@@ -222,13 +222,16 @@ func (s *SQLiteStore) forceIncludeContradictions(ctx context.Context, scoreMap m
 			if existing, ok := scoreMap[e.ToID]; ok {
 				existing.score = math.Max(existing.score, floor)
 				existing.keepFloorExempt = true
+				if existing.arrivedFrom != nil { // an edge arrival: record this seed too
+					existing.arrivedFrom = append(existing.arrivedFrom, id)
+				}
 				continue
 			}
 			m, err := s.loadMemoryByID(ctx, e.ToID)
 			if err != nil || m.Tier == "dormant" {
 				continue
 			}
-			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor, via: ViaEdge, keepFloorExempt: true}
+			scoreMap[e.ToID] = &contextCandidate{memory: *m, score: floor, via: ViaEdge, keepFloorExempt: true, arrivedFrom: []string{id}}
 			originalScores[e.ToID] = 0
 		}
 	}
@@ -257,7 +260,7 @@ func (s *SQLiteStore) boostContainsParents(ctx context.Context, scoreMap map[str
 			if parentScore < 0.3 {
 				parentScore = 0.3
 			}
-			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge}
+			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge, arrivedFrom: []string{id}}
 		}
 	}
 }
