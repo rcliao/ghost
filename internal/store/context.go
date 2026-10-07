@@ -239,6 +239,82 @@ type contextCandidate struct {
 	// `reserved` (PPR is env-gated and left as measured); single-hop
 	// reserve-class arrivals are covered by `reserved` itself.
 	keepFloorExempt bool
+	// arrivedFrom lists the pool members (or pinned memories) that propagated
+	// to this candidate through an edge. Non-nil ONLY for candidates that
+	// entered the pool by edge expansion (single-hop/multi-hop neighbours,
+	// contains-parent boosts, PPR contradicts force-includes); direct search
+	// hits never carry it, even when an edge boosted them — a direct hit is
+	// never a passenger. PPR mass arrivals also carry none (their mass comes
+	// from the whole seed set, and the env-gated PPR path is left as
+	// measured). Read by dropOrphanedEdgeArrivals after the MinScore floor.
+	arrivedFrom []string
+}
+
+// dropOrphanedEdgeArrivals removes edge passengers whose reason for being in
+// context did not survive the MinScore floor.
+//
+// Rule: a candidate with recorded provenance (arrivedFrom) survives only if at
+// least one memory that propagated to it survives — a pinned memory already in
+// the result (inResult), a candidate in keep without provenance (a direct
+// search hit that passed or was rescued by the floor), or, recursively, another
+// surviving edge arrival. Multi-hop chains therefore survive only when they
+// reach a surviving seed; cycles among arrivals cannot keep each other alive
+// because survival is computed as reachability from the roots.
+//
+// The rule applies to reserve-class arrivals too (contradicts, depends_on,
+// prevents, reviewed, keepFloorExempt): their floor exemption and packing
+// reserve exist so that something ALREADY IN CONTEXT is not shown false,
+// broken or unsafe. When the memory they qualify is itself dropped, there is
+// nothing in context for them to qualify, and showing "run make migrate
+// first" without the deploy step it refines is the failure being fixed.
+// Candidates without provenance (direct hits, including authority-reserved
+// statements, and PPR mass arrivals) are untouched. Ranking is not changed:
+// keep's order is preserved. Returns the filtered slice and the drop count.
+func dropOrphanedEdgeArrivals(keep []contextCandidate, inResult map[string]bool) ([]contextCandidate, int) {
+	alive := make(map[string]bool, len(keep)+len(inResult))
+	for id, ok := range inResult {
+		if ok {
+			alive[id] = true
+		}
+	}
+	pending := 0
+	for _, c := range keep {
+		if c.arrivedFrom == nil {
+			alive[c.memory.ID] = true
+		} else {
+			pending++
+		}
+	}
+	if pending == 0 {
+		return keep, 0
+	}
+	// Fixpoint: each pass admits arrivals reachable from an already-alive
+	// memory. Bounded by the number of arrivals.
+	for changed := true; changed; {
+		changed = false
+		for _, c := range keep {
+			if c.arrivedFrom == nil || alive[c.memory.ID] {
+				continue
+			}
+			for _, src := range c.arrivedFrom {
+				if alive[src] {
+					alive[c.memory.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	out := keep[:0]
+	dropped := 0
+	for _, c := range keep {
+		if alive[c.memory.ID] {
+			out = append(out, c)
+		} else {
+			dropped++
+		}
+	}
+	return out, dropped
 }
 
 // edgeMinScoreFilter removes candidates that arrived ONLY through edge
@@ -664,6 +740,18 @@ func (s *SQLiteStore) Context(ctx context.Context, p ContextParams) (*ContextRes
 					keep = append(keep, c)
 				}
 			}
+			// Orphaned edge passengers: expansion ran BEFORE this floor, so a
+			// typed-edge arrival (floor-exempt above) could outlive the seed
+			// that pulled it in — the caller got the neighbour without the
+			// memory that made it relevant. Drop arrivals none of whose
+			// sources survived (see dropOrphanedEdgeArrivals for the rule,
+			// including reserve-class arrivals). Gated on MinScore: with no
+			// floor nothing is dropped here, so nothing is orphaned.
+			var orphaned int
+			keep, orphaned = dropOrphanedEdgeArrivals(keep, seen)
+			if orphaned > 0 {
+				result.Stages["orphan_edge_dropped"] = orphaned
+			}
 			candidates = keep
 		}
 		if p.MinSpread > 0 && len(candidates) >= 2 {
@@ -1002,6 +1090,13 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 					}
 				}
 				if existing, ok := scoreMap[neighborID]; ok {
+					// An earlier edge arrival reached again from another seed:
+					// record the extra source so it survives the MinScore floor
+					// if EITHER seed does. Direct hits carry no provenance and
+					// stay that way.
+					if existing.arrivedFrom != nil {
+						existing.arrivedFrom = append(existing.arrivedFrom, seed.id)
+					}
 					// Memory already in pool — additive boost, capped
 					origScore := originalScores[neighborID]
 					maxBoost := origScore * cfg.MaxBoostFactor
@@ -1052,7 +1147,7 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 					// is not similarity; those are the ones the floor must not
 					// judge.
 					structural := expansionDirectionsFor(edge.Rel).Handling != handleBackground
-					scoreMap[neighborID] = &contextCandidate{memory: *m, score: propagated, reserved: isReserved, viaEdge: structural, via: ViaEdge}
+					scoreMap[neighborID] = &contextCandidate{memory: *m, score: propagated, reserved: isReserved, viaEdge: structural, via: ViaEdge, arrivedFrom: []string{seed.id}}
 					originalScores[neighborID] = 0 // no direct score
 					totalExpanded++
 					// This neighbour may itself seed the next hop. Its propagated
@@ -1106,7 +1201,7 @@ func (s *SQLiteStore) expandEdges(ctx context.Context, scoreMap map[string]*cont
 			if parentScore < 0.3 {
 				parentScore = 0.3
 			}
-			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge}
+			scoreMap[parentID] = &contextCandidate{memory: *m, score: parentScore, via: ViaEdge, arrivedFrom: []string{seed.id}}
 			originalScores[parentID] = 0
 		}
 	}
