@@ -31,11 +31,12 @@ Or for project-scoped (add to `.mcp.json` in repo root):
 }
 ```
 
-This exposes 10 tools to the agent:
+This exposes 11 tools to the agent:
 
 | Tool | Category | Purpose |
 |------|----------|---------|
 | `ghost_put` | Write | Store or update a memory (auto-links similar memories via edges) |
+| `ghost_patch` | Write | Apply a unified diff to a memory's content — prefer over `ghost_put` when editing (only touched lines change) |
 | `ghost_get` | Read | Retrieve a specific memory by namespace and key |
 | `ghost_search` | Read | Full-text search with ranking |
 | `ghost_context` | Read | Budget-aware context assembly with edge expansion |
@@ -420,6 +421,17 @@ Use namespace `agent:claude-code` for general knowledge, or `project:<name>` for
 Use descriptive keys (e.g. "auth-flow-decision", "db-migration-gotcha").
 Set importance 0.6-0.8 for most learnings, 0.9+ for critical decisions.
 Set priority "high" for important learnings, "critical" for must-never-forget.
+
+### When to edit (ghost_patch)
+Prefer ghost_patch over ghost_put when changing part of an existing memory:
+  ghost_patch(ns="agent:claude-code", key="auth-flow-decision", patch="<unified diff>")
+
+Only the touched lines change — the rest survives byte-for-byte, so repeated
+edits cannot slowly reword content you did not mean to touch. Read the memory
+first with ghost_get to get its current content and version, generate a
+standard unified diff against it, and optionally pass dry_run:true to preview
+before writing. A context mismatch or version conflict fails loudly instead
+of corrupting the memory — re-read and retry.
 
 ### When to consolidate (ghost_consolidate)
 When ghost_context returns compaction_suggested: true, or when many memories
