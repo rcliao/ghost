@@ -42,3 +42,19 @@ claude plugin eval ./ghost-eval --runs 3 --ablation with-without --scaffold -j 4
 `--scaffold` runs each case's `fixture.sh` (a small Go repo) as you.
 Debug one case cheaply with `--case <name> --runs 1 --ablation none --keep-temp`.
 Injected context does not appear as text in the kept `out/trace.jsonl`; judge it from the answer.
+
+## A/B variants
+
+`ghost-eval/set-variant.sh` sets environment for every ghost call the plugin makes, by writing `fixture/config.json`.
+The injection indicator (`.ghost-eval/injected.log`) records which variant a run used.
+
+```sh
+./ghost-eval/build-fixture.sh
+GHOST_BIN=/path/to/ghost ./ghost-eval/set-variant.sh edge-min 0.05   # or baseline | edges-off
+claude plugin eval ./ghost-eval --runs 3 --ablation none --scaffold -j 2 ...
+```
+
+Run variants from bash, not zsh: zsh doesn't split unquoted variables, so a two-word variant reaches the script as one argument.
+Keep concurrency at 2 and run nothing heavy alongside, and check `injection-fired` before trusting a difference.
+
+Eval runs get a fresh HOME. Without `GHOST_MODELS_DIR`, every ghost call downloaded the ~184 MB embedding model, taking 5–10 s. About 8% of runs then lost their injection silently, so the arm quietly became the baseline. `build-fixture.sh` now points the plugin at this machine's `~/.ghost/models`: calls take about 1 s and injection fired in 22 of 22 runs.
