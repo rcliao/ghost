@@ -36,5 +36,21 @@ putx acme-web-changelog project:acme-web "acme-web convention: every user-facing
 putx acme-web-retry project:acme-web "acme-web's frontend fetch wrapper retries 5 times with a fixed 1s delay on any error."
 putx acme-tools-python project:acme-tools "acme-tools scripts are written in Python 3.12 and run with uv; keep new tools in that repo consistent."
 
-printf '{"ghost":"%s"}\n' "$GHOST" >fixture/config.json
+# Edge A/B: a prerequisite reachable only through a typed edge from the deploy
+# memory. Low wording overlap with the deploy prompts, so search alone misses it.
+put acme-deploy-migrate-first "Before any acme-api release, run make migrate with the same ENV first; the release target never applies schema migrations and the health check fails on an old schema."
+"$GHOST" --db "$DB" edge -n eval:ghost --from-key acme-staging-deploy --to-key acme-deploy-migrate-first -r refines >/dev/null
+# Edge A/B: a consolidated session node that `contains` the sibling-repo
+# memories, the shape that floods real session-start context with score-0
+# passengers (ghost-stop.sh writes session-<project>-<date>-<id> nodes).
+"$GHOST" --db "$DB" consolidate -n eval:ghost --summary-key session-acme-2026-10-01-a1b2c3d4 \
+  --keys acme-billing-staging-deploy,acme-web-changelog,acme-web-retry,acme-tools-python \
+  --content "acme session 2026-10-01: deploy and staging work across services, changelog and retry discussions." \
+  --tags project:acme-api >/dev/null
+
+# Eval runs get a fresh HOME, so without this every ghost call downloads the
+# embedding model (~184 MB, 5-10 s) and an occasional failed download silently
+# empties the injection. Point ghost at this machine's model cache instead.
+MODELS="${GHOST_MODELS_DIR:-$HOME/.ghost/models}"
+jq -n --arg g "$GHOST" --arg m "$MODELS" '{ghost: $g, variant: "baseline", env: {GHOST_MODELS_DIR: $m}}' >fixture/config.json
 echo "fixture: $("$GHOST" --db "$DB" list -n eval:ghost --limit 1000 2>/dev/null | jq 'length' 2>/dev/null || echo '?') memories in eval:ghost"

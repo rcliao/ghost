@@ -19,6 +19,10 @@ const NUDGE =
 
 let ghost = 'ghost'
 let db: string | undefined
+// A/B variant: extra environment for every ghost call (e.g. GHOST_EDGE_*), set by
+// set-variant.sh into fixture/config.json. Eval runs may not inherit the caller's env.
+let variant = 'baseline'
+let ghostEnv: Record<string, string> = {}
 let injected = new Set<string>()
 
 type Memory = { key: string; content: string; score?: number }
@@ -28,7 +32,7 @@ async function context($: EngineInterface, query: string, budget: number, floor:
   const argv = [ghost, '--db', db, 'context', query, '-n', NS, '--budget', String(budget)]
   if (floor) argv.push('--min-score', MIN_SCORE, '--min-spread', MIN_SPREAD)
   try {
-    const ran = await $.process.run(argv, { timeoutMs: 60_000 })
+    const ran = await $.process.run(argv, { timeoutMs: 180_000, env: ghostEnv })
     if (ran.exitCode !== 0) return []
     const parsed = JSON.parse(ran.stdout) as { memories?: Memory[] }
     return parsed.memories ?? []
@@ -41,8 +45,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const root = $.plugin.root
     try {
-      const cfg = JSON.parse(await $.fs.read(`${root}/fixture/config.json`)) as { ghost?: string }
+      const cfg = JSON.parse(await $.fs.read(`${root}/fixture/config.json`)) as { ghost?: string; variant?: string; env?: Record<string, string> }
       if (typeof cfg.ghost === 'string') ghost = cfg.ghost
+      if (typeof cfg.variant === 'string') variant = cfg.variant
+      if (cfg.env !== undefined && typeof cfg.env === 'object') ghostEnv = cfg.env
     } catch {
       // ghost on PATH
     }
@@ -75,7 +81,7 @@ export const register: Register = on => {
     // Indicator for the with-only `injection-fired` grader: proves the arm really had ghost.
     try {
       await $.process.run(['mkdir', '-p', '.ghost-eval'])
-      await $.fs.write('.ghost-eval/injected.log', [...injected].join('\n') + '\n')
+      await $.fs.write('.ghost-eval/injected.log', `variant=${variant}\n` + [...injected].join('\n') + '\n')
     } catch {
       // an indicator only
     }
