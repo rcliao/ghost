@@ -31,14 +31,15 @@ Or for project-scoped (add to `.mcp.json` in repo root):
 }
 ```
 
-This exposes 10 tools to the agent:
+This exposes 11 tools to the agent:
 
 | Tool | Category | Purpose |
 |------|----------|---------|
 | `ghost_put` | Write | Store or update a memory (auto-links similar memories via edges) |
+| `ghost_patch` | Write | Apply a unified diff to a memory's content — preferred over `ghost_put` when editing |
 | `ghost_get` | Read | Retrieve a specific memory by namespace and key |
 | `ghost_search` | Read | Full-text search with ranking |
-| `ghost_context` | Read | Budget-aware context assembly with edge expansion |
+| `ghost_context` | Read | Budget-aware context assembly with edge expansion (`for_user` / `for_scope` boost the current interlocutor / encoding scope) |
 | `ghost_expand` | Read | List consolidation nodes (no key) or drill into a summary's children (with key) |
 | `ghost_consolidate` | Write | Create a summary memory with contains edges to sources in one operation |
 | `ghost_curate` | Mutate | Instance-level lifecycle actions on a single memory |
