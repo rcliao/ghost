@@ -152,8 +152,8 @@ var builtinRules = []ReflectRule{
 		// straight to ltm, then left alone). Without it, the first reflect on a
 		// real store (2026-10-18 dry run) would have demoted 4,039 of pikamini's
 		// 5,105 ltm rows in one pass, and dormant rows are invisible to search.
-		Cond: RuleCond{Tier: "ltm", UnaccessedGTHours: 168, AccessLT: 2},
-		Action:    RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
+		Cond:   RuleCond{Tier: "ltm", UnaccessedGTHours: 168, AccessLT: 2},
+		Action: RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
 	},
 	{
 		ID:        "sys-prune-low-utility",
