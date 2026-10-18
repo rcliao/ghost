@@ -148,7 +148,11 @@ var builtinRules = []ReflectRule{
 		Scope:     "reflect",
 		Priority:  50,
 		CreatedBy: "system",
-		Cond:      RuleCond{Tier: "ltm", UnaccessedGTHours: 168},
+		// AccessLT keeps demotion to ltm rows that never earned use (written
+		// straight to ltm, then left alone). Without it, the first reflect on a
+		// real store (2026-10-18 dry run) would have demoted 4,039 of pikamini's
+		// 5,105 ltm rows in one pass, and dormant rows are invisible to search.
+		Cond: RuleCond{Tier: "ltm", UnaccessedGTHours: 168, AccessLT: 2},
 		Action:    RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
 	},
 	{
@@ -209,6 +213,35 @@ func (s *SQLiteStore) seedBuiltinRules() {
 			nilIfEmpty(r.Cond.Kind), nilIfEmpty(r.Cond.TagIncludes),
 			nilIfZeroF(r.Cond.SimilarityGT),
 			r.Action.Op, string(paramsJSON), nilIfEmpty(r.ExpiresAt), now,
+		)
+	}
+	s.reconcileBuiltinRules()
+}
+
+// reconcileBuiltinRules rewrites each built-in rule's stored definition to the
+// current builtinRules entry. INSERT OR IGNORE only seeds once, so without this
+// a store keeps whatever defaults it was first created with: live stores were
+// still running March rows (promote at access>3, demote by created_at age)
+// long after the code moved on. Only rows still owned by the seeder
+// (created_by='system') are touched; RuleSet stamps edits as 'user' (or the
+// caller's CreatedBy), so hand-tuned rules survive. created_at is preserved.
+func (s *SQLiteStore) reconcileBuiltinRules() {
+	for _, r := range builtinRules {
+		paramsJSON, _ := json.Marshal(r.Action.Params)
+		s.db.Exec(`UPDATE reflect_rules SET
+			name = ?, priority = ?, scope = ?,
+			cond_tier = ?, cond_age_gt_hours = ?, cond_unaccessed_gt_hours = ?, cond_importance_lt = ?,
+			cond_access_lt = ?, cond_access_gt = ?, cond_utility_lt = ?, cond_kind = ?, cond_tag_includes = ?,
+			cond_similarity_gt = ?, action_op = ?, action_params = ?
+			WHERE id = ? AND created_by = 'system'`,
+			r.Name, r.Priority, r.Scope,
+			nilIfEmpty(r.Cond.Tier), nilIfZeroF(r.Cond.AgeGTHours), nilIfZeroF(r.Cond.UnaccessedGTHours),
+			nilIfZeroF(r.Cond.ImportanceLT),
+			nilIfZero(r.Cond.AccessLT), nilIfZero(r.Cond.AccessGT), nilIfZeroF(r.Cond.UtilityLT),
+			nilIfEmpty(r.Cond.Kind), nilIfEmpty(r.Cond.TagIncludes),
+			nilIfZeroF(r.Cond.SimilarityGT),
+			r.Action.Op, string(paramsJSON),
+			r.ID,
 		)
 	}
 }

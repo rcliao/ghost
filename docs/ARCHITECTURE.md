@@ -286,7 +286,7 @@ Pinned memories (`pinned = true`) are exempt from all lifecycle rules — they s
 | `sys-decay-sensory` | sensory, >4h old | DELETE |
 | `sys-decay-unaccessed` | STM, >48h old, <10 accesses | DECAY importance ×0.95 (min 0.1) |
 | `sys-promote-to-ltm` | STM, >72h old, >50 accesses | PROMOTE to LTM |
-| `sys-demote-stale-ltm` | LTM, >168h since last access | DEMOTE to dormant |
+| `sys-demote-stale-ltm` | LTM, >168h since last access (scaled by ease), <2 accesses | DEMOTE to dormant |
 | `sys-prune-low-utility` | >20 accesses, utility ratio <0.05 | DEMOTE to dormant |
 | `sys-merge-similar` | STM, embedding similarity >0.9 | LINK (create `relates_to` edges, non-destructive) |
 | `sys-dedup-all` | Any tier, embedding similarity >0.92 | DEDUP (archive duplicates to dormant, keep canonical) |
@@ -296,6 +296,8 @@ Rules are evaluated in two passes:
 2. **Similarity pass** — rules with `cond_similarity_gt` run pairwise embedding comparison. Default strategy is `link_only` (non-destructive): creates `relates_to` edges between similar memories without deleting any content. The reflect response includes `linked_clusters` showing which groups were linked. The agent can then use `ghost clusters` to discover all clusters and `ghost consolidate` to create summaries when ready. Legacy `keep_highest_importance` strategy (destructive merge) is still available for custom rules.
 
 Custom rules can be added via `ghost rule set`.
+
+**Stored rules follow the code.** Rules live in the `reflect_rules` table, and Reflect reads them from there. On every open, built-ins are seeded (`INSERT OR IGNORE`) and then each built-in row still owned by the seeder (`created_by='system'`) is rewritten to its current definition in `builtinRules` (`reconcileBuiltinRules`). Rules written through `ghost rule set` / `RuleSet` are stamped with their author (`user` by default) and are never rewritten, so a hand-tuned built-in survives. Before this, a store kept the defaults it was created with forever: in October 2026 two live stores were still running March rows, one of which demoted every LTM memory seven days after creation.
 
 ### Consolidation Workflow (LCM-like Lossless Compaction)
 
