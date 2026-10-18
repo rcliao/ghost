@@ -47,6 +47,15 @@ func TestReflectEaseShieldsUsefulFromDemotion(t *testing.T) {
 	if _, err := SeedStore(ctx, s, corpus); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// This tests the ease-scaling mechanism, not the shipped default (which
+	// also requires access<2), so pin a bare unaccessed>168h demote rule.
+	if _, err := s.RuleSet(ctx, ReflectRule{
+		ID: "sys-demote-stale-ltm", Name: "Demote LTM not accessed in 7 days", Priority: 50,
+		Cond:   RuleCond{Tier: "ltm", UnaccessedGTHours: 168},
+		Action: RuleAction{Op: "DEMOTE", Params: map[string]any{"to_tier": "dormant"}},
+	}); err != nil {
+		t.Fatalf("rule set: %v", err)
+	}
 
 	res, err := s.Reflect(ctx, ReflectParams{NS: "t"})
 	if err != nil {
