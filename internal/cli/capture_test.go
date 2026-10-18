@@ -166,3 +166,111 @@ func TestCaptureInvalidJSON(t *testing.T) {
 		t.Errorf("empty array should store nothing, got %+v", res)
 	}
 }
+
+// captureJSON commits pre-extracted candidates through the capture write path.
+func captureJSON(t *testing.T, db, candidates string, extra ...string) captureResult {
+	t.Helper()
+	var out string
+	var err error
+	args := append([]string{"capture", "--db", db, "-n", "agent:test", "--json"}, extra...)
+	withStdin(t, candidates, func() {
+		out, err = executeCmd(t, args...)
+	})
+	if err != nil {
+		t.Fatalf("capture --json failed: %v\n%s", err, out)
+	}
+	return parseCaptureResult(t, out)
+}
+
+func liveContent(t *testing.T, db, key string) (string, int) {
+	t.Helper()
+	out, err := executeCmd(t, "get", "--db", db, "-n", "agent:test", "-k", key, "-f", "json")
+	if err != nil {
+		t.Fatalf("get %s: %v\n%s", key, err, out)
+	}
+	var m model.Memory
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		var ms []model.Memory
+		if err2 := json.Unmarshal([]byte(out), &ms); err2 != nil || len(ms) == 0 {
+			t.Fatalf("unmarshal get %s: %v\n%s", key, err, out)
+		}
+		m = ms[0]
+	}
+	return m.Content, m.Version
+}
+
+// Two unrelated captured facts deriving the same generic key must both stay
+// live; before the guard the second became v2 of the first and hid it.
+func TestCaptureKeyCollisionSuffixes(t *testing.T) {
+	db := tempDB(t)
+	a := `[{"content":"Umbreon checked the granola label: no peanuts.","key":"umbreon","kind":"semantic","importance":0.7}]`
+	b := `[{"content":"Someone asked umbreon what time the market opens.","key":"umbreon","kind":"episodic","importance":0.5}]`
+
+	if r := captureJSON(t, db, a, "--dedup=false"); r.Memories[0].Key != "umbreon" {
+		t.Fatalf("first capture should take the derived key, got %q", r.Memories[0].Key)
+	}
+	r := captureJSON(t, db, b, "--dedup=false")
+	if r.Memories[0].Key != "umbreon-a" {
+		t.Fatalf("colliding capture should take umbreon-a, got %q", r.Memories[0].Key)
+	}
+
+	gotA, verA := liveContent(t, db, "umbreon")
+	if !strings.Contains(gotA, "no peanuts") || verA != 1 {
+		t.Errorf("original fact was superseded: v%d %q", verA, gotA)
+	}
+	gotB, _ := liveContent(t, db, "umbreon-a")
+	if !strings.Contains(gotB, "market opens") {
+		t.Errorf("second fact not stored under suffix: %q", gotB)
+	}
+
+	// Re-capturing either fact lands on the key that already holds it.
+	if r := captureJSON(t, db, b, "--dedup=false"); r.Memories[0].Key != "umbreon-a" {
+		t.Errorf("restatement of fact B should reuse umbreon-a, got %q", r.Memories[0].Key)
+	}
+	if _, v := liveContent(t, db, "umbreon-a"); v != 2 {
+		t.Errorf("restatement of fact B should version umbreon-a to v2, got v%d", v)
+	}
+}
+
+// Identical content (up to case/whitespace) still versions the same key, as
+// before the guard.
+func TestCaptureSameContentStillVersions(t *testing.T) {
+	db := tempDB(t)
+	c1 := `[{"content":"The user's timezone is Pacific.","key":"user-timezone","kind":"semantic","importance":0.8}]`
+	c2 := `[{"content":"  the user's timezone is   Pacific.","key":"user-timezone","kind":"semantic","importance":0.8}]`
+	captureJSON(t, db, c1, "--dedup=false")
+	r := captureJSON(t, db, c2, "--dedup=false")
+	if r.Memories[0].Key != "user-timezone" {
+		t.Fatalf("same content should keep the key, got %q", r.Memories[0].Key)
+	}
+	if _, v := liveContent(t, db, "user-timezone"); v != 2 {
+		t.Errorf("same content should version to v2, got v%d", v)
+	}
+	// (get on a missing key exits the process, so check via list.)
+	listOut, err := executeCmd(t, "list", "--db", db, "-n", "agent:test")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var mems []model.Memory
+	if err := json.Unmarshal([]byte(listOut), &mems); err != nil {
+		t.Fatalf("unmarshal list: %v\n%s", err, listOut)
+	}
+	if len(mems) != 1 || mems[0].Key != "user-timezone" {
+		t.Errorf("identical content should leave exactly one live key, got %d: %+v", len(mems), mems)
+	}
+}
+
+// Explicit `ghost put` keeps plain versioning — the guard is capture-only.
+func TestExplicitPutStillSupersedes(t *testing.T) {
+	db := tempDB(t)
+	if _, err := executeCmd(t, "put", "--db", db, "-n", "agent:test", "-k", "notion", "first fact"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeCmd(t, "put", "--db", db, "-n", "agent:test", "-k", "notion", "unrelated second fact"); err != nil {
+		t.Fatal(err)
+	}
+	got, v := liveContent(t, db, "notion")
+	if v != 2 || got != "unrelated second fact" {
+		t.Errorf("explicit put should version in place: v%d %q", v, got)
+	}
+}

@@ -63,7 +63,8 @@ chmod +x ~/.claude/hooks/ghost-*.sh
 
 Configure via environment variables (set in your shell profile or in the hook commands):
 - `GHOST_BIN` — path to ghost binary (default: `ghost` on PATH)
-- `GHOST_AGENT_NS` — agent namespace (default: `agent:claude-code`)
+- `GHOST_AGENT_NS` — agent namespace (falls back to `GHOST_NS`, then `agent:claude-code`)
+- `GHOST_NS` — also read by `ghost mcp-serve`: tools called without `ns` default to it (then to `GHOST_AGENT_NS`)
 - `GHOST_LLM_MODEL` — model for extraction (default: `claude-sonnet-4-6`)
 
 Add to `~/.claude/settings.json`:

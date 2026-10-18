@@ -5,12 +5,12 @@
 #
 # Configure via environment variables:
 #   GHOST_BIN       — path to ghost binary (default: ghost on PATH)
-#   GHOST_AGENT_NS  — agent namespace (default: agent:claude-code)
+#   GHOST_AGENT_NS  — agent namespace (falls back to GHOST_NS, then agent:claude-code)
 #   GHOST_LLM_MODEL — model for extraction (default: claude-sonnet-4-6)
 set -uo pipefail
 
 GHOST="${GHOST_BIN:-ghost}"
-AGENT_NS="${GHOST_AGENT_NS:-agent:claude-code}"
+AGENT_NS="${GHOST_AGENT_NS:-${GHOST_NS:-agent:claude-code}}"
 LLM_MODEL="${GHOST_LLM_MODEL:-claude-sonnet-4-6}"
 DEBUG_LOG="/tmp/ghost-precompact-debug.log"
 

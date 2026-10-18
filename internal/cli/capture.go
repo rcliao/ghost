@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -120,10 +121,16 @@ func runCapture(cmd *cobra.Command, args []string) {
 	for _, c := range candidates {
 		tags := mergeTags(c.Tags, baseTags)
 
+		key := c.Key
 		if !dryRun {
+			resolved, err := resolveCaptureKey(cmd.Context(), st, ns, c.Key, c.Content)
+			if err != nil {
+				exitErr("capture", fmt.Errorf("resolve key %q: %w", c.Key, err))
+			}
+			key = resolved
 			if _, err := st.Put(cmd.Context(), store.PutParams{
 				NS:         ns,
-				Key:        c.Key,
+				Key:        key,
 				Content:    c.Content,
 				Kind:       c.Kind,
 				Tags:       tags,
@@ -131,13 +138,13 @@ func runCapture(cmd *cobra.Command, args []string) {
 				Importance: c.Importance,
 				Dedup:      dedup,
 			}); err != nil {
-				exitErr("capture", fmt.Errorf("store %q: %w", c.Key, err))
+				exitErr("capture", fmt.Errorf("store %q: %w", key, err))
 			}
 			res.Stored++
 		}
 
 		res.Memories = append(res.Memories, captureStoredItem{
-			Key:        c.Key,
+			Key:        key,
 			Kind:       c.Kind,
 			Importance: c.Importance,
 			Priority:   c.Priority,
@@ -147,6 +154,47 @@ func runCapture(cmd *cobra.Command, args []string) {
 	}
 
 	outputJSON(cmd, res)
+}
+
+// maxCaptureKeySuffix bounds the collision-suffix search so a pathological
+// key cannot loop forever; hitting it is reported as an error, not silently
+// overwritten.
+const maxCaptureKeySuffix = 1000
+
+// resolveCaptureKey picks the key a captured candidate is written under.
+// Capture derives keys from a segment's first entities/words, so generic keys
+// ("notion", "user-assistant") recur across unrelated facts; a plain Put would
+// make each new fact a NEW VERSION of the old one and hide it (one live key
+// reached v62 with 42 distinct contents). The rule, deterministic:
+//   - the derived key has no live head        -> use it
+//   - its head has the same content (case/whitespace-insensitive) -> use it
+//     (a restatement versions exactly as before)
+//   - otherwise try key-a .. key-z, key-27 ... and take the first suffix that
+//     is free or whose head holds the same content.
+//
+// Only capture goes through this; explicit puts keep plain versioning. The
+// head is read with History so the probe does not count as an access (plain
+// Get bumps access_count, which feeds promotion).
+func resolveCaptureKey(ctx context.Context, s store.Store, ns, key, content string) (string, error) {
+	for n := 0; n <= maxCaptureKeySuffix; n++ {
+		cand := key
+		if n > 0 {
+			cand = capture.DedupeKey(key, n)
+		}
+		mems, err := s.Get(ctx, store.GetParams{NS: ns, Key: cand, History: true})
+		if err != nil {
+			// Get reports a key without a live head as "memory not found";
+			// anything else is a real read failure and must not be guessed past.
+			if strings.Contains(err.Error(), "memory not found") {
+				return cand, nil
+			}
+			return "", fmt.Errorf("read head of %s/%s: %w", ns, cand, err)
+		}
+		if len(mems) == 0 || capture.SameContent(mems[0].Content, content) {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("no free key for %s/%s after %d suffixes", ns, key, maxCaptureKeySuffix)
 }
 
 // readCaptureInput returns the positional arg joined, or stdin when no arg and
