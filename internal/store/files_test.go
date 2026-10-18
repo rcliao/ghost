@@ -271,3 +271,36 @@ func TestPutWithFilesVersioning(t *testing.T) {
 		t.Errorf("v1 files: expected [a.go], got %v", hist[1].Files)
 	}
 }
+
+// A Put listing the same path twice used to abort the whole write on
+// UNIQUE(memory_id, path) — memory included (13 media notes lost live).
+func TestPutWithDuplicateFilePaths(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	mem, err := s.Put(ctx, PutParams{
+		NS: "ns", Key: "media", Content: "photo note",
+		Files: []FileParam{
+			{Path: "img/a.jpg", Rel: "created"},
+			{Path: "img/b.jpg"},
+			{Path: "img/a.jpg", Rel: "modified"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("put with duplicate paths should succeed: %v", err)
+	}
+	if len(mem.Files) != 2 {
+		t.Fatalf("returned refs: want 2 (deduped), got %d: %+v", len(mem.Files), mem.Files)
+	}
+	if mem.Files[0].Path != "img/a.jpg" || mem.Files[0].Rel != "created" {
+		t.Errorf("first occurrence's rel should win, got %+v", mem.Files[0])
+	}
+
+	got, err := s.Get(ctx, GetParams{NS: "ns", Key: "media"})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got[0].Files) != 2 {
+		t.Errorf("stored refs: want 2, got %d: %+v", len(got[0].Files), got[0].Files)
+	}
+}

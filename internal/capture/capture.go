@@ -109,7 +109,7 @@ func Extract(text string, opts Options) []Candidate {
 			continue
 		}
 		if len(trimmed) > maxSegmentLen {
-			trimmed = trimmed[:maxSegmentLen]
+			trimmed = truncateUTF8(trimmed, maxSegmentLen)
 		}
 
 		// Grade cues and gate entities on the PROSE only — URLs stay in the
@@ -182,7 +182,7 @@ func Extract(text string, opts Options) []Candidate {
 
 		key := makeKey(trimmed, ents)
 		if n := seenKeys[key]; n > 0 {
-			key = dedupeKey(key, n)
+			key = DedupeKey(key, n)
 		}
 		seenKeys[key]++
 

@@ -272,9 +272,17 @@ func (s *SQLiteStore) Put(ctx context.Context, p PutParams) (*model.Memory, erro
 		}
 	}
 
-	// Insert file references
+	// Insert file references. memory_files is UNIQUE(memory_id, path), so a
+	// caller listing the same path twice used to abort the whole write
+	// (memory included). Dedupe by path: the FIRST occurrence's rel wins and
+	// later repeats are dropped, so the returned FileRefs carry no duplicates.
 	var fileRefs []model.FileRef
+	seenPaths := make(map[string]bool, len(p.Files))
 	for _, f := range p.Files {
+		if seenPaths[f.Path] {
+			continue
+		}
+		seenPaths[f.Path] = true
 		rel := f.Rel
 		if rel == "" {
 			rel = "modified"

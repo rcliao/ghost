@@ -2,8 +2,10 @@ package capture
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rcliao/ghost/internal/entity"
 )
@@ -159,18 +161,44 @@ func makeKey(seg string, ents []entity.Entity) string {
 	if key == "" {
 		key = "note"
 	}
-	if len(key) > 60 {
-		key = strings.Trim(key[:60], "-")
+	if len(key) > maxKeyBytes {
+		key = strings.Trim(truncateUTF8(key, maxKeyBytes), "-")
 	}
 	return key
 }
 
-func dedupeKey(key string, n int) string {
-	suffix := "-" + string(rune('a'+n-1))
-	if n > 26 {
-		suffix = "-x"
+// maxKeyBytes caps a derived key's length in BYTES (CJK runes are 3 bytes).
+const maxKeyBytes = 60
+
+// truncateUTF8 returns the longest prefix of s that is at most n bytes and
+// ends on a rune boundary. A plain s[:n] splits multi-byte runes and yields
+// invalid UTF-8 (69 such keys found live in one store, 2026-10).
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return key + suffix
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// DedupeKey returns the n-th (n >= 1) collision variant of key: key-a .. key-z
+// for n <= 26, then key-27, key-28, ... so every n maps to a distinct key
+// (the old fallback reused "-x" for every n > 26).
+func DedupeKey(key string, n int) string {
+	if n <= 26 {
+		return key + "-" + string(rune('a'+n-1))
+	}
+	return key + "-" + strconv.Itoa(n)
+}
+
+// SameContent reports whether two memory contents are the same text up to
+// case and whitespace — the rule capture uses to decide that a new value is a
+// restatement of an existing head (version it) rather than a different fact
+// that merely derived the same key (suffix it).
+func SameContent(a, b string) bool {
+	return normalizeContent(a) == normalizeContent(b)
 }
 
 // topWords returns up to n longer, non-common content words in order of

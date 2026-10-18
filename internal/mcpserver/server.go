@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -104,7 +106,11 @@ func Serve(ctx context.Context, st store.Store) error {
 		Instructions: ServerInstructions,
 	})
 
-	registerTools(server, st)
+	defaultNS, err := resolveDefaultNS(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	registerTools(server, st, defaultNS)
 
 	transport := &mcp.StdioTransport{}
 	return server.Run(ctx, transport)
@@ -124,12 +130,57 @@ func prop(typ, desc string) map[string]any {
 	return map[string]any{"type": typ, "description": desc}
 }
 
-func registerTools(server *mcp.Server, st store.Store) {
+// resolveDefaultNS returns the namespace a tool call falls back to when it
+// omits ns: $GHOST_NS first (what shell's per-agent mcp.json sets), then
+// $GHOST_AGENT_NS (what ghost's own Claude Code hooks read). Empty when
+// neither is set — then ns stays required. A set-but-invalid value is an
+// error at server start rather than a failure on every later call.
+func resolveDefaultNS(lookup func(string) (string, bool)) (string, error) {
+	for _, name := range []string{"GHOST_NS", "GHOST_AGENT_NS"} {
+		v, ok := lookup(name)
+		v = strings.TrimSpace(v)
+		if !ok || v == "" {
+			continue
+		}
+		if err := store.ValidateNS(v); err != nil {
+			return "", fmt.Errorf("invalid %s=%q for default namespace: %w", name, v, err)
+		}
+		return v, nil
+	}
+	return "", nil
+}
+
+// nsDefaultNote is appended to the ns description of every tool where ns is
+// otherwise required, so agents know they may omit it.
+const nsDefaultNote = ". Optional when the server has GHOST_NS (or GHOST_AGENT_NS) set: omitted ns defaults to it"
+
+// errNSRequired is returned when ns is omitted and no default is configured.
+const errNSRequired = "ns is required (pass ns, or set GHOST_NS for the ghost mcp-serve process)"
+
+// requiredWithNS builds a tool's required list: "ns" plus fields, except that
+// "ns" is dropped when a default namespace is configured — the schema must not
+// demand what the server will fill in.
+func requiredWithNS(defaultNS string, fields ...string) []string {
+	if defaultNS == "" {
+		return append([]string{"ns"}, fields...)
+	}
+	return append([]string{}, fields...)
+}
+
+// withDefaultNS returns ns, or the configured default when ns is empty.
+func withDefaultNS(ns, defaultNS string) string {
+	if strings.TrimSpace(ns) == "" {
+		return defaultNS
+	}
+	return ns
+}
+
+func registerTools(server *mcp.Server, st store.Store, defaultNS string) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_put",
 		Description: "Store or update a memory. Storing to an existing namespace:key creates a new version.",
-		InputSchema: schema([]string{"ns", "key", "content"}, map[string]map[string]any{
-			"ns":           prop("string", "Namespace (agent identity), e.g. agent:pikamini, agent:coder"),
+		InputSchema: schema(requiredWithNS(defaultNS, "key", "content"), map[string]map[string]any{
+			"ns":           prop("string", "Namespace (agent identity), e.g. agent:pikamini, agent:coder"+nsDefaultNote),
 			"key":          prop("string", "Unique descriptive key within the namespace"),
 			"content":      prop("string", "Memory content text"),
 			"kind":         prop("string", "Memory kind: episodic (events, default for sensory/stm), semantic (facts, default for ltm), or procedural (how-to/skills)"),
@@ -166,8 +217,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.Key == "" || p.Content == "" {
-			return errResult("ns, key, and content are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.Key == "" || p.Content == "" {
+			return errResult("key and content are required"), nil
 		}
 		mem, err := st.Put(ctx, store.PutParams{
 			NS:          p.NS,
@@ -311,8 +366,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_curate",
 		Description: "Apply a lifecycle action to a single memory. Use this to directly promote, demote, boost, diminish, archive, delete, pin, or unpin a specific memory by namespace and key. Use op=used to report that an agent actually used a memory (used_count +1, separate from the retrieval-time utility_count).",
-		InputSchema: schema([]string{"ns", "key", "op"}, map[string]map[string]any{
-			"ns":  prop("string", "Namespace of the memory"),
+		InputSchema: schema(requiredWithNS(defaultNS, "key", "op"), map[string]map[string]any{
+			"ns":  prop("string", "Namespace of the memory"+nsDefaultNote),
 			"key": prop("string", "Key of the memory"),
 			"op":  prop("string", "Action: promote (tier up), demote (tier down), boost (importance +0.2), diminish (importance -0.2), archive (→dormant), delete (soft-delete), pin (always in context), unpin (remove pin), used (agent actually used it: used_count +1)"),
 		}),
@@ -325,8 +380,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.Key == "" || p.Op == "" {
-			return errResult("ns, key, and op are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.Key == "" || p.Op == "" {
+			return errResult("key and op are required"), nil
 		}
 		result, err := st.Curate(ctx, store.CurateParams{
 			NS:  p.NS,
@@ -342,8 +401,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_edge",
 		Description: EdgeToolDescription,
-		InputSchema: schema([]string{"ns", "from_key"}, map[string]map[string]any{
-			"ns":       prop("string", "Namespace (used for both from and to)"),
+		InputSchema: schema(requiredWithNS(defaultNS, "from_key"), map[string]map[string]any{
+			"ns":       prop("string", "Namespace (used for both from and to)"+nsDefaultNote),
 			"from_key": prop("string", "Source memory key"),
 			"to_key":   prop("string", "Target memory key (required for create/remove)"),
 			"rel":      prop("string", "Relation type: relates_to, contradicts, depends_on, refines, contains, merged_into, caused_by, prevents, implies"),
@@ -362,8 +421,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.FromKey == "" {
-			return errResult("ns and from_key are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.FromKey == "" {
+			return errResult("from_key is required"), nil
 		}
 
 		op := p.Op
@@ -418,8 +481,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_patch",
 		Description: PatchToolDescription,
-		InputSchema: schema([]string{"ns", "key", "patch"}, map[string]map[string]any{
-			"ns":           prop("string", "Namespace"),
+		InputSchema: schema(requiredWithNS(defaultNS, "key", "patch"), map[string]map[string]any{
+			"ns":           prop("string", "Namespace"+nsDefaultNote),
 			"key":          prop("string", "Memory key"),
 			"patch":        prop("string", "Unified diff against the memory's current content (as returned by ghost_get)"),
 			"base_version": prop("number", "Version the diff was generated against (from ghost_get). Omit or 0 to patch the current head; either way a concurrent move fails with version_conflict rather than overwriting"),
@@ -438,8 +501,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.Key == "" || p.Patch == "" {
-			return errResult("ns, key, and patch are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.Key == "" || p.Patch == "" {
+			return errResult("key and patch are required"), nil
 		}
 		res, err := store.PatchMemory(ctx, st, store.PatchMemoryParams{
 			NS: p.NS, Key: p.Key, Patch: p.Patch,
@@ -464,8 +531,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_get",
 		Description: "Retrieve a specific memory by namespace and key. Use this when you know exactly which memory you want.",
-		InputSchema: schema([]string{"ns", "key"}, map[string]map[string]any{
-			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"),
+		InputSchema: schema(requiredWithNS(defaultNS, "key"), map[string]map[string]any{
+			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"+nsDefaultNote),
 			"key": prop("string", "Memory key"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -476,8 +543,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.Key == "" {
-			return errResult("ns and key are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.Key == "" {
+			return errResult("key is required"), nil
 		}
 		results, err := st.Get(ctx, store.GetParams{NS: p.NS, Key: p.Key})
 		if err != nil {
@@ -492,8 +563,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_expand",
 		Description: "Drill into the consolidation hierarchy. With a key: returns the summary and its children (children with children>0 are expandable further). Without a key: lists all consolidation nodes AND emergent clusters needing consolidation — use this when compaction_suggested is true to find what to consolidate.",
-		InputSchema: schema([]string{"ns"}, map[string]map[string]any{
-			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"),
+		InputSchema: schema(requiredWithNS(defaultNS), map[string]map[string]any{
+			"ns":  prop("string", "Namespace (e.g. agent:pikamini)"+nsDefaultNote),
 			"key": prop("string", "Key of a consolidation node to expand (omit to list all nodes + clusters)"),
 		}),
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -504,8 +575,9 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
+		p.NS = withDefaultNS(p.NS, defaultNS)
 		if p.NS == "" {
-			return errResult("ns is required"), nil
+			return errResult(errNSRequired), nil
 		}
 		result, err := st.Expand(ctx, store.ExpandParams{NS: p.NS, Key: p.Key})
 		if err != nil {
@@ -517,8 +589,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_consolidate",
 		Description: "Create a summary memory that consolidates multiple source memories. Creates the summary and contains edges in one operation. Children are automatically suppressed in context when the summary is present.",
-		InputSchema: schema([]string{"ns", "summary_key", "content", "source_keys"}, map[string]map[string]any{
-			"ns":           prop("string", "Namespace (e.g. agent:pikamini)"),
+		InputSchema: schema(requiredWithNS(defaultNS, "summary_key", "content", "source_keys"), map[string]map[string]any{
+			"ns":           prop("string", "Namespace (e.g. agent:pikamini)"+nsDefaultNote),
 			"summary_key":  prop("string", "Key for the new summary memory"),
 			"content":      prop("string", "Summary content text (caller must provide — no LLM inside ghost)"),
 			"source_keys":  {"type": "array", "items": map[string]any{"type": "string"}, "description": "Keys of memories to consolidate (minimum 2)"},
@@ -545,8 +617,12 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
-		if p.NS == "" || p.SummaryKey == "" || p.Content == "" || len(p.SourceKeys) < 2 {
-			return errResult("ns, summary_key, content, and at least 2 source_keys are required"), nil
+		p.NS = withDefaultNS(p.NS, defaultNS)
+		if p.NS == "" {
+			return errResult(errNSRequired), nil
+		}
+		if p.SummaryKey == "" || p.Content == "" || len(p.SourceKeys) < 2 {
+			return errResult("summary_key, content, and at least 2 source_keys are required"), nil
 		}
 		result, err := st.Consolidate(ctx, store.ConsolidateParams{
 			NS:         p.NS,
@@ -567,8 +643,8 @@ func registerTools(server *mcp.Server, st store.Store) {
 	server.AddTool(&mcp.Tool{
 		Name:        "ghost_edge_candidates",
 		Description: "Return relates_to pairs that do not yet have a typed reasoning edge, so YOU (the calling LLM agent) can classify each one and commit edges via ghost_edge. Ghost itself does zero LLM work — this tool just reads the graph. Workflow: call this → read the returned pairs → for each pair, decide in your own reasoning whether it's caused_by / prevents / implies / none → call ghost_edge(rel=<decision>) for pairs that warrant a reasoning edge. Skip pairs where 'relates_to' (topical only) is already accurate. Pairs that already have a reasoning edge are excluded automatically (safe to re-run).",
-		InputSchema: schema([]string{"ns"}, map[string]map[string]any{
-			"ns":        prop("string", "Namespace to scan (required)"),
+		InputSchema: schema(requiredWithNS(defaultNS), map[string]map[string]any{
+			"ns":        prop("string", "Namespace to scan"+nsDefaultNote),
 			"max_pairs": prop("integer", "Max candidate pairs to return (default 50). Classification happens in your reasoning — size this for your own context budget, not for cost."),
 			"seed":      {"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional: only return pairs touching these memory keys. Useful after consolidating a cluster."},
 		}),
@@ -581,8 +657,9 @@ func registerTools(server *mcp.Server, st store.Store) {
 		if err := unmarshalArgs(req, &p); err != nil {
 			return errResult(err.Error()), nil
 		}
+		p.NS = withDefaultNS(p.NS, defaultNS)
 		if p.NS == "" {
-			return errResult("ns is required"), nil
+			return errResult(errNSRequired), nil
 		}
 		result, err := st.ListReasoningCandidates(ctx, store.ReasoningCandidatesParams{
 			NS:       p.NS,

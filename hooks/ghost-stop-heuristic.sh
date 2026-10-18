@@ -22,14 +22,14 @@
 #
 # Configure via environment variables:
 #   GHOST_BIN           — path to ghost binary (default: ghost on PATH)
-#   GHOST_AGENT_NS      — agent namespace (default: agent:claude-code)
+#   GHOST_AGENT_NS      — agent namespace (falls back to GHOST_NS, then agent:claude-code)
 #   GHOST_CAPTURE_MIN   — min salience 0..1 (default: 0.55)
 #   GHOST_CAPTURE_MAX   — max memories per capture (default: 8)
 #   GHOST_CAPTURE_GROWTH — min new buffered prompts before capturing (default: 3)
 set -uo pipefail
 
 GHOST="${GHOST_BIN:-ghost}"
-AGENT_NS="${GHOST_AGENT_NS:-agent:claude-code}"
+AGENT_NS="${GHOST_AGENT_NS:-${GHOST_NS:-agent:claude-code}}"
 MIN_SALIENCE="${GHOST_CAPTURE_MIN:-0.55}"
 MAX_CAP="${GHOST_CAPTURE_MAX:-8}"
 DEBUG_LOG="/tmp/ghost-stop-heuristic-debug.log"
