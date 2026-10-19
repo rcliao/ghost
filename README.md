@@ -97,7 +97,7 @@ ghost rule set --name "fast-promote" --cond-tier stm --cond-age-gt 12 \
 - **Vector embeddings**: all-MiniLM-L6-v2 (pure Go, no CGo) fused with FTS5 via Reciprocal Rank Fusion,
   plus an optional local cross-encoder reranker
 - **Storage compaction**: `ghost gc --purge-deleted` reclaims soft-deleted rows + orphaned embeddings
-- **MCP server**: `ghost mcp-serve` exposes 10 tools for Claude Code and other MCP clients
+- **MCP server**: `ghost mcp-serve` exposes 11 tools for Claude Code and other MCP clients
 
 ## Namespace Conventions
 
@@ -116,6 +116,7 @@ Tags provide categorization within a namespace: `identity`, `lore`, `project:<na
 | Command | Description |
 |---------|-------------|
 | `put` | Store or update a memory (auto-links similar via edges) |
+| `patch` | Apply a unified diff to a memory's content — edits only the touched lines (safer than `put` for edits) |
 | `capture` | Extract + store memories from raw text/transcripts (deterministic, no LLM; `--json` ingests LLM candidates) |
 | `mine-procedures` | Induce recurring workflows from usage sequences into procedural memories (no LLM) |
 | `get` | Retrieve by namespace + key |
@@ -155,6 +156,7 @@ Tags provide categorization within a namespace: `identity`, `lore`, `project:<na
 |---------|-------------|
 | `tags` | List, rename, or remove tags |
 | `ns` | Namespace operations (list, rm) |
+| `source` | Manage source-identity aliases — declare that different `source_user` spellings name the same person |
 | `files` | Find memories linked to a file path |
 | `embed` | Manage vector embeddings (backfill, stats) |
 | `link` | Create/remove relationships (legacy — use `edge` instead) |
@@ -205,7 +207,7 @@ ghost consolidate -n agent:mybot --summary-key auth-overview \
 claude mcp add --scope user --transport stdio ghost -- ghost mcp-serve
 ```
 
-Exposes 10 tools: `ghost_put`, `ghost_get`, `ghost_search`, `ghost_context`, `ghost_expand`, `ghost_consolidate`, `ghost_edge`, `ghost_edge_candidates`, `ghost_curate`, `ghost_reflect`.
+Exposes 11 tools: `ghost_put`, `ghost_patch`, `ghost_get`, `ghost_search`, `ghost_context`, `ghost_expand`, `ghost_consolidate`, `ghost_edge`, `ghost_edge_candidates`, `ghost_curate`, `ghost_reflect`.
 
 See [Claude Code Setup](docs/quickstart-claude-code.md) for full setup including hooks and CLAUDE.md instructions.
 
